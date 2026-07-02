@@ -32,9 +32,11 @@ glm::vec3 ground_color(Material m, float forest_density, float climate, float y)
         return glm::mix(c, glm::vec3{0.58f, 0.55f, 0.33f}, dryness);
     }
     if (m == Material::Sand) {
-        return glm::mix(glm::vec3{0.82f, 0.72f, 0.50f},  // dorada
-                        glm::vec3{0.94f, 0.90f, 0.74f},  // caribeña clara
-                        climate);
+        // Arena común (dorada) por defecto; la blanca caribeña solo en el
+        // extremo cálido del clima.
+        return glm::mix(glm::vec3{0.84f, 0.76f, 0.55f},
+                        glm::vec3{0.94f, 0.90f, 0.74f},
+                        climate * climate);
     }
     return material_color(m);
 }

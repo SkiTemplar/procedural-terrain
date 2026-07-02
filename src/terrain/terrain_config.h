@@ -38,7 +38,7 @@ struct TerrainConfig {
     // Costa: comprime las alturas bajas → playas anchas y planas. 25 m:
     // con 40 la rampa arena→hierba se veía como un degradado artificial.
     float coast_flatten_band_m = 25.0f;
-    float coast_flatten_strength = 0.72f; // 0 = nada, 1 = playa totalmente plana
+    float coast_flatten_strength = 0.85f; // playas bien planas
 
     // Hidrología: pocos ríos pero grandes. El umbral está expresado en celdas
     // equivalentes de un mapa de 1024 (se normaliza por resolución real).

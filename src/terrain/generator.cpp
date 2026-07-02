@@ -43,10 +43,12 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
         for (int x = 0; x < hf.resolution(); ++x) {
             const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f, hf.world_z(z) / 1000.0f};
-            // Dos warps: uno fuerte para la COSTA (litoral retorcido) y uno
-            // suave para el RELIEVE — el warp fuerte comprime el espacio y
-            // convertía laderas de 2 km en paredes de 100 m.
-            const glm::vec3 pw = noise.warp(p_km, cfg.coast_warp_m / 1000.0f, kWarpFreq);
+            // Warp de costa en dos escalas compuestas: los lóbulos grandes
+            // (~1.8 km) crean bahías y penínsulas; el fino retuerce el
+            // litoral. El relieve usa un warp suave aparte (el fuerte
+            // comprimía laderas en paredes).
+            const glm::vec3 pw = noise.warp(
+                noise.warp(p_km, 1.8f, 0.12f), cfg.coast_warp_m / 1000.0f, kWarpFreq);
             const glm::vec3 pr = noise.warp(p_km, 0.25f * cfg.coast_warp_m / 1000.0f,
                                             kWarpFreq);
 
@@ -55,13 +57,11 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
             const float d = glm::length(glm::vec2{pw.x, pw.z}) / half_km;
             float continent = 1.0f - smoothstep(cfg.island_radius, 1.0f, d);
 
-            // Clima regional (~media isla por región): 0 = frío tipo Escocia
-            // (costa acantilada, hierba parda), 1 = cálido caribeño (playas
-            // anchas de arena clara, más islotes).
-            const float climate = glm::clamp(
-                noise.fbm(pw * 0.14f + glm::vec3{-64.2f, 0.0f, 38.5f}, 2) * 0.85f
-                    + 0.5f,
-                0.0f, 1.0f);
+            // Clima regional en SECTORES nítidos (transición corta, sin
+            // mezcla): o Escocia o Caribe, con una franja de contacto breve.
+            const float climate_raw =
+                noise.fbm(pw * 0.14f + glm::vec3{-64.2f, 0.0f, 38.5f}, 2) * 0.5f + 0.5f;
+            const float climate = smoothstep(0.42f, 0.58f, climate_raw);
             data.climate[static_cast<size_t>(z) * hf.resolution()
                          + static_cast<size_t>(x)] = climate;
 
@@ -79,7 +79,13 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
             // con máscara orgánica. Fue el carácter más natural: montañas
             // altas de verdad, lagos de montaña, praderas onduladas.
             const float base01 = noise.fbm(pr * kBaseFreq, 5) * 0.5f + 0.5f;
-            const float ridge = noise.ridged(pr * kMountainFreq, 5);
+            // El ridged puro forma celdas cerradas (anillos de cresta con
+            // hoyo = "socavones" que acaban en lago). Mezclado con fbm las
+            // cordilleras se vuelven lomas y espolones conectados.
+            const float ridged_raw = noise.ridged(pr * kMountainFreq, 4);
+            const float mound =
+                noise.fbm(pr * 0.30f + glm::vec3{-47.9f, 0.0f, 12.6f}, 3) * 0.5f + 0.5f;
+            const float ridge = 0.70f * ridged_raw + 0.30f * mound;
             // Umbrales generosos: más área de montaña y picos que sobreviven
             // a la erosión (con 0.45-0.75 salían islas de 300 m sin nieve).
             const float range_mask = smoothstep(
@@ -240,7 +246,9 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                 const float treeline = cfg.snow_line_m - 240.0f
                     + noise.fbm(p_km * 2.3f + glm::vec3{41.0f, 0.0f, -8.5f}, 2) * 80.0f;
 
-                if (snow_score > 0.0f) {
+                // Corte físico duro: por encima de ~49° la nieve no puede
+                // agarrar, da igual la altitud.
+                if (snow_score > 0.0f && slope < 1.15f) {
                     m = Material::Snow;
                 } else if (slope > cfg.rock_slope) {
                     m = Material::Rock;

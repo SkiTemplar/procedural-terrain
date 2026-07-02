@@ -190,8 +190,8 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     // Purga de microlagos: la erosión deja miles de charcos de 1-3 celdas que
     // ensucian el mapa. Se eliminan las componentes conexas pequeñas o someras.
     {
-        constexpr int kMinLakeCells = 24;
-        constexpr float kMinLakeDepth = 0.6f;
+        constexpr int kMinLakeCells = 60;
+        constexpr float kMinLakeDepth = 1.2f;
 
         std::vector<bool> visited(filled.size(), false);
         std::vector<size_t> component;
@@ -349,6 +349,15 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
             if (!is_river(i) || level[i] == std::numeric_limits<float>::infinity()) {
                 continue;
             }
+            // Dentro de un lago no se talla cauce ni se pinta lámina de río:
+            // el lago ya tiene su superficie de equilibrio (vertedero). Sin
+            // esto, el cauce interior pintaba la superficie del lago en un
+            // radio que desbordaba la orilla → agua flotando en la ladera
+            // de salida. El desagüe arranca desde el lecho de la presa con
+            // el grosor normal del río.
+            if (out.lake[i]) {
+                continue;
+            }
             const float intensity = intensity_of(i);
             // El nacimiento escala TODO el cauce (profundidad y anchura), no
             // solo la lámina: sin esto el canal tallado aparecía de golpe.
@@ -356,18 +365,31 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
             if (birth < 0.05f) {
                 continue; // aún no hay cauce visible
             }
+            // Régimen hidráulico: en pendiente el canal es ESTRECHO y
+            // encajonado (garganta/rápidos — p.ej. el desagüe de un lago de
+            // montaña); solo en llanura el río se abre a su anchura plena.
+            const float local_slope = std::max(
+                std::abs(bed0[i + 1] - bed0[i - 1]),
+                std::abs(bed0[i + static_cast<size_t>(res)]
+                         - bed0[i - static_cast<size_t>(res)]))
+                * 0.5f / hf.cell_size();
+            const float narrow =
+                glm::clamp(1.0f / (1.0f + 6.0f * local_slope), 0.2f, 1.0f);
             const float depth =
                 cfg.river_max_depth_m * (0.15f + 0.85f * intensity) * birth;
             const int radius = std::max(
-                1, static_cast<int>(std::round(max_radius * intensity * birth)));
+                1, static_cast<int>(
+                       std::round(max_radius * intensity * birth * narrow)));
             const float surface = level[i];
             // El cauce siempre queda bajo la lámina: donde el lecho subía,
             // el río corta su salida (canal continuo, sin tramos secos).
             const float axis_bed =
                 std::min(bed0[i] - depth * 0.4f, surface - 0.5f * birth);
 
-            // Llanura aluvial: los ríos grandes abren un valle ancho y somero.
-            if (intensity > 0.35f) {
+            // Llanura aluvial: los ríos grandes abren un valle ancho y somero
+            // SOLO en terreno llano (los valles gigantes se forman abajo, no
+            // en la caída).
+            if (intensity > 0.35f && local_slope < 0.05f) {
                 const int flood_radius = radius * 4;
                 for (int dz = -flood_radius; dz <= flood_radius; ++dz) {
                     for (int dx = -flood_radius; dx <= flood_radius; ++dx) {
