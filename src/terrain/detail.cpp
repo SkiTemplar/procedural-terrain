@@ -9,15 +9,17 @@ DetailSampler::DetailSampler(const TerrainData& data)
     : data_(&data), noise_(data.config.seed ^ 0x51ED270Bu) {}
 
 float DetailSampler::material_roughness(Material m) {
+    // Las praderas y el suelo de bosque son LISOS en la naturaleza; el grano
+    // fuerte queda para el roquedo.
     switch (m) {
-        case Material::Seabed: return 0.20f;
-        case Material::Sand: return 0.15f;   // la playa es lisa
-        case Material::Grass: return 1.0f;
-        case Material::Forest: return 1.15f;
-        case Material::Rock: return 1.6f;    // el roquedo es abrupto
-        case Material::Snow: return 0.6f;
-        case Material::RiverBed: return 0.25f;
-        case Material::LakeBed: return 0.2f;
+        case Material::Seabed: return 0.15f;
+        case Material::Sand: return 0.10f;
+        case Material::Grass: return 0.40f;
+        case Material::Forest: return 0.60f;
+        case Material::Rock: return 1.5f;
+        case Material::Snow: return 0.35f;
+        case Material::RiverBed: return 0.2f;
+        case Material::LakeBed: return 0.15f;
     }
     return 1.0f;
 }

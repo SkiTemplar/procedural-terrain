@@ -7,7 +7,7 @@ namespace terrain {
 // Parámetros del pipeline de generación. Pocos y con significado físico;
 // todos tuneables desde el panel de ImGui.
 struct TerrainConfig {
-    std::uint32_t seed = 20260703;
+    std::uint32_t seed = 31416;
 
     // Dominio
     float size_m = 5000.0f; // lado de la isla
@@ -20,12 +20,16 @@ struct TerrainConfig {
     float coast_warp_m = 700.0f; // distorsión de la línea de costa
 
     // Relieve
-    float base_height_m = 180.0f;      // colinas (fbm)
-    float mountain_height_m = 1800.0f; // cordilleras (ridged)
+    float base_height_m = 100.0f;      // colinas (fbm) — praderas suaves
+    // 900 m de pico en 5 km de isla ≈ proporción del Teide: montaña grande
+    // de verdad sin necesitar paredes imposibles.
+    float mountain_height_m = 900.0f;
 
     // Tectónica: las cordilleras siguen los bordes convergentes de placa.
-    float tectonic_strength = 1.0f; // multiplicador del uplift
-    float rift_depth_m = 25.0f;     // hundimiento en bordes divergentes
+    float tectonic_strength = 0.7f; // multiplicador del uplift
+    // Rift apagado por defecto: su vaguada recta capturaba la red fluvial
+    // entera y acababa excavada como un tajo artificial cruzando la isla.
+    float rift_depth_m = 0.0f;
 
     // Erosión hidráulica (gotas)
     int erosion_droplets = 600000;
@@ -35,7 +39,7 @@ struct TerrainConfig {
 
     // Erosión térmica (pedreras, faldas al pie de la montaña). Las pasadas
     // altas son las que imponen el ángulo de reposo en las laderas grandes.
-    int thermal_iterations = 16;
+    int thermal_iterations = 32;
     float talus_slope = 0.75f; // tan del ángulo de reposo (~37°)
 
     // Costa: comprime las alturas bajas → playas anchas y planas.
@@ -44,21 +48,23 @@ struct TerrainConfig {
 
     // Hidrología: pocos ríos pero grandes. El umbral está expresado en celdas
     // equivalentes de un mapa de 1024 (se normaliza por resolución real).
-    float river_flow_threshold = 900.0f;
+    float river_flow_threshold = 1600.0f;
     float river_max_depth_m = 5.0f;
     float river_max_width_m = 14.0f; // radio máximo del cauce en metros
 
     // Erosión fluvial (stream power law, Braun & Willett 2013): talla el
     // perfil longitudinal de la red de drenaje → valles en V y cañones donde
     // coinciden caudal y pendiente, perfiles cóncavos sin caídas verticales.
-    float fluvial_strength = 0.45f;
-    int fluvial_iterations = 4;
+    // UNA pasada: con varias, el esquema implícito re-propaga el nivel del
+    // mar aguas arriba y convierte el río principal en un tajo a cota cero.
+    float fluvial_strength = 0.5f;
+    int fluvial_iterations = 1;
 
     // Detalle geométrico fino (solo malla cercana + suelo al caminar)
-    float detail_amplitude_m = 1.4f;
+    float detail_amplitude_m = 1.0f;
 
     // Clasificación
-    float snow_line_m = 750.0f;
+    float snow_line_m = 600.0f;
     float rock_slope = 0.85f; // pendiente (tan) a partir de la cual es roca
     float beach_band_m = 7.0f;
 };

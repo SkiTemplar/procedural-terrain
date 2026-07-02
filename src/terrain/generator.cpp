@@ -19,7 +19,7 @@ namespace {
 // Frecuencias en 1/km: el ruido se muestrea con la posición en kilómetros
 // para que los parámetros sean independientes del tamaño del mapa.
 constexpr float kBaseFreq = 0.45f;     // colinas
-constexpr float kMountainFreq = 0.28f; // cordilleras
+constexpr float kMountainFreq = 0.19f; // cordilleras (crestas anchas, Alpes)
 constexpr float kRangeMaskFreq = 0.13f; // dónde hay cordillera
 constexpr float kForestFreq = 0.9f;
 constexpr float kWarpFreq = 0.35f;
@@ -43,39 +43,52 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
         for (int x = 0; x < hf.resolution(); ++x) {
             const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f, hf.world_z(z) / 1000.0f};
+            // Dos warps: uno fuerte para la COSTA (litoral retorcido) y uno
+            // suave para el RELIEVE — el warp fuerte comprime el espacio y
+            // convertía laderas de 2 km en paredes de 100 m.
             const glm::vec3 pw = noise.warp(p_km, cfg.coast_warp_m / 1000.0f, kWarpFreq);
+            const glm::vec3 pr = noise.warp(p_km, 0.25f * cfg.coast_warp_m / 1000.0f,
+                                            kWarpFreq);
 
             // Continentalidad: 1 en el centro, 0 mar adentro; la costa cae
             // entre island_radius y 1.0 del semiancho (sobre la pos. distorsionada).
             const float d = glm::length(glm::vec2{pw.x, pw.z}) / half_km;
             float continent = 1.0f - smoothstep(cfg.island_radius, 1.0f, d);
 
-            // El campo tectónico se muestrea sobre la posición distorsionada:
-            // los bordes de placa dejan de ser rectas perfectas.
-            const auto tect = tectonics.sample(glm::vec2{pw.x, pw.z} * 1000.0f);
+            // Islitas satélite: motas de tierra baja en el anillo exterior,
+            // donde un ruido de ~1 km supera el umbral.
+            const float satellite =
+                smoothstep(0.60f, 0.72f,
+                           noise.fbm(pw * 0.9f + glm::vec3{97.1f, 0.0f, -44.3f}, 3)
+                               * 0.5f + 0.5f)
+                * smoothstep(0.78f, 0.95f, d) * smoothstep(1.35f, 1.0f, d);
+            continent = std::max(continent, satellite * 0.5f);
+
+            // El campo tectónico se muestrea con el warp suave.
+            const auto tect = tectonics.sample(glm::vec2{pr.x, pr.z} * 1000.0f);
 
             // El carácter de cada placa modula la continentalidad: costas y
             // penínsulas distintas según la placa sobre la que se asienta.
-            continent = glm::clamp(continent * (1.0f + 0.18f * tect.bias), 0.0f, 1.0f);
+            continent = glm::clamp(continent * (1.0f + 0.10f * tect.bias), 0.0f, 1.0f);
 
-            const float base01 = noise.fbm(pw * kBaseFreq, 5) * 0.5f + 0.5f;
-            const float ridge = noise.ridged(pw * kMountainFreq, 5);
+            const float base01 = noise.fbm(pr * kBaseFreq, 5) * 0.5f + 0.5f;
+            const float ridge = noise.ridged(pr * kMountainFreq, 5);
 
             // Cordilleras: dominan los bordes convergentes (direccionales);
-            // un resto de la máscara de ruido conserva macizos interiores.
+            // saturación SUAVE (u/(1+u)): nada de mesetas planas con borde.
             const float noise_mask = smoothstep(
                 0.45f, 0.75f,
-                noise.fbm(pw * kRangeMaskFreq + glm::vec3{53.7f, 0.0f, -11.9f}, 3) * 0.5f + 0.5f);
+                noise.fbm(pr * kRangeMaskFreq + glm::vec3{53.7f, 0.0f, -11.9f}, 3) * 0.5f + 0.5f);
+            const float u = tect.uplift * cfg.tectonic_strength;
             const float range_mask = glm::clamp(
-                0.8f * glm::min(tect.uplift * cfg.tectonic_strength, 1.0f)
-                    + 0.25f * noise_mask,
-                0.0f, 1.0f);
+                0.9f * (u / (1.0f + u)) + 0.25f * noise_mask, 0.0f, 1.0f);
 
             // Exponente bajo: las cordilleras tectónicas llegan hasta la costa
             // → acantilados naturales donde la montaña muere en el mar.
+            // ridge^1.4 (no ^2): crestas anchas tipo Alpes, sin agujas.
             float land = continent * (cfg.base_height_m * base01)
                        + std::pow(continent, 1.15f) * cfg.mountain_height_m
-                             * ridge * ridge * range_mask;
+                             * std::pow(ridge, 1.4f) * range_mask;
 
             // Rifts (fosas divergentes). Las zanjas de falla se eliminaron:
             // cortaban la isla con líneas artificiales.
@@ -161,7 +174,7 @@ void classify_materials(TerrainData& data, const Noise& noise) {
         riparian[i] = std::isnan(data.hydrology.water_level[i]) ? 0 : 1;
     }
     std::vector<std::uint8_t> dilated(riparian.size());
-    for (int pass = 0; pass < 4; ++pass) {
+    for (int pass = 0; pass < 2; ++pass) {
         std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
             for (int x = 0; x < res; ++x) {
                 const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
@@ -221,7 +234,7 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                 float snow_score =
                     (h - (cfg.snow_line_m + snow_edge_jitter)) / 120.0f;
                 snow_score += 0.30f * std::max(n.z, 0.0f); // cara norte
-                snow_score -= 0.75f * slope;               // paredes desnudas
+                snow_score -= 0.55f * slope;               // paredes desnudas
                 snow_score += 0.25f * patch;               // parches irregulares
                 snow_score += 0.18f * speckle;             // moteado del borde
 
@@ -247,7 +260,7 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                     float forest_threshold =
                         0.06f + 0.70f * smoothstep(treeline - 350.0f, treeline, h);
                     if (riparian[i]) {
-                        forest_threshold -= 0.30f;
+                        forest_threshold -= 0.15f;
                     }
                     if (forest > forest_threshold) {
                         m = Material::Forest;

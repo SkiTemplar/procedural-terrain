@@ -133,7 +133,8 @@ ModelData make_broadleaf() {
 
 ModelData make_rock() {
     ModelData out;
-    add_deformed_icosphere(out, 1.0f, 0.15f, 0.7f, 0.65f, kRockColor, 77u);
+    // Deformación moderada: pedrusco irregular pero sin picos rotos.
+    add_deformed_icosphere(out, 1.0f, 0.12f, 0.62f, 0.35f, kRockColor, 77u);
     return out;
 }
 

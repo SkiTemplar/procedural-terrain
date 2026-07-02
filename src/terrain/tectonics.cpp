@@ -11,8 +11,8 @@ namespace {
 // Anchos de banda de cada tipo de borde, en metros. La banda orogénica es
 // ancha a propósito: el uplift debe repartirse en varios km para producir
 // laderas de montaña; con bandas estrechas salían murallas verticales.
-constexpr float kMountainBandM = 1800.0f;
-constexpr float kRiftBandM = 500.0f;
+constexpr float kMountainBandM = 3600.0f; // ladera alpina: ~45° de media
+constexpr float kRiftBandM = 700.0f;
 constexpr float kFaultBandM = 70.0f;
 
 } // namespace
@@ -79,7 +79,10 @@ Tectonics::Sample Tectonics::sample(glm::vec2 pos_m) const {
     // Falla: cizalla dominante (borde transformante), zanja estrecha.
     out.fault = shear * (1.0f - std::min(std::abs(convergence) * 2.0f, 1.0f))
               * band(kFaultBandM);
-    out.bias = a.bias;
+    // Bias CONTINUO a través del borde: el salto brusco de carácter entre
+    // placas creaba escalones rectos de continentalidad (mesetas con muros).
+    const float t = std::min(edge_dist / 900.0f, 1.0f);
+    out.bias = a.bias * (0.5f + 0.5f * t) + b.bias * (0.5f - 0.5f * t);
     return out;
 }
 

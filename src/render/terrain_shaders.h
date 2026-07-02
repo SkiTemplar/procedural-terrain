@@ -53,8 +53,15 @@ float vnoise(vec2 p) {
 
 void main() {
     vec3 normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
+
+    // Iluminación de exterior: sol cálido + ambiente hemisférico (las caras
+    // que miran al cielo reciben azul frío; las que miran al suelo, rebote
+    // verdoso cálido). Mucho más natural que un ambient constante.
+    const vec3 sun_color = vec3(1.0, 0.95, 0.86);
     float diffuse = max(dot(normal, u_sun_dir), 0.0);
-    vec3 lit = v_color * (0.35 + 0.65 * diffuse);
+    float sky_facing = normal.y * 0.5 + 0.5;
+    vec3 hemi = mix(vec3(0.30, 0.31, 0.26), vec3(0.55, 0.65, 0.82), sky_facing);
+    vec3 lit = v_color * (0.50 * hemi + 0.72 * diffuse * sun_color);
 
     // Textura procedural sutil en dos escalas (~1.5 m y ~9 m): rompe el color
     // plano de cada cara sin perder la estética low-poly. Se atenúa de lejos
@@ -134,19 +141,27 @@ out vec4 frag_color;
 
 void main() {
     vec3 normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
-    float diffuse = max(dot(normal, u_sun_dir), 0.0);
-    vec3 lit = v_color * (0.45 + 0.55 * diffuse);
-
-    // Un punto de especular del sol, muy barato.
     vec3 view_dir = normalize(u_camera_pos - v_world_pos);
+
+    // Fresnel de Schlick: mirando al agua de frente se ve el fondo (alpha
+    // baja, color profundo); en ángulo rasante refleja el cielo (alpha alta).
+    float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(view_dir, normal), 0.0), 5.0);
+
+    float diffuse = max(dot(normal, u_sun_dir), 0.0);
+    vec3 deep = vec3(0.06, 0.20, 0.30);
+    vec3 body = mix(deep, v_color, 0.45) * (0.45 + 0.55 * diffuse);
+    vec3 lit = mix(body, u_sky_color, fresnel * 0.85);
+
+    // Especular del sol, más nítido sobre el agua.
     vec3 half_dir = normalize(view_dir + u_sun_dir);
-    lit += vec3(0.35) * pow(max(dot(normal, half_dir), 0.0), 64.0);
+    lit += vec3(0.45) * pow(max(dot(normal, half_dir), 0.0), 96.0);
 
     float dist = length(v_world_pos - u_camera_pos);
     float fog = 1.0 - exp(-u_fog_density * dist);
     vec3 color = mix(lit, u_sky_color, fog);
 
-    frag_color = vec4(color, 0.78);
+    float alpha = mix(0.62, 0.95, fresnel);
+    frag_color = vec4(color, alpha);
 }
 )glsl";
 

@@ -217,8 +217,10 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
             if (h <= h_down || h <= cfg.sea_level - 2.0f) {
                 continue; // solo talla, nunca eleva
             }
-            const float f = cfg.fluvial_strength
-                          * std::sqrt(out.flow[i] / threshold);
+            // Cap de la fuerza de incisión: sin él, el río principal (caudal
+            // enorme) excavaba un tajo a nivel del mar cruzando la isla.
+            const float f = std::min(
+                cfg.fluvial_strength * std::sqrt(out.flow[i] / threshold), 1.6f);
             h = (h + f * h_down) / (1.0f + f);
         }
     }
@@ -241,7 +243,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
     // tramo tras superar el umbral (nada de arroyos que aparecen de la nada).
     const auto water_depth_of = [&](size_t i) {
         const float birth = glm::clamp(
-            (out.flow[i] / threshold - 1.0f) / 1.5f, 0.0f, 1.0f);
+            (out.flow[i] / threshold - 1.0f) / 4.0f, 0.0f, 1.0f);
         return (0.35f + 1.1f * intensity_of(i)) * birth;
     };
 
@@ -353,6 +355,25 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // Limpieza final: sin celdas de agua huérfanas (el nacimiento de un río
+    // puede pintar una única celda suelta que se ve como un píxel de agua).
+    for (int z = 1; z < res - 1; ++z) {
+        for (int x = 1; x < res - 1; ++x) {
+            const size_t i = idx(x, z);
+            if (std::isnan(out.water_level[i])) {
+                continue;
+            }
+            bool has_neighbor = false;
+            for (int n = 0; n < 8 && !has_neighbor; ++n) {
+                has_neighbor =
+                    !std::isnan(out.water_level[idx(x + kDx[n], z + kDz[n])]);
+            }
+            if (!has_neighbor) {
+                out.water_level[i] = kNoWater;
             }
         }
     }

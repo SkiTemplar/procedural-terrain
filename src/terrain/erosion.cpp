@@ -152,24 +152,31 @@ void thermal_erode(Heightfield& hf, int iterations, float talus_slope) {
         for (int z = 1; z < res - 1; ++z) {
             for (int x = 1; x < res - 1; ++x) {
                 const float h = hf.at(x, z);
-                // Vecino más bajo (4-conectado basta y es estable).
-                float lowest = h;
-                int lx = x;
-                int lz = z;
-                for (const auto [dx, dz] :
-                     {std::pair{-1, 0}, {1, 0}, {0, -1}, {0, 1}}) {
-                    const float nh = hf.at(x + dx, z + dz);
-                    if (nh < lowest) {
-                        lowest = nh;
-                        lx = x + dx;
-                        lz = z + dz;
+                // Reparto entre TODOS los vecinos que exceden el talus,
+                // proporcional al exceso: relaja paredes grandes mucho más
+                // rápido que verter solo al vecino más bajo.
+                float total_excess = 0.0f;
+                float excess[4] = {};
+                const std::pair<int, int> dirs[4] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+                for (int n = 0; n < 4; ++n) {
+                    const float diff = h - hf.at(x + dirs[n].first, z + dirs[n].second);
+                    if (diff > max_diff) {
+                        excess[n] = diff - max_diff;
+                        total_excess += excess[n];
                     }
                 }
-                const float diff = h - lowest;
-                if (diff > max_diff) {
-                    const float moved = kTransfer * (diff - max_diff) * 0.5f;
-                    delta[idx(x, z)] -= moved;
-                    delta[idx(lx, lz)] += moved;
+                if (total_excess <= 0.0f) {
+                    continue;
+                }
+                // Nunca mover más de la mitad del mayor exceso (estabilidad).
+                const float moved = kTransfer * 0.5f
+                    * std::max({excess[0], excess[1], excess[2], excess[3]});
+                delta[idx(x, z)] -= moved;
+                for (int n = 0; n < 4; ++n) {
+                    if (excess[n] > 0.0f) {
+                        delta[idx(x + dirs[n].first, z + dirs[n].second)] +=
+                            moved * excess[n] / total_excess;
+                    }
                 }
             }
         }
