@@ -18,8 +18,15 @@ terrain::TerrainConfig test_config() {
     cfg.island_radius = 0.45f;
     cfg.coast_warp_m = 300.0f;
     cfg.erosion_droplets = 8000;
-    cfg.river_flow_threshold = 60.0f;
+    // El umbral se expresa en celdas equivalentes de un mapa 1024:
+    // 3840 × (128²/1024²) = 60 celdas efectivas en este mapa de test.
+    cfg.river_flow_threshold = 3840.0f;
     return cfg;
+}
+
+float effective_river_threshold(const terrain::TerrainConfig& cfg) {
+    const float res = static_cast<float>(cfg.resolution);
+    return cfg.river_flow_threshold * (res * res) / (1024.0f * 1024.0f);
 }
 
 } // namespace
@@ -161,7 +168,7 @@ TEST(Generator, LosRiosExisten) {
 
     const float max_flow =
         *std::max_element(data.hydrology.flow.begin(), data.hydrology.flow.end());
-    EXPECT_GT(max_flow, cfg.river_flow_threshold);
+    EXPECT_GT(max_flow, effective_river_threshold(cfg));
 }
 
 TEST(Erosion, ModificaElTerrenoSinRomperlo) {

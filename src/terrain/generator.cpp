@@ -5,7 +5,11 @@
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <cmath>
+#include <execution>
+#include <numeric>
+#include <vector>
 
 namespace terrain {
 
@@ -24,10 +28,17 @@ float smoothstep(float edge0, float edge1, float x) {
     return t * t * (3.0f - 2.0f * t);
 }
 
+std::vector<int> row_indices(int res) {
+    std::vector<int> rows(static_cast<size_t>(res));
+    std::iota(rows.begin(), rows.end(), 0);
+    return rows;
+}
+
 void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig& cfg) {
     const float half_km = cfg.size_m * 0.5f / 1000.0f;
+    const auto rows = row_indices(hf.resolution());
 
-    for (int z = 0; z < hf.resolution(); ++z) {
+    std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
         for (int x = 0; x < hf.resolution(); ++x) {
             const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f, hf.world_z(z) / 1000.0f};
             const glm::vec3 pw = noise.warp(p_km, cfg.coast_warp_m / 1000.0f, kWarpFreq);
@@ -62,7 +73,7 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
             const float seabed = (1.0f - continent) * cfg.sea_depth;
             hf.at(x, z) = cfg.sea_level + land - seabed;
         }
-    }
+    });
 }
 
 // Erosión costera simplificada: la franja baja junto al mar se comprime hacia
@@ -80,6 +91,10 @@ void flatten_coast(Heightfield& hf, const TerrainConfig& cfg) {
     }
 }
 
+// Nieve y pisos de vegetación realistas. La nieve no es una cota: depende de
+// la altitud (borde irregular), la pendiente (las paredes no acumulan), la
+// orientación (las umbrías conservan nieve más abajo) y parches de ruido.
+// La vegetación pierde altura por pisos: bosque → pradera alpina → roca.
 void classify_materials(TerrainData& data, const Noise& noise) {
     const auto& cfg = data.config;
     const auto& hf = data.height;
@@ -87,42 +102,70 @@ void classify_materials(TerrainData& data, const Noise& noise) {
     data.material.assign(static_cast<size_t>(res) * static_cast<size_t>(res),
                          Material::Grass);
 
-    for (int z = 0; z < res; ++z) {
+    const float threshold_flow = cfg.river_flow_threshold
+                               * (static_cast<float>(res) * static_cast<float>(res))
+                               / (1024.0f * 1024.0f);
+    const auto rows = row_indices(res);
+
+    std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
         for (int x = 0; x < res; ++x) {
             const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
                            + static_cast<size_t>(x);
             const float h = hf.at(x, z);
             const glm::vec3 n = hf.normal_at(x, z);
-            const float slope = std::sqrt(std::max(0.0f, 1.0f - n.y * n.y)) / std::max(n.y, 1e-3f);
+            const float slope =
+                std::sqrt(std::max(0.0f, 1.0f - n.y * n.y)) / std::max(n.y, 1e-3f);
+
+            const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f, hf.world_z(z) / 1000.0f};
 
             Material m = Material::Grass;
             if (h <= cfg.sea_level) {
                 m = Material::Seabed;
             } else if (!std::isnan(data.hydrology.water_level[i])
-                       && data.hydrology.flow[i] >= cfg.river_flow_threshold) {
+                       && data.hydrology.flow[i] >= threshold_flow) {
                 m = Material::RiverBed;
             } else if (h < cfg.sea_level + cfg.beach_band_m && slope < 0.35f) {
                 m = Material::Sand;
-            } else if (slope > cfg.rock_slope) {
-                m = Material::Rock;
             } else {
-                // Línea de nieve con borde irregular.
-                const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f, hf.world_z(z) / 1000.0f};
-                const float snow_jitter =
-                    noise.fbm(p_km * 1.7f + glm::vec3{7.3f, 0.0f, 91.4f}, 3) * 80.0f;
-                if (h > cfg.snow_line_m + snow_jitter) {
+                const float snow_edge_jitter =
+                    noise.fbm(p_km * 1.7f + glm::vec3{7.3f, 0.0f, 91.4f}, 3) * 130.0f;
+                const float patch =
+                    noise.fbm(p_km * 11.0f + glm::vec3{-3.1f, 0.0f, 17.9f}, 3);
+
+                // Score de nieve: altitud relativa + umbría − pendiente + parche.
+                float snow_score =
+                    (h - (cfg.snow_line_m + snow_edge_jitter)) / 140.0f;
+                snow_score += 0.30f * std::max(n.z, 0.0f); // cara norte
+                snow_score -= 0.85f * slope;               // paredes desnudas
+                snow_score += 0.25f * patch;               // parches irregulares
+
+                const float treeline = cfg.snow_line_m - 260.0f
+                    + noise.fbm(p_km * 2.3f + glm::vec3{41.0f, 0.0f, -8.5f}, 2) * 80.0f;
+
+                if (snow_score > 0.0f) {
                     m = Material::Snow;
+                } else if (slope > cfg.rock_slope) {
+                    m = Material::Rock;
+                } else if (h > treeline) {
+                    // Piso alpino: pradera rala con roquedo a parches, más
+                    // roca cuanto más cerca de la nieve.
+                    const float alpine_t = smoothstep(treeline, cfg.snow_line_m, h);
+                    m = (patch > 0.35f - 0.45f * alpine_t) ? Material::Rock
+                                                           : Material::Grass;
                 } else {
+                    // Bosque: denso abajo, se aclara al acercarse a la treeline.
                     const float forest =
                         noise.fbm(p_km * kForestFreq + glm::vec3{-29.1f, 0.0f, 63.8f}, 4);
-                    if (forest > 0.08f && h < cfg.snow_line_m - 150.0f) {
+                    const float forest_threshold =
+                        0.06f + 0.55f * smoothstep(treeline - 250.0f, treeline, h);
+                    if (forest > forest_threshold) {
                         m = Material::Forest;
                     }
                 }
             }
             data.material[i] = m;
         }
-    }
+    });
 }
 
 } // namespace

@@ -11,7 +11,7 @@ struct TerrainConfig {
 
     // Dominio
     float size_m = 5000.0f; // lado de la isla
-    int resolution = 1024;  // muestras por lado del heightmap
+    int resolution = 2048;  // muestras por lado del heightmap (celda ~2,4 m)
     float sea_level = 0.0f;
     float sea_depth = 70.0f; // profundidad del fondo lejos de la costa
 
@@ -24,7 +24,7 @@ struct TerrainConfig {
     float mountain_height_m = 1200.0f; // cordilleras (ridged)
 
     // Erosión hidráulica (gotas)
-    int erosion_droplets = 200000;
+    int erosion_droplets = 400000;
     float erosion_strength = 0.30f; // erode rate
     float erosion_deposit = 0.30f;  // deposit rate
     float erosion_inertia = 0.10f;
@@ -37,10 +37,11 @@ struct TerrainConfig {
     float coast_flatten_band_m = 9.0f;   // banda sobre el mar que se aplana
     float coast_flatten_strength = 0.65f; // 0 = nada, 1 = playa totalmente plana
 
-    // Hidrología: pocos ríos pero grandes.
-    float river_flow_threshold = 900.0f; // acumulación mínima para ser río
+    // Hidrología: pocos ríos pero grandes. El umbral está expresado en celdas
+    // equivalentes de un mapa de 1024 (se normaliza por resolución real).
+    float river_flow_threshold = 900.0f;
     float river_max_depth_m = 7.0f;
-    int river_max_width_cells = 3;       // radio máximo del cauce
+    float river_max_width_m = 14.0f; // radio máximo del cauce en metros
 
     // Detalle geométrico fino (solo malla cercana + suelo al caminar)
     float detail_amplitude_m = 1.4f;

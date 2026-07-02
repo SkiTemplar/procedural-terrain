@@ -29,8 +29,11 @@ add_executable(ProceduralTerrain
         src/render/shader.cpp
         src/render/camera.cpp
         src/render/mesh.cpp
+        src/render/instanced_mesh.cpp
         src/terrain/mesher.cpp
         src/terrain/chunked_terrain.cpp
+        src/veg/models.cpp
+        src/veg/veg_renderer.cpp
         src/player/controller.cpp
         src/ui/debug_ui.cpp
 )

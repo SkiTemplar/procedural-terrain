@@ -9,10 +9,10 @@
 
 namespace terrain {
 
-// Terreno por chunks con LOD por distancia:
-//   nivel 0: subdivisión ×4 con ruido de detalle (celda ~1.2 m) — cerca
-//   nivel 1: resolución del heightmap (celda ~4.9 m)            — media
-//   nivel 2: stride 2 (celda ~9.8 m)                            — lejos
+// Terreno por chunks con LOD por distancia (heightmap 2048, celda ~2.4 m):
+//   nivel 0: subdivisión ×4 con ruido de detalle (celda ~0.6 m) — cerca
+//   nivel 1: resolución del heightmap (celda ~2.4 m)            — media
+//   nivel 2: stride 4 (celda ~9.8 m)                            — lejos
 // Cada chunk lleva un faldón (skirt) que oculta las grietas entre niveles.
 // Las reconstrucciones se reparten entre frames (sin tirones).
 class ChunkedTerrain {
@@ -21,12 +21,12 @@ public:
 
     // Ajusta los LOD deseados a la posición de la cámara y reconstruye
     // como mucho `max_rebuilds` chunks (los más cercanos primero).
-    void update(const glm::vec3& camera_pos, int max_rebuilds = 2);
+    void update(const glm::vec3& camera_pos, int max_rebuilds = 3);
 
     const std::vector<const render::Mesh*>& visible_meshes() const { return visible_; }
 
-    static constexpr float kFineDistance = 450.0f;   // m → nivel 0
-    static constexpr float kMediumDistance = 1700.0f; // m → nivel 1
+    static constexpr float kFineDistance = 550.0f;   // m → nivel 0
+    static constexpr float kMediumDistance = 2200.0f; // m → nivel 1
 
 private:
     struct Chunk {

@@ -158,7 +158,7 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                                       material_color(m) * tint};
             });
         }
-        const int stride = level == 1 ? 1 : 2;
+        const int stride = level == 1 ? 1 : 4;
         const int w = cells_x / stride;
         const int h = cells_z / stride;
         return build_grid_mesh(w, h, [&](int i, int j) {

@@ -52,6 +52,8 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         ImGui::SliderFloat("sol: altura", &state.sun_altitude_deg, 5.0f, 90.0f, "%.0f deg");
         ImGui::SliderFloat("niebla", &state.fog_density, 0.0f, 0.001f, "%.5f",
                            ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("dist. vegetacion", &state.veg_draw_distance, 500.0f,
+                           6000.0f, "%.0f m");
         ImGui::Checkbox("wireframe", &state.wireframe);
     }
 
@@ -68,7 +70,7 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         ImGui::SliderFloat("altura montanas", &cfg.mountain_height_m, 0.0f, 2500.0f, "%.0f m");
         ImGui::SliderInt("gotas erosion", &cfg.erosion_droplets, 0, 600000);
         ImGui::SliderFloat("umbral rios", &cfg.river_flow_threshold, 100.0f, 5000.0f, "%.0f");
-        ImGui::SliderInt("anchura rios", &cfg.river_max_width_cells, 1, 6);
+        ImGui::SliderFloat("anchura rios", &cfg.river_max_width_m, 4.0f, 30.0f, "%.0f m");
         ImGui::SliderFloat("aplanado costa", &cfg.coast_flatten_strength, 0.0f, 1.0f);
         ImGui::SliderFloat("detalle fino", &cfg.detail_amplitude_m, 0.0f, 3.0f, "%.1f m");
         ImGui::SliderFloat("linea de nieve", &cfg.snow_line_m, 300.0f, 2400.0f, "%.0f m");

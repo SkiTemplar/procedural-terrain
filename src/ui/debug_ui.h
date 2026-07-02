@@ -21,6 +21,7 @@ struct DebugState {
     float sun_azimuth_deg = 135.0f;
     float sun_altitude_deg = 40.0f;
     float fog_density = 0.00015f;
+    float veg_draw_distance = 2600.0f; // m
 
     terrain::TerrainConfig pending_config; // lo que editan los sliders
     bool regenerate_requested = false;     // botón "Regenerar"

@@ -9,6 +9,7 @@
 #include "terrain/generator.h"
 #include "terrain/mesher.h"
 #include "ui/debug_ui.h"
+#include "veg/veg_renderer.h"
 
 #include <GLFW/glfw3.h>
 
@@ -29,13 +30,15 @@ struct World {
     terrain::ChunkedTerrain ground;
     std::optional<render::Mesh> water;
     render::Mesh sea;
+    veg::VegRenderer vegetation;
 
     explicit World(const terrain::TerrainConfig& cfg)
         : data(terrain::generate(cfg)),
           sampler(data),
           ground(data, sampler),
           water(terrain::build_water_mesh(data)),
-          sea(terrain::build_sea_plane(cfg.size_m, cfg.sea_level)) {}
+          sea(terrain::build_sea_plane(cfg.size_m, cfg.sea_level)),
+          vegetation(data, sampler) {}
 
     World(const World&) = delete;
     World& operator=(const World&) = delete;
@@ -59,6 +62,7 @@ void run() {
     render::Camera camera;
     player::Controller controller;
     render::Shader terrain_shader(render::kTerrainVert, render::kTerrainFrag);
+    render::Shader veg_shader(render::kVegVert, render::kTerrainFrag);
     render::Shader water_shader(render::kWaterVert, render::kWaterFrag);
 
     ui::DebugUi debug_ui(window.handle());
@@ -113,6 +117,10 @@ void run() {
         for (const render::Mesh* chunk : world->ground.visible_meshes()) {
             chunk->draw();
         }
+
+        veg_shader.use();
+        set_common_uniforms(veg_shader, camera, window.aspect(), state);
+        world->vegetation.draw(camera.position, state.veg_draw_distance);
 
         // Agua después del terreno, con blending.
         glEnable(GL_BLEND);

@@ -71,6 +71,32 @@ void main() {
 }
 )glsl";
 
+// Vegetación instanciada: giro Y + escala + traslación por instancia.
+// Comparte fragment shader con el terreno (kTerrainFrag).
+constexpr const char* kVegVert = R"glsl(
+#version 460 core
+layout (location = 0) in vec3 a_pos;
+layout (location = 1) in vec3 a_color;
+layout (location = 2) in vec4 i_pos_scale; // xyz posición, w escala
+layout (location = 3) in vec4 i_tint_yaw;  // rgb tinte, w giro (rad)
+
+uniform mat4 u_view;
+uniform mat4 u_proj;
+
+out vec3 v_world_pos;
+flat out vec3 v_color;
+
+void main() {
+    float c = cos(i_tint_yaw.w);
+    float s = sin(i_tint_yaw.w);
+    vec3 p = a_pos * i_pos_scale.w;
+    p = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z) + i_pos_scale.xyz;
+    v_world_pos = p;
+    v_color = a_color * i_tint_yaw.rgb;
+    gl_Position = u_proj * u_view * vec4(p, 1.0);
+}
+)glsl";
+
 // Agua: olas suaves por vértice, semitransparente, con la misma niebla.
 constexpr const char* kWaterVert = R"glsl(
 #version 460 core
