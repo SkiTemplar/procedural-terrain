@@ -50,7 +50,7 @@ float DetailSampler::height(float wx, float wz) const {
     const float fine = noise_.fbm(p * (1.0f / 7.0f) + glm::vec3{13.7f, 0.0f, -41.2f}, 2);
     const float grain = noise_.perlin(p * (1.0f / 2.2f) + glm::vec3{-77.3f, 0.0f, 29.1f});
 
-    return base + amplitude * rough * (0.75f * coarse + 0.35f * fine + 0.12f * grain);
+    return base + amplitude * rough * (0.75f * coarse + 0.35f * fine + 0.08f * grain);
 }
 
 } // namespace terrain

@@ -23,14 +23,19 @@ struct TerrainConfig {
     float base_height_m = 180.0f;      // colinas (fbm)
     float mountain_height_m = 1200.0f; // cordilleras (ridged)
 
+    // Tectónica: las cordilleras siguen los bordes convergentes de placa.
+    float tectonic_strength = 1.0f; // multiplicador del uplift
+    float rift_depth_m = 45.0f;     // hundimiento en bordes divergentes
+    float fault_depth_m = 5.0f;     // zanja de las fallas transformantes
+
     // Erosión hidráulica (gotas)
-    int erosion_droplets = 400000;
+    int erosion_droplets = 600000;
     float erosion_strength = 0.30f; // erode rate
     float erosion_deposit = 0.30f;  // deposit rate
     float erosion_inertia = 0.10f;
 
     // Erosión térmica (pedreras, faldas al pie de la montaña)
-    int thermal_iterations = 4;
+    int thermal_iterations = 6;
     float talus_slope = 0.9f; // tan del ángulo de reposo
 
     // Costa: comprime las alturas bajas → playas anchas y planas.

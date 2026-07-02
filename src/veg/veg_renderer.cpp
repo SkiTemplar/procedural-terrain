@@ -72,10 +72,10 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             float bush_p = 0.0f;
             switch (m) {
                 case terrain::Material::Forest:
-                    tree_p = 0.080f; rock_p = 0.0012f; tuft_p = 0.020f; bush_p = 0.010f;
+                    tree_p = 0.080f; rock_p = 0.0012f; tuft_p = 0.050f; bush_p = 0.012f;
                     break;
                 case terrain::Material::Grass:
-                    tree_p = 0.0040f; rock_p = 0.0020f; tuft_p = 0.050f; bush_p = 0.008f;
+                    tree_p = 0.0040f; rock_p = 0.0020f; tuft_p = 0.120f; bush_p = 0.010f;
                     break;
                 case terrain::Material::Rock:
                     rock_p = 0.010f;
@@ -133,7 +133,7 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 cell.rocks.push_back(render::Instance{{wx, wy - 0.2f * scale, wz, scale},
                                                       {tint, tint, tint, yaw}});
             } else if (roll < tree_p + rock_p + tuft_p) {
-                const float scale = 0.7f + 0.9f * scale_r;
+                const float scale = 0.8f + 1.0f * scale_r;
                 glm::vec3 t{tint, tint, tint};
                 // Una fracción de las matas florece.
                 const float flower = hash01(static_cast<std::uint32_t>(x),

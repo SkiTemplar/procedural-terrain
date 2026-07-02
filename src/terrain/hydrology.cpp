@@ -235,6 +235,36 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
                 1, static_cast<int>(std::round(max_radius * intensity)));
             const float surface = level[i];
 
+            // Llanura aluvial: los ríos grandes abren un valle ancho y somero
+            // alrededor del cauce (perfil suave, sin tocar laderas altas).
+            if (intensity > 0.45f) {
+                const int flood_radius = radius * 4;
+                const float flood_depth = depth * 0.15f;
+                for (int dz = -flood_radius; dz <= flood_radius; ++dz) {
+                    for (int dx = -flood_radius; dx <= flood_radius; ++dx) {
+                        const int nx = x + dx;
+                        const int nz = z + dz;
+                        if (nx < 1 || nz < 1 || nx >= res - 1 || nz >= res - 1) {
+                            continue;
+                        }
+                        const float r =
+                            std::sqrt(static_cast<float>(dx * dx + dz * dz))
+                            / static_cast<float>(flood_radius);
+                        if (r > 1.0f) {
+                            continue;
+                        }
+                        const size_t ni = idx(nx, nz);
+                        const float target =
+                            surface + flood_depth + (hf.data()[ni] - surface) * (r * r);
+                        // Solo rebaja lo que está poco por encima del río.
+                        if (hf.data()[ni] > target
+                            && hf.data()[ni] < surface + 25.0f) {
+                            hf.data()[ni] = target;
+                        }
+                    }
+                }
+            }
+
             for (int dz = -radius - 1; dz <= radius + 1; ++dz) {
                 for (int dx = -radius - 1; dx <= radius + 1; ++dx) {
                     const int nx = x + dx;

@@ -68,6 +68,8 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         ImGui::SliderFloat("costa irregular", &cfg.coast_warp_m, 0.0f, 1500.0f, "%.0f m");
         ImGui::SliderFloat("altura colinas", &cfg.base_height_m, 30.0f, 500.0f, "%.0f m");
         ImGui::SliderFloat("altura montanas", &cfg.mountain_height_m, 0.0f, 2500.0f, "%.0f m");
+        ImGui::SliderFloat("fuerza tectonica", &cfg.tectonic_strength, 0.0f, 2.5f);
+        ImGui::SliderFloat("prof. rift", &cfg.rift_depth_m, 0.0f, 120.0f, "%.0f m");
         ImGui::SliderInt("gotas erosion", &cfg.erosion_droplets, 0, 600000);
         ImGui::SliderFloat("umbral rios", &cfg.river_flow_threshold, 100.0f, 5000.0f, "%.0f");
         ImGui::SliderFloat("anchura rios", &cfg.river_max_width_m, 4.0f, 30.0f, "%.0f m");

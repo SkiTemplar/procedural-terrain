@@ -27,7 +27,7 @@ public:
 
     const std::vector<const render::Mesh*>& visible_meshes() const { return visible_; }
 
-    static constexpr float kUltraDistance = 250.0f;  // m → nivel 0
+    static constexpr float kUltraDistance = 350.0f;  // m → nivel 0
     static constexpr float kFineDistance = 700.0f;   // m → nivel 1
     static constexpr float kMediumDistance = 2400.0f; // m → nivel 2
 

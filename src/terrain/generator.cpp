@@ -2,6 +2,7 @@
 
 #include "terrain/erosion.h"
 #include "terrain/noise.h"
+#include "terrain/tectonics.h"
 
 #include <glm/glm.hpp>
 
@@ -37,6 +38,7 @@ std::vector<int> row_indices(int res) {
 void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig& cfg) {
     const float half_km = cfg.size_m * 0.5f / 1000.0f;
     const auto rows = row_indices(hf.resolution());
+    const Tectonics tectonics(cfg.seed, cfg.size_m);
 
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
         for (int x = 0; x < hf.resolution(); ++x) {
@@ -46,18 +48,36 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
             // Continentalidad: 1 en el centro, 0 mar adentro; la costa cae
             // entre island_radius y 1.0 del semiancho (sobre la pos. distorsionada).
             const float d = glm::length(glm::vec2{pw.x, pw.z}) / half_km;
-            const float continent = 1.0f - smoothstep(cfg.island_radius, 1.0f, d);
+            float continent = 1.0f - smoothstep(cfg.island_radius, 1.0f, d);
+
+            // El campo tectónico se muestrea sobre la posición distorsionada:
+            // los bordes de placa dejan de ser rectas perfectas.
+            const auto tect = tectonics.sample(glm::vec2{pw.x, pw.z} * 1000.0f);
+
+            // El carácter de cada placa modula la continentalidad: costas y
+            // penínsulas distintas según la placa sobre la que se asienta.
+            continent = glm::clamp(continent * (1.0f + 0.18f * tect.bias), 0.0f, 1.0f);
 
             const float base01 = noise.fbm(pw * kBaseFreq, 5) * 0.5f + 0.5f;
-
             const float ridge = noise.ridged(pw * kMountainFreq, 5);
-            const float range_mask = smoothstep(
+
+            // Cordilleras: dominan los bordes convergentes (direccionales);
+            // un resto de la máscara de ruido conserva macizos interiores.
+            const float noise_mask = smoothstep(
                 0.45f, 0.75f,
                 noise.fbm(pw * kRangeMaskFreq + glm::vec3{53.7f, 0.0f, -11.9f}, 3) * 0.5f + 0.5f);
+            const float range_mask = glm::clamp(
+                0.8f * glm::min(tect.uplift * cfg.tectonic_strength, 1.0f)
+                    + 0.25f * noise_mask,
+                0.0f, 1.0f);
 
             float land = continent * (cfg.base_height_m * base01)
                        + std::pow(continent, 1.5f) * cfg.mountain_height_m
                              * ridge * ridge * range_mask;
+
+            // Rifts (fosas divergentes) y zanjas de falla transformante.
+            land -= continent * cfg.rift_depth_m * tect.rift;
+            land -= continent * cfg.fault_depth_m * tect.fault;
 
             // Curva de valles: comprime las alturas bajas para que los fondos
             // de valle sean anchos y planos y el relieve se concentre arriba.
@@ -100,7 +120,7 @@ void flatten_coast(Heightfield& hf, const TerrainConfig& cfg) {
                          - original[i - static_cast<size_t>(res)]))
                 * 0.5f * inv_cell;
             // Costa suave → playa; costa abrupta → acantilado sin tocar.
-            const float cliff_keep = smoothstep(0.4f, 0.8f, slope);
+            const float cliff_keep = smoothstep(0.3f, 0.6f, slope);
             if (cliff_keep >= 1.0f) {
                 continue;
             }
@@ -156,13 +176,17 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                     noise.fbm(p_km * 1.7f + glm::vec3{7.3f, 0.0f, 91.4f}, 3) * 130.0f;
                 const float patch =
                     noise.fbm(p_km * 11.0f + glm::vec3{-3.1f, 0.0f, 17.9f}, 3);
+                // Moteado fino (~30 m): rompe el borde nieve/roca en manchas.
+                const float speckle =
+                    noise.perlin(p_km * 33.0f + glm::vec3{58.2f, 0.0f, -4.4f});
 
-                // Score de nieve: altitud relativa + umbría − pendiente + parche.
+                // Score de nieve: altitud relativa + umbría − pendiente + parches.
                 float snow_score =
                     (h - (cfg.snow_line_m + snow_edge_jitter)) / 140.0f;
                 snow_score += 0.30f * std::max(n.z, 0.0f); // cara norte
                 snow_score -= 0.85f * slope;               // paredes desnudas
                 snow_score += 0.25f * patch;               // parches irregulares
+                snow_score += 0.18f * speckle;             // moteado del borde
 
                 const float treeline = cfg.snow_line_m - 260.0f
                     + noise.fbm(p_km * 2.3f + glm::vec3{41.0f, 0.0f, -8.5f}, 2) * 80.0f;

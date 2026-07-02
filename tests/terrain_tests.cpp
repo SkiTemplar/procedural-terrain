@@ -2,6 +2,7 @@
 #include "terrain/generator.h"
 #include "terrain/heightfield.h"
 #include "terrain/noise.h"
+#include "terrain/tectonics.h"
 
 #include <gtest/gtest.h>
 
@@ -222,6 +223,29 @@ TEST(Generator, SinMicrolagosDeUnaCelda) {
                 << "celda de agua aislada en (" << x << ", " << z << ")";
         }
     }
+}
+
+TEST(Tectonics, DeterministaYAcotada) {
+    const terrain::Tectonics a(42, 5000.0f);
+    const terrain::Tectonics b(42, 5000.0f);
+
+    bool any_uplift = false;
+    for (float x = -2500.0f; x <= 2500.0f; x += 130.0f) {
+        for (float z = -2500.0f; z <= 2500.0f; z += 170.0f) {
+            const auto sa = a.sample({x, z});
+            const auto sb = b.sample({x, z});
+            ASSERT_FLOAT_EQ(sa.uplift, sb.uplift);
+            ASSERT_FLOAT_EQ(sa.fault, sb.fault);
+            EXPECT_GE(sa.uplift, 0.0f);
+            EXPECT_LE(sa.uplift, 1.5f);
+            EXPECT_GE(sa.rift, 0.0f);
+            EXPECT_GE(sa.fault, 0.0f);
+            EXPECT_LE(std::abs(sa.bias), 1.0f);
+            any_uplift = any_uplift || sa.uplift > 0.05f;
+        }
+    }
+    // En un dominio con ~14 placas tiene que haber algún borde convergente.
+    EXPECT_TRUE(any_uplift);
 }
 
 TEST(Erosion, ModificaElTerrenoSinRomperlo) {
