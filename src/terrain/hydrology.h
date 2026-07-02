@@ -3,15 +3,17 @@
 #include "terrain/heightfield.h"
 #include "terrain/terrain_config.h"
 
+#include <cstdint>
 #include <vector>
 
 namespace terrain {
 
-// Resultado hidrológico: por muestra, nivel de agua (NaN si no hay) y
-// acumulación de flujo (nº de celdas que drenan a través de ella).
+// Resultado hidrológico: por muestra, nivel de agua (NaN si no hay),
+// acumulación de flujo y si la celda pertenece a un lago.
 struct Hydrology {
-    std::vector<float> water_level; // lagos y ríos; NaN donde no hay agua
-    std::vector<float> flow;        // acumulación D8
+    std::vector<float> water_level;  // lagos y ríos; NaN donde no hay agua
+    std::vector<float> flow;         // acumulación D8
+    std::vector<std::uint8_t> lake;  // 1 = celda de lago (tras purga)
 };
 
 // 1) Rellena depresiones (priority-flood) para que todo drene al borde.

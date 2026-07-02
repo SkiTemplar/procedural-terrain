@@ -14,6 +14,12 @@ namespace {
 
 constexpr float kSkirtDepth = 5.0f; // m hacia abajo para tapar grietas de LOD
 
+// Estratos sutiles en la roca: bandas horizontales de tono (~18 m de período)
+// que insinúan capas geológicas en paredes y cañones.
+float rock_banding(float y) {
+    return 0.93f + 0.07f * std::sin(y * 0.35f);
+}
+
 // Malla de rejilla + faldón perimetral. get_vertex(i, j) devuelve el vértice
 // (posición+color) del nodo (i, j) de una rejilla de (w+1)×(h+1) nodos.
 // La generación de vértices va en paralelo (get_vertex debe ser thread-safe);
@@ -164,10 +170,13 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                 const float wx = wx0 + static_cast<float>(i) * step;
                 const float wz = wz0 + static_cast<float>(j) * step;
                 const Material m = sampler_->material_near(wx, wz);
-                const float tint =
+                const float wy = sampler_->height(wx, wz);
+                float tint =
                     0.90f + 0.20f * hash01(chunk.x0 * sub + i, chunk.z0 * sub + j);
-                return render::Vertex{{wx, sampler_->height(wx, wz), wz},
-                                      material_color(m) * tint};
+                if (m == Material::Rock) {
+                    tint *= rock_banding(wy);
+                }
+                return render::Vertex{{wx, wy, wz}, material_color(m) * tint};
             });
         }
         const int stride = level == 2 ? 1 : 4;
@@ -176,9 +185,14 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
         return build_grid_mesh(w, h, [&](int i, int j) {
             const int sx = std::min(chunk.x0 + i * stride, res - 1);
             const int sz = std::min(chunk.z0 + j * stride, res - 1);
-            const float tint = 0.90f + 0.20f * hash01(sx, sz);
-            return render::Vertex{{hf.world_x(sx), hf.at(sx, sz), hf.world_z(sz)},
-                                  material_color(material_at(sx, sz)) * tint};
+            const Material m = material_at(sx, sz);
+            const float wy = hf.at(sx, sz);
+            float tint = 0.90f + 0.20f * hash01(sx, sz);
+            if (m == Material::Rock) {
+                tint *= rock_banding(wy);
+            }
+            return render::Vertex{{hf.world_x(sx), wy, hf.world_z(sz)},
+                                  material_color(m) * tint};
         });
     }();
 

@@ -100,6 +100,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
     Hydrology out;
     out.flow.assign(filled.size(), 1.0f);
     out.water_level.assign(filled.size(), kNoWater);
+    out.lake.assign(filled.size(), 0);
 
     // Flujo D8: cada celda vierte a su vecino más bajo. Se guarda el índice
     // aguas abajo para poder recorrer los cauces después.
@@ -181,6 +182,10 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
                 for (const size_t i : component) {
                     out.water_level[i] = kNoWater;
                 }
+            } else {
+                for (const size_t i : component) {
+                    out.lake[i] = 1;
+                }
             }
         }
     }
@@ -191,21 +196,51 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
     const float threshold = cfg.river_flow_threshold
                           * (static_cast<float>(res) * static_cast<float>(res))
                           / (1024.0f * 1024.0f);
-    const std::vector<float> pre_carve(hf.data());
+
+    // 1) Incisión fluvial (stream power law, esquema implícito de Braun &
+    //    Willett 2013): cada celda se erosiona hacia su receptora con fuerza
+    //    F ∝ √(caudal). Procesando de mar a cumbre (orden ascendente) el
+    //    esquema es O(n) e incondicionalmente estable. Resultado: perfiles
+    //    longitudinales cóncavos (sin caídas verticales), valles en V y
+    //    cañones donde coinciden caudal y pendiente.
+    for (int it = 0; it < cfg.fluvial_iterations; ++it) {
+        for (auto rit = order.rbegin(); rit != order.rend(); ++rit) {
+            const size_t i = *rit;
+            const size_t down = downstream[i];
+            if (down == kNone) {
+                continue;
+            }
+            float& h = hf.data()[i];
+            const float h_down = hf.data()[down];
+            if (h <= h_down || h <= cfg.sea_level - 2.0f) {
+                continue; // solo talla, nunca eleva
+            }
+            const float f = cfg.fluvial_strength
+                          * std::sqrt(out.flow[i] / threshold);
+            h = (h + f * h_down) / (1.0f + f);
+        }
+    }
+
+    const std::vector<float> bed0(hf.data()); // lecho tras la incisión
 
     const auto is_river = [&](size_t i) {
-        return out.flow[i] >= threshold && pre_carve[i] > cfg.sea_level;
+        return out.flow[i] >= threshold && bed0[i] > cfg.sea_level;
     };
 
-    // 1) Nivel de agua por celda de río, monótono decreciente aguas abajo:
-    //    el agua nunca "sube" siguiendo el cauce → sin escalones ni charcos raros.
+    // 2) Nivel de agua sobre el LECHO final (no sobre el terreno sin tallar:
+    //    eso dejaba el agua flotando). Profundidad según caudal, y monótono
+    //    decreciente aguas abajo.
     std::vector<float> level(filled.size(), std::numeric_limits<float>::infinity());
+    const auto intensity_of = [&](size_t i) {
+        return std::min(std::log(out.flow[i] / threshold + 1.0f) / 3.0f, 1.0f);
+    };
+
     for (const size_t i : order) { // de arriba a abajo
         if (!is_river(i)) {
             continue;
         }
         if (level[i] == std::numeric_limits<float>::infinity()) {
-            level[i] = pre_carve[i];
+            level[i] = bed0[i] + 0.35f + 1.1f * intensity_of(i);
         }
         // Los lagos imponen su lámina.
         if (!std::isnan(out.water_level[i])) {
@@ -213,7 +248,8 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
         }
         const size_t down = downstream[i];
         if (down != kNone && is_river(down)) {
-            const float candidate = std::min(level[i], pre_carve[down]);
+            const float own_down = bed0[down] + 0.35f + 1.1f * intensity_of(down);
+            const float candidate = std::min(level[i], own_down);
             if (level[down] == std::numeric_limits<float>::infinity()
                 || candidate < level[down]) {
                 level[down] = candidate;
@@ -221,8 +257,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
         }
     }
 
-    // 2) Tallado con anchura respecto al nivel suavizado: perfil parabólico,
-    //    radio y profundidad según el log del caudal.
+    // 3) Anchura del cauce y llanura aluvial respecto al lecho de la incisión.
     const int max_radius = std::max(
         1, static_cast<int>(std::round(cfg.river_max_width_m / hf.cell_size())));
 
@@ -232,18 +267,19 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
             if (!is_river(i) || level[i] == std::numeric_limits<float>::infinity()) {
                 continue;
             }
-            const float intensity =
-                std::min(std::log(out.flow[i] / threshold + 1.0f) / 3.0f, 1.0f);
+            const float intensity = intensity_of(i);
             const float depth = cfg.river_max_depth_m * (0.35f + 0.65f * intensity);
             const int radius = std::max(
                 1, static_cast<int>(std::round(max_radius * intensity)));
             const float surface = level[i];
+            // El cauce siempre queda bajo la lámina: donde el lecho subía,
+            // el río corta su salida (canal continuo, sin tramos secos).
+            const float axis_bed =
+                std::min(bed0[i] - depth * 0.4f, surface - 0.5f);
 
-            // Llanura aluvial: los ríos grandes abren un valle ancho y somero
-            // alrededor del cauce (perfil suave, sin tocar laderas altas).
+            // Llanura aluvial: los ríos grandes abren un valle ancho y somero.
             if (intensity > 0.35f) {
                 const int flood_radius = radius * 4;
-                const float flood_depth = depth * 0.15f;
                 for (int dz = -flood_radius; dz <= flood_radius; ++dz) {
                     for (int dx = -flood_radius; dx <= flood_radius; ++dx) {
                         const int nx = x + dx;
@@ -259,8 +295,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
                         }
                         const size_t ni = idx(nx, nz);
                         const float target =
-                            surface + flood_depth + (hf.data()[ni] - surface) * (r * r);
-                        // Solo rebaja lo que está poco por encima del río.
+                            surface + 0.6f + (hf.data()[ni] - surface) * (r * r);
                         if (hf.data()[ni] > target
                             && hf.data()[ni] < surface + 25.0f) {
                             hf.data()[ni] = target;
@@ -282,18 +317,25 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
 
                     if (r <= 1.0f) {
                         // Lecho: hondo en el eje, sube hacia la orilla.
-                        const float bed = surface - depth * (1.0f - r * r) - 0.4f;
+                        const float bed = axis_bed + depth * 0.4f * (r * r);
                         if (hf.data()[ni] > bed) {
                             hf.data()[ni] = bed;
                         }
                     }
-                    // Lámina de agua (una celda más allá de la orilla para
-                    // que el agua toque tierra sin huecos).
-                    if (r <= 1.35f && hf.data()[ni] < surface - 0.15f) {
-                        const float water = surface - 0.1f;
-                        if (std::isnan(out.water_level[ni])
-                            || out.water_level[ni] < water) {
-                            out.water_level[ni] = water;
+                    // Lámina de agua justo por encima del lecho local. Regla
+                    // de MÍNIMO: el agua se asienta en el nivel más bajo del
+                    // canal cercano — con máximo, las celdas aguas arriba
+                    // pintaban su nivel alto sobre las de abajo y el agua
+                    // quedaba flotando en escalones.
+                    if (r <= 1.15f && !out.lake[ni]) {
+                        float candidate = surface;
+                        if (level[ni] != std::numeric_limits<float>::infinity()) {
+                            candidate = std::min(candidate, level[ni]);
+                        }
+                        if (hf.data()[ni] < candidate - 0.05f) {
+                            out.water_level[ni] = std::isnan(out.water_level[ni])
+                                ? candidate
+                                : std::min(out.water_level[ni], candidate);
                         }
                     }
                 }

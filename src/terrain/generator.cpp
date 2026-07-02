@@ -71,8 +71,10 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
                     + 0.25f * noise_mask,
                 0.0f, 1.0f);
 
+            // Exponente bajo: las cordilleras tectónicas llegan hasta la costa
+            // → acantilados naturales donde la montaña muere en el mar.
             float land = continent * (cfg.base_height_m * base01)
-                       + std::pow(continent, 1.5f) * cfg.mountain_height_m
+                       + std::pow(continent, 1.15f) * cfg.mountain_height_m
                              * ridge * ridge * range_mask;
 
             // Rifts (fosas divergentes). Las zanjas de falla se eliminaron:
@@ -96,47 +98,42 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
     });
 }
 
-// Costa por sectores: un ruido de baja frecuencia (~2 km) decide qué tramos
-// de litoral son playa (perfil comprimido, llano) y cuáles acantilado (la
-// masa baja se empuja hacia arriba → pared que cae al mar). Así los
-// acantilados son tramos de costa coherentes, no artefactos puntuales.
-void shape_coast(Heightfield& hf, const Noise& noise, const TerrainConfig& cfg) {
-    constexpr float kCliffBandM = 30.0f; // altura del frente de acantilado
-    const float beach_band = cfg.coast_flatten_band_m;
+// Playas: la franja baja junto al mar se comprime SOLO donde la costa ya es
+// suave. Los acantilados no se fabrican aquí: emergen solos allí donde una
+// cordillera costera (tectónica) muere en el mar — que es como ocurre en la
+// realidad. Nada de murallas sintéticas.
+void shape_coast(Heightfield& hf, const Noise& /*noise*/, const TerrainConfig& cfg) {
+    const float band = cfg.coast_flatten_band_m;
     const int res = hf.resolution();
     const std::vector<float> original(hf.data());
+    const float inv_cell = 1.0f / hf.cell_size();
     const auto rows = row_indices(res);
 
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
+        if (z < 1 || z >= res - 1) {
+            return;
+        }
         for (int x = 1; x < res - 1; ++x) {
             const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
                            + static_cast<size_t>(x);
             const float rel = original[i] - cfg.sea_level;
-            if (rel <= 0.0f || rel >= kCliffBandM) {
+            if (rel <= 0.0f || rel >= band) {
                 continue;
             }
-
-            const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f, hf.world_z(z) / 1000.0f};
-            const float cliff = smoothstep(
-                0.18f, 0.42f,
-                noise.fbm(p_km * 0.55f + glm::vec3{-61.4f, 0.0f, 23.8f}, 3));
-
-            // Perfil de playa: compresión suave dentro de la banda baja.
-            float beach_h = original[i];
-            if (rel < beach_band) {
-                const float t = rel / beach_band;
-                const float ease = t * t * (3.0f - 2.0f * t);
-                const float compress =
-                    1.0f - cfg.coast_flatten_strength * (1.0f - ease);
-                beach_h = cfg.sea_level + rel * compress;
+            const float slope = std::max(
+                std::abs(original[i + 1] - original[i - 1]),
+                std::abs(original[i + static_cast<size_t>(res)]
+                         - original[i - static_cast<size_t>(res)]))
+                * 0.5f * inv_cell;
+            const float keep = smoothstep(0.35f, 0.7f, slope);
+            if (keep >= 1.0f) {
+                continue;
             }
-
-            // Perfil de acantilado: la cota sube de golpe junto al agua
-            // (exponente < 1 → pared) y remata en una repisa alta.
-            const float t = rel / kCliffBandM;
-            const float cliff_h = cfg.sea_level + kCliffBandM * std::pow(t, 0.35f);
-
-            hf.data()[i] = beach_h + (cliff_h - beach_h) * cliff;
+            const float t = rel / band;
+            const float ease = t * t * (3.0f - 2.0f * t);
+            const float compress =
+                1.0f - cfg.coast_flatten_strength * (1.0f - ease) * (1.0f - keep);
+            hf.data()[i] = cfg.sea_level + rel * compress;
         }
     });
 }

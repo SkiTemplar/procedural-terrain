@@ -241,6 +241,54 @@ TEST(Generator, ElRioPrincipalDesembocaEnElMar) {
     EXPECT_LT(data.height.at(x, z), cfg.sea_level + 10.0f);
 }
 
+TEST(Generator, ElAguaDeLosRiosNoFlota) {
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const int res = data.height.resolution();
+    const float threshold = effective_river_threshold(cfg);
+
+    // 1) Profundidad acotada: la lámina va pegada al lecho tallado (antes se
+    //    calculaba sobre el terreno sin tallar y quedaba colgada en el aire).
+    //    Por construcción el cauce puede tener hasta ~3.5 m de profundidad.
+    // 2) Contención: el agua tiene orillas — dentro de un radio corto existe
+    //    terreno por encima de la lámina (el agua no es una sábana flotante).
+    std::vector<float> gaps;
+    int contained = 0;
+    int total = 0;
+    constexpr int kBankRadius = 4;
+
+    for (int z = kBankRadius; z < res - kBankRadius; ++z) {
+        for (int x = kBankRadius; x < res - kBankRadius; ++x) {
+            const size_t i = static_cast<size_t>(z) * res + x;
+            const float wl = data.hydrology.water_level[i];
+            if (std::isnan(wl) || data.hydrology.lake[i]
+                || data.hydrology.flow[i] < threshold
+                || data.height.at(x, z) <= cfg.sea_level) {
+                continue;
+            }
+            gaps.push_back(wl - data.height.at(x, z));
+
+            ++total;
+            bool has_bank = false;
+            for (int dz = -kBankRadius; dz <= kBankRadius && !has_bank; ++dz) {
+                for (int dx = -kBankRadius; dx <= kBankRadius; ++dx) {
+                    if (data.height.at(x + dx, z + dz) >= wl - 0.05f) {
+                        has_bank = true;
+                        break;
+                    }
+                }
+            }
+            contained += has_bank ? 1 : 0;
+        }
+    }
+    ASSERT_FALSE(gaps.empty());
+    std::sort(gaps.begin(), gaps.end());
+    const float median = gaps[gaps.size() / 2];
+    EXPECT_LT(median, 4.0f);
+    EXPECT_GT(median, 0.0f);
+    EXPECT_GT(static_cast<float>(contained) / static_cast<float>(total), 0.97f);
+}
+
 TEST(Tectonics, DeterministaYAcotada) {
     const terrain::Tectonics a(42, 5000.0f);
     const terrain::Tectonics b(42, 5000.0f);

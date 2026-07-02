@@ -44,8 +44,14 @@ struct TerrainConfig {
     // Hidrología: pocos ríos pero grandes. El umbral está expresado en celdas
     // equivalentes de un mapa de 1024 (se normaliza por resolución real).
     float river_flow_threshold = 900.0f;
-    float river_max_depth_m = 7.0f;
+    float river_max_depth_m = 5.0f;
     float river_max_width_m = 14.0f; // radio máximo del cauce en metros
+
+    // Erosión fluvial (stream power law, Braun & Willett 2013): talla el
+    // perfil longitudinal de la red de drenaje → valles en V y cañones donde
+    // coinciden caudal y pendiente, perfiles cóncavos sin caídas verticales.
+    float fluvial_strength = 0.35f;
+    int fluvial_iterations = 2;
 
     // Detalle geométrico fino (solo malla cercana + suelo al caminar)
     float detail_amplitude_m = 1.4f;

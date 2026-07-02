@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace terrain {
 
@@ -46,9 +47,22 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
     std::vector<std::uint32_t> indices;
     const auto& wl = data.hydrology.water_level;
 
-    const auto corner_level = [&](int x, int z, float fallback) {
-        const float v = wl[sample_index(x, z)];
-        return std::isnan(v) ? fallback : v;
+    // Malla indexada con vértices compartidos entre celdas vecinas (~4x menos
+    // memoria y ancho de banda que un quad suelto por celda).
+    constexpr std::uint32_t kNoVertex = std::numeric_limits<std::uint32_t>::max();
+    std::vector<std::uint32_t> vertex_of(static_cast<size_t>(res) * res, kNoVertex);
+
+    const auto get_or_create = [&](int x, int z, float fallback) {
+        const size_t i = sample_index(x, z);
+        if (vertex_of[i] != kNoVertex) {
+            return vertex_of[i];
+        }
+        const float own = wl[i];
+        const float y = (std::isnan(own) ? fallback : own) - kWaterSink;
+        const float tint = 0.95f + 0.10f * hash01(x, z);
+        vertex_of[i] = static_cast<std::uint32_t>(vertices.size());
+        vertices.push_back({{hf.world_x(x), y, hf.world_z(z)}, kLakeColor * tint});
+        return vertex_of[i];
     };
 
     for (int z = 0; z < res - 1; ++z) {
@@ -66,17 +80,11 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
                 continue;
             }
 
-            const auto base = static_cast<std::uint32_t>(vertices.size());
-            for (const auto [dx, dz] : {std::pair{0, 0}, {1, 0}, {0, 1}, {1, 1}}) {
-                const float tint = 0.95f + 0.10f * hash01(x + dx, z + dz);
-                vertices.push_back(
-                    {{hf.world_x(x + dx),
-                      corner_level(x + dx, z + dz, level) - kWaterSink,
-                      hf.world_z(z + dz)},
-                     kLakeColor * tint});
-            }
-            indices.insert(indices.end(),
-                           {base, base + 2, base + 1, base + 1, base + 2, base + 3});
+            const std::uint32_t v00 = get_or_create(x, z, level);
+            const std::uint32_t v10 = get_or_create(x + 1, z, level);
+            const std::uint32_t v01 = get_or_create(x, z + 1, level);
+            const std::uint32_t v11 = get_or_create(x + 1, z + 1, level);
+            indices.insert(indices.end(), {v00, v01, v10, v10, v01, v11});
         }
     }
 
