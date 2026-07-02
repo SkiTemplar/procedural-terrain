@@ -67,8 +67,10 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
             // altas de verdad, lagos de montaña, praderas onduladas.
             const float base01 = noise.fbm(pr * kBaseFreq, 5) * 0.5f + 0.5f;
             const float ridge = noise.ridged(pr * kMountainFreq, 5);
+            // Umbrales generosos: más área de montaña y picos que sobreviven
+            // a la erosión (con 0.45-0.75 salían islas de 300 m sin nieve).
             const float range_mask = smoothstep(
-                0.45f, 0.75f,
+                0.36f, 0.66f,
                 noise.fbm(pr * kRangeMaskFreq + glm::vec3{53.7f, 0.0f, -11.9f}, 3)
                     * 0.5f + 0.5f);
 

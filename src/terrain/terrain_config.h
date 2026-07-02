@@ -22,7 +22,7 @@ struct TerrainConfig {
     // Relieve — valores del sistema original (hito 2): el carácter que
     // funcionó, con montañas altas, praderas onduladas y lagos de montaña.
     float base_height_m = 180.0f;
-    float mountain_height_m = 1200.0f;
+    float mountain_height_m = 1800.0f; // la erosión rebaja ~un tercio
 
     // Erosión hidráulica (gotas)
     int erosion_droplets = 600000;
@@ -35,9 +35,9 @@ struct TerrainConfig {
     int thermal_iterations = 8;
     float talus_slope = 0.9f; // tan del ángulo de reposo (~42°)
 
-    // Costa: comprime las alturas bajas → playas anchas y planas. Banda
-    // ancha: con 9 m la transición parecía un escalón de rasante.
-    float coast_flatten_band_m = 40.0f;
+    // Costa: comprime las alturas bajas → playas anchas y planas. 25 m:
+    // con 40 la rampa arena→hierba se veía como un degradado artificial.
+    float coast_flatten_band_m = 25.0f;
     float coast_flatten_strength = 0.72f; // 0 = nada, 1 = playa totalmente plana
 
     // Hidrología: pocos ríos pero grandes. El umbral está expresado en celdas
@@ -60,7 +60,7 @@ struct TerrainConfig {
     // Clasificación
     float snow_line_m = 560.0f;
     float rock_slope = 0.85f; // pendiente (tan) a partir de la cual es roca
-    float beach_band_m = 7.0f;
+    float beach_band_m = 12.0f; // la arena cubre la mayor parte de la zona plana
 };
 
 } // namespace terrain
