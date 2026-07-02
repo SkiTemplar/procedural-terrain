@@ -82,12 +82,42 @@ std::vector<float> fill_depressions(const Heightfield& hf) {
 
 } // namespace
 
-Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
+Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
+                            const Noise& noise) {
     const int res = hf.resolution();
     const auto idx = [res](int x, int z) {
         return static_cast<size_t>(z) * static_cast<size_t>(res) + static_cast<size_t>(x);
     };
     constexpr size_t kNone = std::numeric_limits<size_t>::max();
+
+    // Sinuosidad: ondulación suave (±1.2 m, λ≈430 m) SOLO en llanuras, antes
+    // del relleno — el D8 sobre la superficie ondulada serpentea de forma
+    // natural en vez de trazar cauces rectos.
+    {
+        std::vector<float> flatness(hf.data().size(), 0.0f);
+        const float inv_cell = 1.0f / hf.cell_size();
+        for (int z = 1; z < res - 1; ++z) {
+            for (int x = 1; x < res - 1; ++x) {
+                const float sx = std::abs(hf.at(x + 1, z) - hf.at(x - 1, z));
+                const float sz = std::abs(hf.at(x, z + 1) - hf.at(x, z - 1));
+                const float slope = std::max(sx, sz) * 0.5f * inv_cell;
+                flatness[idx(x, z)] =
+                    1.0f - glm::clamp(slope / 0.04f, 0.0f, 1.0f);
+            }
+        }
+        for (int z = 1; z < res - 1; ++z) {
+            for (int x = 1; x < res - 1; ++x) {
+                const size_t i = idx(x, z);
+                if (flatness[i] <= 0.0f) {
+                    continue;
+                }
+                const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f,
+                                     hf.world_z(z) / 1000.0f};
+                hf.data()[i] += noise.fbm(p_km * 2.3f + glm::vec3{5.9f, 0.0f, -71.2f}, 2)
+                              * 1.2f * flatness[i];
+            }
+        }
+    }
 
     const std::vector<float> filled = fill_depressions(hf);
 
@@ -217,11 +247,28 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
             if (h <= h_down || h <= cfg.sea_level - 2.0f) {
                 continue; // solo talla, nunca eleva
             }
-            // Cap de la fuerza de incisión: sin él, el río principal (caudal
-            // enorme) excavaba un tajo a nivel del mar cruzando la isla.
+            // Suelo relativo: el lecho queda siempre por encima del lecho
+            // aguas abajo — sin tajos excavados hasta la cota del mar.
+            const float min_bed = cfg.sea_level + 1.5f
+                                + (h_down - cfg.sea_level) * 0.08f;
+            if (h <= min_bed) {
+                continue;
+            }
+            // Stream power completo K·A^m·S^n (m=0.5, n=0.7, Whipple &
+            // Tucker): la pendiente manda — gargantas y cañones en montaña,
+            // incisión casi nula en llanura.
+            const int xi = static_cast<int>(i % static_cast<size_t>(res));
+            const int zi = static_cast<int>(i / static_cast<size_t>(res));
+            const int xd = static_cast<int>(down % static_cast<size_t>(res));
+            const int zd = static_cast<int>(down / static_cast<size_t>(res));
+            const float dist = hf.cell_size()
+                             * ((xi != xd && zi != zd) ? 1.4142f : 1.0f);
+            const float slope = (h - h_down) / dist;
             const float f = std::min(
-                cfg.fluvial_strength * std::sqrt(out.flow[i] / threshold), 1.6f);
-            h = (h + f * h_down) / (1.0f + f);
+                cfg.fluvial_strength * std::sqrt(out.flow[i] / threshold)
+                    * std::pow(slope + 1e-4f, 0.7f),
+                1.6f);
+            h = std::max((h + f * h_down) / (1.0f + f), min_bed);
         }
     }
 
@@ -239,12 +286,14 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
         return std::min(std::log(out.flow[i] / threshold + 1.0f) / 3.0f, 1.0f);
     };
 
-    // Los ríos nacen gradualmente: la lámina crece de 0 durante el primer
-    // tramo tras superar el umbral (nada de arroyos que aparecen de la nada).
+    // Los ríos nacen gradualmente: cauce y lámina crecen desde cero durante
+    // el primer tramo (rampa hasta 3× el umbral — física: duplicar el área
+    // de drenaje mínima).
+    const auto birth_of = [&](size_t i) {
+        return glm::clamp((out.flow[i] / threshold - 1.0f) / 2.0f, 0.0f, 1.0f);
+    };
     const auto water_depth_of = [&](size_t i) {
-        const float birth = glm::clamp(
-            (out.flow[i] / threshold - 1.0f) / 4.0f, 0.0f, 1.0f);
-        return (0.35f + 1.1f * intensity_of(i)) * birth;
+        return (0.35f + 1.1f * intensity_of(i)) * birth_of(i);
     };
 
     for (const size_t i : order) { // de arriba a abajo
@@ -280,14 +329,21 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
                 continue;
             }
             const float intensity = intensity_of(i);
-            const float depth = cfg.river_max_depth_m * (0.35f + 0.65f * intensity);
+            // El nacimiento escala TODO el cauce (profundidad y anchura), no
+            // solo la lámina: sin esto el canal tallado aparecía de golpe.
+            const float birth = birth_of(i);
+            if (birth < 0.05f) {
+                continue; // aún no hay cauce visible
+            }
+            const float depth =
+                cfg.river_max_depth_m * (0.15f + 0.85f * intensity) * birth;
             const int radius = std::max(
-                1, static_cast<int>(std::round(max_radius * intensity)));
+                1, static_cast<int>(std::round(max_radius * intensity * birth)));
             const float surface = level[i];
             // El cauce siempre queda bajo la lámina: donde el lecho subía,
             // el río corta su salida (canal continuo, sin tramos secos).
             const float axis_bed =
-                std::min(bed0[i] - depth * 0.4f, surface - 0.5f);
+                std::min(bed0[i] - depth * 0.4f, surface - 0.5f * birth);
 
             // Llanura aluvial: los ríos grandes abren un valle ancho y somero.
             if (intensity > 0.35f) {
@@ -339,7 +395,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
                     // canal cercano — con máximo, las celdas aguas arriba
                     // pintaban su nivel alto sobre las de abajo y el agua
                     // quedaba flotando en escalones.
-                    if (r <= 1.15f && !out.lake[ni]) {
+                    if (r <= 1.15f && !out.lake[ni] && birth > 0.1f) {
                         float candidate = surface;
                         if (level[ni] != std::numeric_limits<float>::infinity()) {
                             candidate = std::min(candidate, level[ni]);

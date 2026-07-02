@@ -2,7 +2,6 @@
 
 #include "terrain/erosion.h"
 #include "terrain/noise.h"
-#include "terrain/tectonics.h"
 
 #include <glm/glm.hpp>
 
@@ -18,10 +17,9 @@ namespace {
 
 // Frecuencias en 1/km: el ruido se muestrea con la posición en kilómetros
 // para que los parámetros sean independientes del tamaño del mapa.
-constexpr float kBaseFreq = 0.45f;     // colinas
-constexpr float kMountainFreq = 0.19f; // cordilleras (crestas anchas, Alpes)
-constexpr float kRangeMaskFreq = 0.13f; // dónde hay cordillera
-constexpr float kForestFreq = 0.9f;
+constexpr float kBaseFreq = 0.45f;     // rugosidad de montaña
+constexpr float kHillFreq = 0.18f;     // colinillas de pradera (~1-5 km)
+constexpr float kMountainFreq = 0.15f; // cordilleras (cresta ~3.3 km)
 constexpr float kWarpFreq = 0.35f;
 
 float smoothstep(float edge0, float edge1, float x) {
@@ -38,7 +36,6 @@ std::vector<int> row_indices(int res) {
 void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig& cfg) {
     const float half_km = cfg.size_m * 0.5f / 1000.0f;
     const auto rows = row_indices(hf.resolution());
-    const Tectonics tectonics(cfg.seed, cfg.size_m);
 
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
         for (int x = 0; x < hf.resolution(); ++x) {
@@ -64,35 +61,33 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
                 * smoothstep(0.78f, 0.95f, d) * smoothstep(1.35f, 1.0f, d);
             continent = std::max(continent, satellite * 0.5f);
 
-            // El campo tectónico se muestrea con el warp suave.
-            const auto tect = tectonics.sample(glm::vec2{pr.x, pr.z} * 1000.0f);
+            // Macizos por doble máscara de ruido: 'bulk' lento (1-2 macizos
+            // por isla) recortado por 'shape' medio (bordes orgánicos).
+            const float bulk = noise.fbm(pr * 0.08f + glm::vec3{53.7f, 0.0f, -11.9f}, 3)
+                             * 0.5f + 0.5f;
+            const float shape = noise.fbm(pr * 0.22f + glm::vec3{-8.1f, 0.0f, 77.3f}, 3)
+                              * 0.5f + 0.5f;
+            const float range_mask =
+                smoothstep(0.40f, 0.72f, bulk) * smoothstep(0.38f, 0.68f, shape);
 
-            // El carácter de cada placa modula la continentalidad: costas y
-            // penínsulas distintas según la placa sobre la que se asienta.
-            continent = glm::clamp(continent * (1.0f + 0.10f * tect.bias), 0.0f, 1.0f);
+            // Base: colinillas suaves (fbm lento) en pradera, rugosidad solo
+            // dentro de la montaña — ni caos de montículos ni meseta.
+            const float hill =
+                noise.fbm(pr * kHillFreq, 3, 2.2f, 0.42f) * 0.5f + 0.5f;
+            const float rough = noise.fbm(pr * kBaseFreq, 5) * 0.5f + 0.5f;
+            const float prairie_w = 1.0f - smoothstep(0.30f, 0.65f, range_mask);
+            const float base01 = rough + (hill - rough) * prairie_w;
 
-            const float base01 = noise.fbm(pr * kBaseFreq, 5) * 0.5f + 0.5f;
             const float ridge = noise.ridged(pr * kMountainFreq, 5);
-
-            // Cordilleras: dominan los bordes convergentes (direccionales);
-            // saturación SUAVE (u/(1+u)): nada de mesetas planas con borde.
-            const float noise_mask = smoothstep(
-                0.45f, 0.75f,
-                noise.fbm(pr * kRangeMaskFreq + glm::vec3{53.7f, 0.0f, -11.9f}, 3) * 0.5f + 0.5f);
-            const float u = tect.uplift * cfg.tectonic_strength;
-            const float range_mask = glm::clamp(
-                0.9f * (u / (1.0f + u)) + 0.25f * noise_mask, 0.0f, 1.0f);
-
-            // Exponente bajo: las cordilleras tectónicas llegan hasta la costa
-            // → acantilados naturales donde la montaña muere en el mar.
-            // ridge^1.4 (no ^2): crestas anchas tipo Alpes, sin agujas.
             float land = continent * (cfg.base_height_m * base01)
-                       + std::pow(continent, 1.15f) * cfg.mountain_height_m
-                             * std::pow(ridge, 1.4f) * range_mask;
+                       + std::pow(continent, 1.5f) * cfg.mountain_height_m
+                             * std::pow(ridge, 1.1f) * range_mask;
 
-            // Rifts (fosas divergentes). Las zanjas de falla se eliminaron:
-            // cortaban la isla con líneas artificiales.
-            land -= continent * cfg.rift_depth_m * tect.rift;
+            // Detalle ridged fino solo en las cimas: crestería alpina.
+            const float ridge2 =
+                noise.ridged(pr * 0.55f + glm::vec3{17.0f, 0.0f, -33.0f}, 4);
+            land += 90.0f * smoothstep(0.6f, 1.0f, range_mask)
+                  * continent * continent * ridge2;
 
             // Curva de valles: comprime las alturas bajas para que los fondos
             // de valle sean anchos y planos y el relieve se concentre arriba.
@@ -143,7 +138,9 @@ void shape_coast(Heightfield& hf, const Noise& /*noise*/, const TerrainConfig& c
                 continue;
             }
             const float t = rel / band;
-            const float ease = t * t * (3.0f - 2.0f * t);
+            // Quintic de Perlin: C2-continua en ambos extremos — sin cambio
+            // de rasante donde acaba la playa.
+            const float ease = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
             const float compress =
                 1.0f - cfg.coast_flatten_strength * (1.0f - ease) * (1.0f - keep);
             hf.data()[i] = cfg.sea_level + rel * compress;
@@ -223,7 +220,7 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                 m = Material::Sand;
             } else {
                 const float snow_edge_jitter =
-                    noise.fbm(p_km * 1.7f + glm::vec3{7.3f, 0.0f, 91.4f}, 3) * 130.0f;
+                    noise.fbm(p_km * 1.7f + glm::vec3{7.3f, 0.0f, 91.4f}, 3) * 60.0f;
                 const float patch =
                     noise.fbm(p_km * 11.0f + glm::vec3{-3.1f, 0.0f, 17.9f}, 3);
                 // Moteado fino (~30 m): rompe el borde nieve/roca en manchas.
@@ -238,9 +235,9 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                 snow_score += 0.25f * patch;               // parches irregulares
                 snow_score += 0.18f * speckle;             // moteado del borde
 
-                // Treeline bien por debajo de la nieve: la alta montaña es
-                // roca y pradera rala, no bosque.
-                const float treeline = cfg.snow_line_m - 380.0f
+                // Treeline por debajo de la nieve; con la nieve baja, el
+                // bosque conserva la mayor parte de la isla.
+                const float treeline = cfg.snow_line_m - 240.0f
                     + noise.fbm(p_km * 2.3f + glm::vec3{41.0f, 0.0f, -8.5f}, 2) * 80.0f;
 
                 if (snow_score > 0.0f) {
@@ -253,16 +250,21 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                     m = (patch > 0.25f - 0.55f * alpine_t) ? Material::Rock
                                                            : Material::Grass;
                 } else {
-                    // Bosque: denso abajo, se aclara mucho antes de la treeline.
-                    // La ribera de ríos y lagos concentra bosque de galería.
-                    const float forest =
-                        noise.fbm(p_km * kForestFreq + glm::vec3{-29.1f, 0.0f, 63.8f}, 4);
+                    // Bosque en MASAS: capa lenta (3-6 km) + borde irregular.
+                    // Los claros emergen solos donde la señal cae del umbral;
+                    // la ribera de ríos y lagos siempre lleva bosque de galería.
+                    const float f_bulk = noise.fbm(
+                        p_km * 0.15f + glm::vec3{-29.1f, 0.0f, 63.8f}, 2, 2.5f, 0.50f);
+                    const float f_edge = noise.fbm(
+                        p_km * 0.45f + glm::vec3{14.3f, 0.0f, -7.2f}, 3, 2.0f, 0.48f);
+                    const float forest_n =
+                        (0.65f * f_bulk + 0.35f * f_edge) * 0.5f + 0.5f;
                     float forest_threshold =
-                        0.06f + 0.70f * smoothstep(treeline - 350.0f, treeline, h);
+                        0.44f + 0.48f * smoothstep(treeline - 350.0f, treeline, h);
                     if (riparian[i]) {
-                        forest_threshold -= 0.15f;
+                        forest_threshold -= 0.20f;
                     }
-                    if (forest > forest_threshold) {
+                    if (forest_n > forest_threshold) {
                         m = Material::Forest;
                     }
                 }
@@ -285,7 +287,7 @@ TerrainData generate(const TerrainConfig& cfg) {
     erode(data.height, cfg);
     thermal_erode(data.height, cfg.thermal_iterations, cfg.talus_slope);
     shape_coast(data.height, noise, cfg);
-    data.hydrology = compute_hydrology(data.height, cfg);
+    data.hydrology = compute_hydrology(data.height, cfg, noise);
     classify_materials(data, noise);
 
     return data;

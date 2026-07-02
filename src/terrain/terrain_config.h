@@ -20,16 +20,10 @@ struct TerrainConfig {
     float coast_warp_m = 700.0f; // distorsión de la línea de costa
 
     // Relieve
-    float base_height_m = 100.0f;      // colinas (fbm) — praderas suaves
-    // 900 m de pico en 5 km de isla ≈ proporción del Teide: montaña grande
-    // de verdad sin necesitar paredes imposibles.
-    float mountain_height_m = 900.0f;
-
-    // Tectónica: las cordilleras siguen los bordes convergentes de placa.
-    float tectonic_strength = 0.7f; // multiplicador del uplift
-    // Rift apagado por defecto: su vaguada recta capturaba la red fluvial
-    // entera y acababa excavada como un tajo artificial cruzando la isla.
-    float rift_depth_m = 0.0f;
+    float base_height_m = 70.0f;       // colinillas (fbm) — ni caos ni meseta
+    // Montañas altas (mucha nieve); la máscara de ruido reparte los macizos
+    // con laderas de varios km, sin bordes de placa.
+    float mountain_height_m = 1300.0f;
 
     // Erosión hidráulica (gotas)
     int erosion_droplets = 600000;
@@ -42,9 +36,10 @@ struct TerrainConfig {
     int thermal_iterations = 32;
     float talus_slope = 0.75f; // tan del ángulo de reposo (~37°)
 
-    // Costa: comprime las alturas bajas → playas anchas y planas.
-    float coast_flatten_band_m = 9.0f;   // banda sobre el mar que se aplana
-    float coast_flatten_strength = 0.65f; // 0 = nada, 1 = playa totalmente plana
+    // Costa: comprime las alturas bajas → playas anchas y planas. Banda
+    // ancha: con 9 m la transición parecía un escalón de rasante.
+    float coast_flatten_band_m = 40.0f;
+    float coast_flatten_strength = 0.72f; // 0 = nada, 1 = playa totalmente plana
 
     // Hidrología: pocos ríos pero grandes. El umbral está expresado en celdas
     // equivalentes de un mapa de 1024 (se normaliza por resolución real).
@@ -64,7 +59,7 @@ struct TerrainConfig {
     float detail_amplitude_m = 1.0f;
 
     // Clasificación
-    float snow_line_m = 600.0f;
+    float snow_line_m = 560.0f;
     float rock_slope = 0.85f; // pendiente (tan) a partir de la cual es roca
     float beach_band_m = 7.0f;
 };

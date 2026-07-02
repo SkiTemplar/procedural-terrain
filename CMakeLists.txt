@@ -18,7 +18,6 @@ add_library(terrain_gen STATIC
         src/terrain/hydrology.cpp
         src/terrain/generator.cpp
         src/terrain/detail.cpp
-        src/terrain/tectonics.cpp
 )
 target_include_directories(terrain_gen PUBLIC src)
 target_link_libraries(terrain_gen PUBLIC glm::glm)
