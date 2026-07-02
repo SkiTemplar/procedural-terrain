@@ -10,3 +10,6 @@ out/
 
 # vcpkg
 vcpkg_installed/
+
+# Runtime
+imgui.ini
