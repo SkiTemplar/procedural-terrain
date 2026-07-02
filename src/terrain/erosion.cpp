@@ -187,4 +187,31 @@ void thermal_erode(Heightfield& hf, int iterations, float talus_slope) {
     }
 }
 
+void smooth_peaks(Heightfield& hf, int passes, float slope_threshold) {
+    const int res = hf.resolution();
+    const float max_diff = slope_threshold * hf.cell_size();
+    std::vector<float> next(hf.data().size());
+
+    for (int p = 0; p < passes; ++p) {
+        next = hf.data();
+        for (int z = 1; z < res - 1; ++z) {
+            for (int x = 1; x < res - 1; ++x) {
+                const float h = hf.at(x, z);
+                const float n0 = hf.at(x - 1, z);
+                const float n1 = hf.at(x + 1, z);
+                const float n2 = hf.at(x, z - 1);
+                const float n3 = hf.at(x, z + 1);
+                const float max_d = std::max(
+                    {std::abs(h - n0), std::abs(h - n1),
+                     std::abs(h - n2), std::abs(h - n3)});
+                if (max_d > max_diff) {
+                    const float avg = (n0 + n1 + n2 + n3) * 0.25f;
+                    next[static_cast<size_t>(z) * res + x] = h * 0.55f + avg * 0.45f;
+                }
+            }
+        }
+        hf.data().swap(next);
+    }
+}
+
 } // namespace terrain

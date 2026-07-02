@@ -17,4 +17,9 @@ void erode(Heightfield& hf, const TerrainConfig& cfg);
 // pedreras/faldas naturales al pie de las montañas.
 void thermal_erode(Heightfield& hf, int iterations, float talus_slope);
 
+// Suavizado selectivo de agujas: promedia SOLO las celdas cuya pendiente a
+// algún vecino supera el umbral. Elimina picos de un píxel sin tocar el
+// resto del relieve.
+void smooth_peaks(Heightfield& hf, int passes, float slope_threshold);
+
 } // namespace terrain

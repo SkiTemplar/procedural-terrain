@@ -45,6 +45,10 @@ float DetailSampler::forest_density_near(float wx, float wz) const {
     return data_->forest_density[nearest_index(data_->height, wx, wz)];
 }
 
+float DetailSampler::climate_near(float wx, float wz) const {
+    return data_->climate[nearest_index(data_->height, wx, wz)];
+}
+
 float DetailSampler::height(float wx, float wz) const {
     const float base = data_->height.sample(wx, wz);
     const float amplitude = data_->config.detail_amplitude_m;

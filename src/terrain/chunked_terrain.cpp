@@ -20,12 +20,21 @@ float rock_banding(float y) {
     return 0.93f + 0.07f * std::sin(y * 0.35f);
 }
 
-// Color del suelo con gradiente de bosque: la pradera oscurece suavemente
-// hacia el verde de bosque según la densidad — sin frontera binaria.
-glm::vec3 ground_color(Material m, float forest_density) {
+// Color del suelo con gradiente de bosque, clima y altitud: la pradera funde
+// hacia bosque por densidad, se seca con la altura, empardece en el sector
+// frío; la arena es dorada en frío y clara caribeña en cálido.
+glm::vec3 ground_color(Material m, float forest_density, float climate, float y) {
     if (m == Material::Grass || m == Material::Forest) {
-        return glm::mix(material_color(Material::Grass),
-                        material_color(Material::Forest), forest_density);
+        glm::vec3 c = glm::mix(material_color(Material::Grass),
+                               material_color(Material::Forest), forest_density);
+        const float dryness = glm::clamp((y - 200.0f) / 400.0f, 0.0f, 1.0f) * 0.30f
+                            + (1.0f - climate) * 0.18f;
+        return glm::mix(c, glm::vec3{0.58f, 0.55f, 0.33f}, dryness);
+    }
+    if (m == Material::Sand) {
+        return glm::mix(glm::vec3{0.82f, 0.72f, 0.50f},  // dorada
+                        glm::vec3{0.94f, 0.90f, 0.74f},  // caribeña clara
+                        climate);
     }
     return material_color(m);
 }
@@ -107,7 +116,7 @@ ChunkedTerrain::ChunkedTerrain(const TerrainData& data, const DetailSampler& sam
     }
     // Arranque: todo en el nivel más basto (rápido); update() irá refinando.
     for (auto& chunk : chunks_) {
-        rebuild(chunk, 3);
+        rebuild(chunk, 4);
     }
 }
 
@@ -122,7 +131,10 @@ int ChunkedTerrain::desired_level(const Chunk& chunk, const glm::vec3& camera_po
     if (dist < kMediumDistance) {
         return 2;
     }
-    return 3;
+    if (dist < kFarDistance) {
+        return 3;
+    }
+    return 4;
 }
 
 void ChunkedTerrain::update(const glm::vec3& camera_pos, int max_rebuilds) {
@@ -187,11 +199,12 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                     tint *= rock_banding(wy);
                 }
                 const glm::vec3 color =
-                    ground_color(m, sampler_->forest_density_near(wx, wz));
+                    ground_color(m, sampler_->forest_density_near(wx, wz),
+                                 sampler_->climate_near(wx, wz), wy);
                 return render::Vertex{{wx, wy, wz}, color * tint};
             });
         }
-        const int stride = level == 2 ? 1 : 4;
+        const int stride = level == 2 ? 1 : (level == 3 ? 4 : 8);
         const int w = cells_x / stride;
         const int h = cells_z / stride;
         return build_grid_mesh(w, h, [&](int i, int j) {
@@ -203,11 +216,12 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
             if (m == Material::Rock) {
                 tint *= rock_banding(wy);
             }
-            const float density = data_->forest_density[
-                static_cast<size_t>(sz) * static_cast<size_t>(res)
-                + static_cast<size_t>(sx)];
-            return render::Vertex{{hf.world_x(sx), wy, hf.world_z(sz)},
-                                  ground_color(m, density) * tint};
+            const size_t si = static_cast<size_t>(sz) * static_cast<size_t>(res)
+                            + static_cast<size_t>(sx);
+            return render::Vertex{
+                {hf.world_x(sx), wy, hf.world_z(sz)},
+                ground_color(m, data_->forest_density[si], data_->climate[si], wy)
+                    * tint};
         });
     }();
 

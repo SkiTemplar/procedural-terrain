@@ -9,11 +9,13 @@
 
 namespace terrain {
 
-// Terreno por chunks con LOD por distancia (heightmap 2048, celda ~2.4 m):
+// Terreno por chunks con LOD por distancia (heightmap 4096, celda ~2.4 m,
+// isla de 10×10 km):
 //   nivel 0: subdivisión ×8 con ruido de detalle (celda ~0.3 m) — bajo los pies
 //   nivel 1: subdivisión ×4 con ruido de detalle (celda ~0.6 m) — cerca
 //   nivel 2: resolución del heightmap (celda ~2.4 m)            — media
 //   nivel 3: stride 4 (celda ~9.8 m)                            — lejos
+//   nivel 4: stride 8 (celda ~19.5 m)                           — horizonte
 // Cada chunk lleva un faldón (skirt) que oculta las grietas entre niveles.
 // Las reconstrucciones se reparten entre frames y la generación de vértices
 // va paralelizada (sin tirones).
@@ -27,9 +29,10 @@ public:
 
     const std::vector<const render::Mesh*>& visible_meshes() const { return visible_; }
 
-    static constexpr float kUltraDistance = 350.0f;  // m → nivel 0
-    static constexpr float kFineDistance = 700.0f;   // m → nivel 1
-    static constexpr float kMediumDistance = 2400.0f; // m → nivel 2
+    static constexpr float kUltraDistance = 250.0f;  // m → nivel 0
+    static constexpr float kFineDistance = 600.0f;   // m → nivel 1
+    static constexpr float kMediumDistance = 1800.0f; // m → nivel 2
+    static constexpr float kFarDistance = 4200.0f;    // m → nivel 3
 
 private:
     struct Chunk {

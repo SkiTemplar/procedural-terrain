@@ -9,9 +9,9 @@ namespace terrain {
 struct TerrainConfig {
     std::uint32_t seed = 31416;
 
-    // Dominio
-    float size_m = 5000.0f; // lado de la isla
-    int resolution = 2048;  // muestras por lado del heightmap (celda ~2,4 m)
+    // Dominio: 10×10 km con celda ~2,4 m (la generación tarda ~1 min).
+    float size_m = 10000.0f;
+    int resolution = 4096;
     float sea_level = 0.0f;
     float sea_depth = 70.0f; // profundidad del fondo lejos de la costa
 
@@ -24,15 +24,15 @@ struct TerrainConfig {
     float base_height_m = 180.0f;
     float mountain_height_m = 1800.0f; // la erosión rebaja ~un tercio
 
-    // Erosión hidráulica (gotas)
-    int erosion_droplets = 600000;
+    // Erosión hidráulica (gotas) — escalada al área de 10×10
+    int erosion_droplets = 1200000;
     float erosion_strength = 0.30f; // erode rate
     float erosion_deposit = 0.30f;  // deposit rate
     float erosion_inertia = 0.10f;
 
     // Erosión térmica (pedreras, faldas al pie de la montaña). Moderada:
     // la agresiva (32 iter, 37°) planchaba el carácter del relieve original.
-    int thermal_iterations = 8;
+    int thermal_iterations = 12;
     float talus_slope = 0.9f; // tan del ángulo de reposo (~42°)
 
     // Costa: comprime las alturas bajas → playas anchas y planas. 25 m:
@@ -42,9 +42,9 @@ struct TerrainConfig {
 
     // Hidrología: pocos ríos pero grandes. El umbral está expresado en celdas
     // equivalentes de un mapa de 1024 (se normaliza por resolución real).
-    float river_flow_threshold = 1600.0f;
+    float river_flow_threshold = 1200.0f; // más red tributaria visible
     float river_max_depth_m = 5.0f;
-    float river_max_width_m = 14.0f; // radio máximo del cauce en metros
+    float river_max_width_m = 20.0f; // los caudales grandes se notan de verdad
 
     // Erosión fluvial (stream power law, Braun & Willett 2013): talla el
     // perfil longitudinal de la red de drenaje → valles en V y cañones donde
@@ -58,7 +58,7 @@ struct TerrainConfig {
     float detail_amplitude_m = 1.0f;
 
     // Clasificación
-    float snow_line_m = 560.0f;
+    float snow_line_m = 480.0f;
     float rock_slope = 0.85f; // pendiente (tan) a partir de la cual es roca
     float beach_band_m = 12.0f; // la arena cubre la mayor parte de la zona plana
 };

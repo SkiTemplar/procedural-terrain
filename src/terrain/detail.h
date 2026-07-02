@@ -15,6 +15,7 @@ public:
     float height(float wx, float wz) const;
     Material material_near(float wx, float wz) const;
     float forest_density_near(float wx, float wz) const;
+    float climate_near(float wx, float wz) const;
 
 private:
     const TerrainData* data_;

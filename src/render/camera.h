@@ -15,7 +15,7 @@ public:
     glm::vec3 position{0.0f, 120.0f, 0.0f};
     float yaw = -90.0f;   // grados; -90 mira hacia -Z
     float pitch = -15.0f; // grados
-    float fly_speed = 60.0f; // m/s base; Shift multiplica
+    float fly_speed = 90.0f; // m/s base; Shift multiplica (isla de 10 km)
 
     void update_look(const core::Input& input);
     void update_fly(const core::Input& input, float dt); // incluye update_look

@@ -25,6 +25,7 @@ struct TerrainData {
     Hydrology hydrology;
     std::vector<Material> material;      // por muestra del heightfield
     std::vector<float> forest_density;   // [0,1] gradiente de bosque
+    std::vector<float> climate;          // [0,1] 0=frío (Escocia) 1=cálido (Caribe)
     TerrainConfig config;
 };
 

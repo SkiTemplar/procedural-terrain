@@ -34,7 +34,9 @@ std::vector<int> row_indices(int res) {
     return rows;
 }
 
-void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig& cfg) {
+void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfig& cfg) {
+    Heightfield& hf = data.height;
+    data.climate.assign(hf.data().size(), 0.5f);
     const float half_km = cfg.size_m * 0.5f / 1000.0f;
     const auto rows = row_indices(hf.resolution());
 
@@ -53,13 +55,24 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
             const float d = glm::length(glm::vec2{pw.x, pw.z}) / half_km;
             float continent = 1.0f - smoothstep(cfg.island_radius, 1.0f, d);
 
-            // Islitas satélite: motas de tierra baja en el anillo exterior,
-            // donde un ruido de ~1 km supera el umbral.
+            // Clima regional (~media isla por región): 0 = frío tipo Escocia
+            // (costa acantilada, hierba parda), 1 = cálido caribeño (playas
+            // anchas de arena clara, más islotes).
+            const float climate = glm::clamp(
+                noise.fbm(pw * 0.14f + glm::vec3{-64.2f, 0.0f, 38.5f}, 2) * 0.85f
+                    + 0.5f,
+                0.0f, 1.0f);
+            data.climate[static_cast<size_t>(z) * hf.resolution()
+                         + static_cast<size_t>(x)] = climate;
+
+            // Islitas satélite: motas de tierra baja en el anillo exterior;
+            // el sector cálido concentra más islotes (cayos).
             const float satellite =
                 smoothstep(0.60f, 0.72f,
                            noise.fbm(pw * 0.9f + glm::vec3{97.1f, 0.0f, -44.3f}, 3)
                                * 0.5f + 0.5f)
-                * smoothstep(0.78f, 0.95f, d) * smoothstep(1.35f, 1.0f, d);
+                * smoothstep(0.78f, 0.95f, d) * smoothstep(1.35f, 1.0f, d)
+                * (0.5f + climate);
             continent = std::max(continent, satellite * 0.5f);
 
             // Relieve del sistema ORIGINAL (hito 2): fBM de colinas + ridged²
@@ -85,10 +98,10 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
 }
 
 // Playas: la franja baja junto al mar se comprime SOLO donde la costa ya es
-// suave. Los acantilados no se fabrican aquí: emergen solos allí donde una
-// cordillera costera (tectónica) muere en el mar — que es como ocurre en la
-// realidad. Nada de murallas sintéticas.
-void shape_coast(Heightfield& hf, const Noise& /*noise*/, const TerrainConfig& cfg) {
+// suave Y el clima acompaña — en el sector frío casi no se aplana (costa
+// abrupta tipo Escocia), en el cálido las playas son anchas y llanas.
+void shape_coast(TerrainData& data, const TerrainConfig& cfg) {
+    Heightfield& hf = data.height;
     const float band = cfg.coast_flatten_band_m;
     const int res = hf.resolution();
     const std::vector<float> original(hf.data());
@@ -119,8 +132,10 @@ void shape_coast(Heightfield& hf, const Noise& /*noise*/, const TerrainConfig& c
             // Quintic de Perlin: C2-continua en ambos extremos — sin cambio
             // de rasante donde acaba la playa.
             const float ease = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+            const float strength =
+                cfg.coast_flatten_strength * (0.25f + 0.9f * data.climate[i]);
             const float compress =
-                1.0f - cfg.coast_flatten_strength * (1.0f - ease) * (1.0f - keep);
+                1.0f - glm::min(strength, 1.0f) * (1.0f - ease) * (1.0f - keep);
             hf.data()[i] = cfg.sea_level + rel * compress;
         }
     });
@@ -195,7 +210,11 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                 // Sumergido bajo lago o río: lecho, nunca hierba/bosque.
                 m = data.hydrology.flow[i] >= threshold_flow ? Material::RiverBed
                                                              : Material::LakeBed;
-            } else if (h < cfg.sea_level + cfg.beach_band_m && slope < 0.35f) {
+            } else if (h < cfg.sea_level + 4.0f
+                           + (cfg.beach_band_m - 2.0f) * data.climate[i]
+                       && slope < 0.35f) {
+                // La banda de arena crece con el clima: playones caribeños
+                // en el sector cálido, orillas mínimas en el frío.
                 m = Material::Sand;
             } else {
                 const float snow_edge_jitter =
@@ -210,7 +229,9 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                 float snow_score =
                     (h - (cfg.snow_line_m + snow_edge_jitter)) / 120.0f;
                 snow_score += 0.30f * std::max(n.z, 0.0f); // cara norte
-                snow_score -= 0.55f * slope;               // paredes desnudas
+                // La nieve NO se acumula en paredes: penalización fuerte por
+                // pendiente — los acantilados quedan de roca viva.
+                snow_score -= 0.80f * slope;
                 snow_score += 0.25f * patch;               // parches irregulares
                 snow_score += 0.18f * speckle;             // moteado del borde
 
@@ -267,10 +288,11 @@ TerrainData generate(const TerrainConfig& cfg) {
 
     const Noise noise(cfg.seed);
 
-    build_base_relief(data.height, noise, cfg);
+    build_base_relief(data, noise, cfg);
     erode(data.height, cfg);
     thermal_erode(data.height, cfg.thermal_iterations, cfg.talus_slope);
-    shape_coast(data.height, noise, cfg);
+    smooth_peaks(data.height, 2, 1.2f);
+    shape_coast(data, cfg);
     data.hydrology = compute_hydrology(data.height, cfg, noise);
     classify_materials(data, noise);
 

@@ -301,8 +301,10 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     //    eso dejaba el agua flotando). Profundidad según caudal, y monótono
     //    decreciente aguas abajo.
     std::vector<float> level(filled.size(), std::numeric_limits<float>::infinity());
+    // Contraste de caudal marcado: el río principal es claramente más ancho
+    // y hondo que sus tributarios (jerarquía visible).
     const auto intensity_of = [&](size_t i) {
-        return std::min(std::log(out.flow[i] / threshold + 1.0f) / 3.0f, 1.0f);
+        return std::min(std::log(out.flow[i] / threshold + 1.0f) / 2.2f, 1.0f);
     };
 
     // Los ríos nacen gradualmente: cauce y lámina crecen desde cero durante

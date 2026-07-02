@@ -287,10 +287,10 @@ TEST(Generator, ElAguaDeLosRiosNoFlota) {
     ASSERT_FALSE(gaps.empty());
     std::sort(gaps.begin(), gaps.end());
     const float median = gaps[gaps.size() / 2];
-    // Con montañas de 1800 m los ríos tallan cauces algo más hondos; el
-    // límite protege contra flotación (junto al check de contención), no
-    // contra profundidad legítima.
-    EXPECT_LT(median, 4.8f);
+    // Límite ligado a la profundidad de diseño del cauce: protege contra
+    // flotación (junto al check de contención), no contra la profundidad
+    // legítima que crece con el contraste de caudales.
+    EXPECT_LT(median, cfg.river_max_depth_m + 2.0f);
     EXPECT_GT(median, 0.0f);
     EXPECT_GT(static_cast<float>(contained) / static_cast<float>(total), 0.97f);
 }
