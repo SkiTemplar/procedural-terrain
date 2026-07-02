@@ -9,10 +9,14 @@
 
 namespace render {
 
-void Camera::update(const core::Input& input, float dt) {
+void Camera::update_look(const core::Input& input) {
     const glm::vec2 mouse = input.mouse_delta();
     yaw += mouse.x * kMouseSensitivity;
     pitch = std::clamp(pitch - mouse.y * kMouseSensitivity, -89.0f, 89.0f);
+}
+
+void Camera::update_fly(const core::Input& input, float dt) {
+    update_look(input);
 
     const glm::vec3 fwd = forward();
     const glm::vec3 right = glm::normalize(glm::cross(fwd, {0.0f, 1.0f, 0.0f}));

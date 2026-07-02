@@ -8,8 +8,8 @@ class Input;
 
 namespace render {
 
-// Cámara voladora en primera persona (modo caminar llega en el Hito 2).
-// WASD en el plano de vista, Espacio/Ctrl sube-baja, Shift acelera, ratón gira.
+// Cámara primera persona. El movimiento de vuelo vive aquí; el modo caminar
+// lo gestiona player::Controller usando solo update_look().
 class Camera {
 public:
     glm::vec3 position{0.0f, 120.0f, 0.0f};
@@ -17,7 +17,8 @@ public:
     float pitch = -15.0f; // grados
     float fly_speed = 60.0f; // m/s base; Shift multiplica
 
-    void update(const core::Input& input, float dt);
+    void update_look(const core::Input& input);
+    void update_fly(const core::Input& input, float dt); // incluye update_look
 
     glm::mat4 view() const;
     glm::mat4 proj(float aspect) const;

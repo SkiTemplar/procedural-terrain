@@ -10,6 +10,17 @@ find_package(glm CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 find_package(OpenGL REQUIRED)
 
+# Pipeline de generación: sin dependencias de OpenGL, testeable en aislamiento.
+add_library(terrain_gen STATIC
+        src/terrain/noise.cpp
+        src/terrain/heightfield.cpp
+        src/terrain/erosion.cpp
+        src/terrain/hydrology.cpp
+        src/terrain/generator.cpp
+)
+target_include_directories(terrain_gen PUBLIC src)
+target_link_libraries(terrain_gen PUBLIC glm::glm)
+
 add_executable(ProceduralTerrain
         src/main.cpp
         src/core/window.cpp
@@ -17,7 +28,8 @@ add_executable(ProceduralTerrain
         src/render/shader.cpp
         src/render/camera.cpp
         src/render/mesh.cpp
-        src/terrain/grid.cpp
+        src/terrain/mesher.cpp
+        src/player/controller.cpp
         src/ui/debug_ui.cpp
 )
 
@@ -27,15 +39,27 @@ target_include_directories(ProceduralTerrain PRIVATE src)
 target_compile_definitions(ProceduralTerrain PRIVATE GLFW_INCLUDE_NONE)
 
 target_link_libraries(ProceduralTerrain PRIVATE
+        terrain_gen
         glfw
         glad::glad
-        glm::glm
         imgui::imgui
         OpenGL::GL
 )
 
 if (MSVC)
     target_compile_options(ProceduralTerrain PRIVATE /W4)
+    target_compile_options(terrain_gen PRIVATE /W4)
 else ()
     target_compile_options(ProceduralTerrain PRIVATE -Wall -Wextra)
+    target_compile_options(terrain_gen PRIVATE -Wall -Wextra)
 endif ()
+
+# Tests del pipeline de generación
+enable_testing()
+find_package(GTest CONFIG REQUIRED)
+
+add_executable(terrain_tests tests/terrain_tests.cpp)
+target_link_libraries(terrain_tests PRIVATE terrain_gen GTest::gtest_main)
+
+include(GoogleTest)
+gtest_discover_tests(terrain_tests)

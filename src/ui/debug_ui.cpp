@@ -1,5 +1,6 @@
 #include "ui/debug_ui.h"
 
+#include "player/controller.h"
 #include "render/camera.h"
 
 #include <imgui.h>
@@ -34,21 +35,50 @@ DebugUi::~DebugUi() {
     ImGui::DestroyContext();
 }
 
-void DebugUi::draw(DebugState& state, render::Camera& camera, float dt) {
+void DebugUi::draw(DebugState& state, render::Camera& camera,
+                   player::Controller& controller, float dt) {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
     ImGui::Begin("Debug");
     ImGui::Text("%.1f fps (%.2f ms)", 1.0f / dt, dt * 1000.0f);
-    ImGui::Text("pos: %.0f, %.0f, %.0f", camera.position.x, camera.position.y,
-                camera.position.z);
-    ImGui::SliderFloat("velocidad vuelo", &camera.fly_speed, 5.0f, 300.0f, "%.0f m/s");
-    ImGui::SliderFloat("sol: azimut", &state.sun_azimuth_deg, 0.0f, 360.0f, "%.0f deg");
-    ImGui::SliderFloat("sol: altura", &state.sun_altitude_deg, 5.0f, 90.0f, "%.0f deg");
-    ImGui::SliderFloat("niebla", &state.fog_density, 0.0f, 0.002f, "%.5f", ImGuiSliderFlags_Logarithmic);
-    ImGui::Checkbox("wireframe", &state.wireframe);
-    ImGui::TextDisabled("Esc: soltar/capturar raton");
+    ImGui::Text("pos: %.0f, %.0f, %.0f  [%s]", camera.position.x, camera.position.y,
+                camera.position.z, controller.flying ? "volando (F)" : "caminando (F)");
+
+    if (ImGui::CollapsingHeader("Vista", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("velocidad vuelo", &camera.fly_speed, 5.0f, 300.0f, "%.0f m/s");
+        ImGui::SliderFloat("sol: azimut", &state.sun_azimuth_deg, 0.0f, 360.0f, "%.0f deg");
+        ImGui::SliderFloat("sol: altura", &state.sun_altitude_deg, 5.0f, 90.0f, "%.0f deg");
+        ImGui::SliderFloat("niebla", &state.fog_density, 0.0f, 0.001f, "%.5f",
+                           ImGuiSliderFlags_Logarithmic);
+        ImGui::Checkbox("wireframe", &state.wireframe);
+    }
+
+    if (ImGui::CollapsingHeader("Generacion", ImGuiTreeNodeFlags_DefaultOpen)) {
+        auto& cfg = state.pending_config;
+        int seed = static_cast<int>(cfg.seed);
+        if (ImGui::InputInt("seed", &seed)) {
+            cfg.seed = static_cast<std::uint32_t>(seed);
+        }
+        ImGui::SliderFloat("tamano isla", &cfg.size_m, 2000.0f, 12000.0f, "%.0f m");
+        ImGui::SliderFloat("radio tierra", &cfg.island_radius, 0.2f, 0.85f);
+        ImGui::SliderFloat("costa irregular", &cfg.coast_warp_m, 0.0f, 1500.0f, "%.0f m");
+        ImGui::SliderFloat("altura colinas", &cfg.base_height_m, 30.0f, 500.0f, "%.0f m");
+        ImGui::SliderFloat("altura montanas", &cfg.mountain_height_m, 0.0f, 2500.0f, "%.0f m");
+        ImGui::SliderInt("gotas erosion", &cfg.erosion_droplets, 0, 600000);
+        ImGui::SliderFloat("umbral rios", &cfg.river_flow_threshold, 50.0f, 2000.0f, "%.0f");
+        ImGui::SliderFloat("linea de nieve", &cfg.snow_line_m, 300.0f, 2400.0f, "%.0f m");
+
+        if (ImGui::Button("Regenerar", ImVec2(-1.0f, 0.0f))) {
+            state.regenerate_requested = true;
+        }
+        if (state.last_generation_seconds > 0.0f) {
+            ImGui::TextDisabled("ultima generacion: %.1f s", state.last_generation_seconds);
+        }
+    }
+
+    ImGui::TextDisabled("Esc: soltar/capturar raton · F: volar/caminar");
     ImGui::End();
 
     ImGui::Render();

@@ -8,22 +8,29 @@ Diseño completo: `docs/superpowers/specs/2026-07-02-procedural-terrain-design.m
 ## Estado
 
 - [x] **Hito 1 — Base**: ventana GL 4.6, cámara voladora, grid flat-shaded, ImGui
-- [ ] Hito 2 — Isla básica (fBM + continentalidad, mar, playas, modo caminar)
+- [x] **Hito 2 — Isla**: fBM + continentalidad, mar, playas, modo caminar (F)
 - [ ] Hito 3 — Tectónica (placas, cordilleras, fallas)
-- [ ] Hito 4 — Erosión hidráulica + ríos/lagos
-- [ ] Hito 5 — Biomas + vegetación instanciada
+- [x] **Hito 4 — Erosión hidráulica + ríos/lagos** *(adelantado)*
+- [ ] Hito 5 — Biomas + vegetación instanciada *(clasificación de materiales ya hecha)*
 - [ ] Hito 6 — Pulido (LOD, presets, perf)
 - [ ] Fase 2 — Planeta cube-sphere
+
+La isla (5×5 km por defecto, tuneable en vivo) se genera con: continentalidad
+con domain warping → colinas fBM + cordilleras ridged → erosión hidráulica de
+200k gotas → priority-flood + flow accumulation D8 (ríos que llegan al mar,
+lagos en depresiones) → clasificación de materiales (arena/hierba/bosque/
+roca/nieve/lecho). Panel ImGui: seed, tamaño, alturas, erosión, umbral de
+ríos, línea de nieve y botón Regenerar.
 
 ## Controles
 
 | Tecla | Acción |
 |-------|--------|
 | `WASD` + ratón | Moverse / mirar |
-| `Espacio` / `Ctrl` | Subir / bajar (volando) |
-| `Shift` | Acelerar ×5 |
+| `Espacio` / `Ctrl` | Subir / bajar (volando) · saltar (caminando) |
+| `Shift` | Acelerar ×5 (volando) · esprintar (caminando) |
 | `Esc` | Soltar/capturar ratón (para usar el panel de debug) |
-| `F` | Alternar caminar↔volar *(Hito 2)* |
+| `F` | Alternar caminar↔volar |
 
 ## Build
 
