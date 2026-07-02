@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <execution>
+#include <numeric>
 
 namespace terrain {
 
@@ -14,16 +16,21 @@ constexpr float kSkirtDepth = 5.0f; // m hacia abajo para tapar grietas de LOD
 
 // Malla de rejilla + faldón perimetral. get_vertex(i, j) devuelve el vértice
 // (posición+color) del nodo (i, j) de una rejilla de (w+1)×(h+1) nodos.
+// La generación de vértices va en paralelo (get_vertex debe ser thread-safe);
+// las llamadas GL se quedan en el hilo principal.
 template <typename GetVertex>
 render::Mesh build_grid_mesh(int w, int h, GetVertex&& get_vertex) {
-    std::vector<render::Vertex> vertices;
-    vertices.reserve(static_cast<size_t>(w + 1) * (h + 1) + 2 * static_cast<size_t>(w + h + 2));
+    std::vector<render::Vertex> vertices(
+        static_cast<size_t>(w + 1) * (h + 1));
 
-    for (int j = 0; j <= h; ++j) {
+    std::vector<int> rows(static_cast<size_t>(h + 1));
+    std::iota(rows.begin(), rows.end(), 0);
+    std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int j) {
         for (int i = 0; i <= w; ++i) {
-            vertices.push_back(get_vertex(i, j));
+            vertices[static_cast<size_t>(j) * (w + 1) + i] = get_vertex(i, j);
         }
-    }
+    });
+    vertices.reserve(vertices.size() + 2 * static_cast<size_t>(w + h + 2));
 
     std::vector<std::uint32_t> indices;
     indices.reserve(static_cast<size_t>(w) * h * 6 + 2 * static_cast<size_t>(w + h) * 6);
@@ -84,19 +91,22 @@ ChunkedTerrain::ChunkedTerrain(const TerrainData& data, const DetailSampler& sam
     }
     // Arranque: todo en el nivel más basto (rápido); update() irá refinando.
     for (auto& chunk : chunks_) {
-        rebuild(chunk, 2);
+        rebuild(chunk, 3);
     }
 }
 
 int ChunkedTerrain::desired_level(const Chunk& chunk, const glm::vec3& camera_pos) const {
     const float dist = glm::length(glm::vec2{camera_pos.x, camera_pos.z} - chunk.center);
-    if (dist < kFineDistance) {
+    if (dist < kUltraDistance) {
         return 0;
     }
-    if (dist < kMediumDistance) {
+    if (dist < kFineDistance) {
         return 1;
     }
-    return 2;
+    if (dist < kMediumDistance) {
+        return 2;
+    }
+    return 3;
 }
 
 void ChunkedTerrain::update(const glm::vec3& camera_pos, int max_rebuilds) {
@@ -141,24 +151,26 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
     };
 
     render::Mesh mesh = [&] {
-        if (level == 0) {
-            // Subdivisión ×4: altura del DetailSampler (la misma que pisas).
-            constexpr int kSub = 4;
-            const int w = cells_x * kSub;
-            const int h = cells_z * kSub;
-            const float step = hf.cell_size() / kSub;
+        if (level <= 1) {
+            // Subdivisión ×8 (nivel 0) o ×4 (nivel 1) con la altura del
+            // DetailSampler: exactamente la superficie que pisa el jugador.
+            const int sub = level == 0 ? 8 : 4;
+            const int w = cells_x * sub;
+            const int h = cells_z * sub;
+            const float step = hf.cell_size() / static_cast<float>(sub);
             const float wx0 = hf.world_x(chunk.x0);
             const float wz0 = hf.world_z(chunk.z0);
             return build_grid_mesh(w, h, [&](int i, int j) {
                 const float wx = wx0 + static_cast<float>(i) * step;
                 const float wz = wz0 + static_cast<float>(j) * step;
                 const Material m = sampler_->material_near(wx, wz);
-                const float tint = 0.90f + 0.20f * hash01(chunk.x0 * 4 + i, chunk.z0 * 4 + j);
+                const float tint =
+                    0.90f + 0.20f * hash01(chunk.x0 * sub + i, chunk.z0 * sub + j);
                 return render::Vertex{{wx, sampler_->height(wx, wz), wz},
                                       material_color(m) * tint};
             });
         }
-        const int stride = level == 1 ? 1 : 4;
+        const int stride = level == 2 ? 1 : 4;
         const int w = cells_x / stride;
         const int h = cells_z / stride;
         return build_grid_mesh(w, h, [&](int i, int j) {

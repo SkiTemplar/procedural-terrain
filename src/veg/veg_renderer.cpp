@@ -22,6 +22,15 @@ struct Placement {
     std::vector<render::Instance> pines;
     std::vector<render::Instance> broadleafs;
     std::vector<render::Instance> rocks;
+    std::vector<render::Instance> tufts;
+    std::vector<render::Instance> bushes;
+};
+
+// Tintes de flor para una fracción de las matas (multiplican el verde base).
+constexpr glm::vec3 kFlowerTints[] = {
+    {1.55f, 1.45f, 0.85f}, // amarillo
+    {1.65f, 1.15f, 1.55f}, // rosa
+    {1.45f, 1.45f, 1.70f}, // blanco azulado
 };
 
 } // namespace
@@ -45,26 +54,42 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
         return placements[static_cast<size_t>(cz) * cells_per_side + cx];
     };
 
-    // Muestreo por celda del heightfield: probabilidad según material.
-    // Con celda de ~2.4 m: p=0.03 en bosque ≈ 1 árbol / 200 m² de bosque.
+    // Muestreo por celda del heightfield (~2.4 m): probabilidades acumuladas
+    // por material. Con p_tuft=0.05 sale ~1 mata / 120 m² de pradera.
     const std::uint32_t salt = cfg.seed;
     for (int z = 2; z < res - 2; ++z) {
         for (int x = 2; x < res - 2; ++x) {
             const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
                            + static_cast<size_t>(x);
+            if (!std::isnan(data.hydrology.water_level[i])) {
+                continue; // celda con lámina de agua: nada de vegetación
+            }
             const auto m = data.material[i];
-            const float roll = hash01(static_cast<std::uint32_t>(x),
-                                      static_cast<std::uint32_t>(z), salt);
 
             float tree_p = 0.0f;
             float rock_p = 0.0f;
+            float tuft_p = 0.0f;
+            float bush_p = 0.0f;
             switch (m) {
-                case terrain::Material::Forest: tree_p = 0.030f; rock_p = 0.0006f; break;
-                case terrain::Material::Grass: tree_p = 0.0012f; rock_p = 0.0010f; break;
-                case terrain::Material::Rock: rock_p = 0.0045f; break;
-                default: break;
+                case terrain::Material::Forest:
+                    tree_p = 0.080f; rock_p = 0.0012f; tuft_p = 0.020f; bush_p = 0.010f;
+                    break;
+                case terrain::Material::Grass:
+                    tree_p = 0.0040f; rock_p = 0.0020f; tuft_p = 0.050f; bush_p = 0.008f;
+                    break;
+                case terrain::Material::Rock:
+                    rock_p = 0.010f;
+                    break;
+                case terrain::Material::Sand:
+                    tuft_p = 0.004f; // hierba rala de duna
+                    break;
+                default:
+                    break;
             }
-            if (roll >= tree_p + rock_p) {
+            const float total_p = tree_p + rock_p + tuft_p + bush_p;
+            const float roll = hash01(static_cast<std::uint32_t>(x),
+                                      static_cast<std::uint32_t>(z), salt);
+            if (roll >= total_p) {
                 continue;
             }
 
@@ -78,8 +103,8 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             const float wx = hf.world_x(x) + jx;
             const float wz = hf.world_z(z) + jz;
             const float wy = sampler.height(wx, wz);
-            if (wy < cfg.sea_level + 0.5f) {
-                continue; // nada dentro del agua
+            if (wy < cfg.sea_level + 0.4f) {
+                continue;
             }
 
             const float scale_r = hash01(static_cast<std::uint32_t>(x),
@@ -103,42 +128,61 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 render::Instance inst{{wx, wy - 0.15f, wz, scale},
                                       {tint, tint, tint, yaw}};
                 (pine ? cell.pines : cell.broadleafs).push_back(inst);
-            } else {
+            } else if (roll < tree_p + rock_p) {
                 const float scale = 0.4f + 1.8f * scale_r;
                 cell.rocks.push_back(render::Instance{{wx, wy - 0.2f * scale, wz, scale},
                                                       {tint, tint, tint, yaw}});
+            } else if (roll < tree_p + rock_p + tuft_p) {
+                const float scale = 0.7f + 0.9f * scale_r;
+                glm::vec3 t{tint, tint, tint};
+                // Una fracción de las matas florece.
+                const float flower = hash01(static_cast<std::uint32_t>(x),
+                                            static_cast<std::uint32_t>(z), salt + 7);
+                if (flower < 0.16f && m == terrain::Material::Grass) {
+                    t = kFlowerTints[static_cast<size_t>(flower * 100.0f) % 3] * tint;
+                }
+                cell.tufts.push_back(
+                    render::Instance{{wx, wy - 0.04f, wz, scale}, {t.r, t.g, t.b, yaw}});
+            } else {
+                const float scale = 0.6f + 0.9f * scale_r;
+                cell.bushes.push_back(render::Instance{{wx, wy - 0.08f, wz, scale},
+                                                       {tint, tint, tint, yaw}});
             }
         }
     }
 
-    // Un lote instanciado por (celda, tipo) con vértices propios: draw call
-    // por lote, culling por distancia al centro de la celda.
+    // Un lote instanciado por (celda, tipo): draw call por lote, culling por
+    // distancia al centro de la celda. Las matas/arbustos van en lotes "near"
+    // con distancia de dibujo corta (son miles y de cerca es donde importan).
     const ModelData pine = make_pine();
     const ModelData broadleaf = make_broadleaf();
     const ModelData rock = make_rock();
+    const ModelData tuft = make_tuft();
+    const ModelData bush = make_bush();
 
     for (int cz = 0; cz < cells_per_side; ++cz) {
         for (int cx = 0; cx < cells_per_side; ++cx) {
             Placement& p = placements[static_cast<size_t>(cz) * cells_per_side + cx];
-            if (p.pines.empty() && p.broadleafs.empty() && p.rocks.empty()) {
+            if (p.pines.empty() && p.broadleafs.empty() && p.rocks.empty()
+                && p.tufts.empty() && p.bushes.empty()) {
                 continue;
             }
             Cell cell;
             cell.center = {(-cfg.size_m * 0.5f) + (static_cast<float>(cx) + 0.5f) * kCellSize,
                            (-cfg.size_m * 0.5f) + (static_cast<float>(cz) + 0.5f) * kCellSize};
-            if (!p.pines.empty()) {
-                cell.batches.emplace_back(pine.vertices, pine.indices, p.pines);
-                total_instances_ += p.pines.size();
-            }
-            if (!p.broadleafs.empty()) {
-                cell.batches.emplace_back(broadleaf.vertices, broadleaf.indices,
-                                          p.broadleafs);
-                total_instances_ += p.broadleafs.size();
-            }
-            if (!p.rocks.empty()) {
-                cell.batches.emplace_back(rock.vertices, rock.indices, p.rocks);
-                total_instances_ += p.rocks.size();
-            }
+            const auto add = [&](std::vector<render::InstancedMesh>& dst,
+                                 const ModelData& model,
+                                 const std::vector<render::Instance>& instances) {
+                if (!instances.empty()) {
+                    dst.emplace_back(model.vertices, model.indices, instances);
+                    total_instances_ += instances.size();
+                }
+            };
+            add(cell.batches_far, pine, p.pines);
+            add(cell.batches_far, broadleaf, p.broadleafs);
+            add(cell.batches_far, rock, p.rocks);
+            add(cell.batches_near, tuft, p.tufts);
+            add(cell.batches_near, bush, p.bushes);
             cells_.push_back(std::move(cell));
         }
     }
@@ -147,14 +191,20 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
 void VegRenderer::draw(const glm::vec3& camera_pos, float max_distance) const {
     const glm::vec2 cam{camera_pos.x, camera_pos.z};
     // Margen de media diagonal de celda para no cortar lotes por el centro.
-    const float cutoff = max_distance + kCellSize * 0.71f;
+    const float far_cutoff = max_distance + kCellSize * 0.71f;
+    const float near_cutoff = std::min(900.0f, max_distance) + kCellSize * 0.71f;
 
     for (const Cell& cell : cells_) {
-        if (glm::length(cam - cell.center) > cutoff) {
-            continue;
+        const float dist = glm::length(cam - cell.center);
+        if (dist <= far_cutoff) {
+            for (const auto& batch : cell.batches_far) {
+                batch.draw();
+            }
         }
-        for (const auto& batch : cell.batches) {
-            batch.draw();
+        if (dist <= near_cutoff) {
+            for (const auto& batch : cell.batches_near) {
+                batch.draw();
+            }
         }
     }
 }

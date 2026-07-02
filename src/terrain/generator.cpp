@@ -77,16 +77,38 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
 }
 
 // Erosión costera simplificada: la franja baja junto al mar se comprime hacia
-// el nivel del mar → playas anchas y llanas donde el terreno ya era suave.
+// el nivel del mar → playas anchas y llanas. Solo donde la costa ya es suave:
+// las costas abruptas se dejan intactas y quedan como acantilados de roca.
 void flatten_coast(Heightfield& hf, const TerrainConfig& cfg) {
     const float band = cfg.coast_flatten_band_m;
-    for (float& h : hf.data()) {
-        const float rel = h - cfg.sea_level;
-        if (rel > 0.0f && rel < band) {
-            const float t = rel / band; // 0 en la orilla, 1 al final de la banda
+    const int res = hf.resolution();
+    const std::vector<float> original(hf.data());
+    const float inv_cell = 1.0f / hf.cell_size();
+
+    for (int z = 1; z < res - 1; ++z) {
+        for (int x = 1; x < res - 1; ++x) {
+            const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
+                           + static_cast<size_t>(x);
+            const float rel = original[i] - cfg.sea_level;
+            if (rel <= 0.0f || rel >= band) {
+                continue;
+            }
+            // Pendiente local sobre el terreno original.
+            const float slope = std::max(
+                std::abs(original[i + 1] - original[i - 1]),
+                std::abs(original[i + static_cast<size_t>(res)]
+                         - original[i - static_cast<size_t>(res)]))
+                * 0.5f * inv_cell;
+            // Costa suave → playa; costa abrupta → acantilado sin tocar.
+            const float cliff_keep = smoothstep(0.4f, 0.8f, slope);
+            if (cliff_keep >= 1.0f) {
+                continue;
+            }
+            const float t = rel / band;
             const float ease = t * t * (3.0f - 2.0f * t);
-            const float compress = 1.0f - cfg.coast_flatten_strength * (1.0f - ease);
-            h = cfg.sea_level + rel * compress;
+            const float compress =
+                1.0f - cfg.coast_flatten_strength * (1.0f - ease) * (1.0f - cliff_keep);
+            hf.data()[i] = cfg.sea_level + rel * compress;
         }
     }
 }
@@ -118,12 +140,15 @@ void classify_materials(TerrainData& data, const Noise& noise) {
 
             const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f, hf.world_z(z) / 1000.0f};
 
+            const float wl = data.hydrology.water_level[i];
+
             Material m = Material::Grass;
             if (h <= cfg.sea_level) {
                 m = Material::Seabed;
-            } else if (!std::isnan(data.hydrology.water_level[i])
-                       && data.hydrology.flow[i] >= threshold_flow) {
-                m = Material::RiverBed;
+            } else if (!std::isnan(wl) && h < wl - 0.05f) {
+                // Sumergido bajo lago o río: lecho, nunca hierba/bosque.
+                m = data.hydrology.flow[i] >= threshold_flow ? Material::RiverBed
+                                                             : Material::LakeBed;
             } else if (h < cfg.sea_level + cfg.beach_band_m && slope < 0.35f) {
                 m = Material::Sand;
             } else {

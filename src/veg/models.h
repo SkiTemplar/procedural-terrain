@@ -17,5 +17,7 @@ struct ModelData {
 ModelData make_pine();      // conífera: tronco + 3 conos apilados (~9 m)
 ModelData make_broadleaf(); // frondoso: tronco + copa icosférica deformada (~7 m)
 ModelData make_rock();      // pedrusco: icosfera deformada (~1 m)
+ModelData make_tuft();      // mata de hierba: abanico de conos finos (~0.5 m)
+ModelData make_bush();      // arbusto: icosfera achatada (~1 m)
 
 } // namespace veg

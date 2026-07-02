@@ -131,6 +131,56 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
         }
     }
 
+    // Purga de microlagos: la erosión deja miles de charcos de 1-3 celdas que
+    // ensucian el mapa. Se eliminan las componentes conexas pequeñas o someras.
+    {
+        constexpr int kMinLakeCells = 24;
+        constexpr float kMinLakeDepth = 0.6f;
+
+        std::vector<bool> visited(filled.size(), false);
+        std::vector<size_t> component;
+        std::vector<size_t> stack;
+
+        for (size_t start = 0; start < filled.size(); ++start) {
+            if (visited[start] || std::isnan(out.water_level[start])) {
+                continue;
+            }
+            component.clear();
+            stack.assign(1, start);
+            visited[start] = true;
+            float max_depth = 0.0f;
+
+            while (!stack.empty()) {
+                const size_t i = stack.back();
+                stack.pop_back();
+                component.push_back(i);
+                max_depth = std::max(max_depth, out.water_level[i] - hf.data()[i]);
+
+                const int x = static_cast<int>(i % static_cast<size_t>(res));
+                const int z = static_cast<int>(i / static_cast<size_t>(res));
+                for (int n = 0; n < 8; ++n) {
+                    const int nx = x + kDx[n];
+                    const int nz = z + kDz[n];
+                    if (nx < 0 || nz < 0 || nx >= res || nz >= res) {
+                        continue;
+                    }
+                    const size_t ni = idx(nx, nz);
+                    if (!visited[ni] && !std::isnan(out.water_level[ni])) {
+                        visited[ni] = true;
+                        stack.push_back(ni);
+                    }
+                }
+            }
+
+            if (static_cast<int>(component.size()) < kMinLakeCells
+                || max_depth < kMinLakeDepth) {
+                for (const size_t i : component) {
+                    out.water_level[i] = kNoWater;
+                }
+            }
+        }
+    }
+
     // ---- Ríos ----
     // El umbral se normaliza: expresado en celdas de un mapa 1024, escala con
     // el área real para que el slider signifique lo mismo a cualquier resolución.

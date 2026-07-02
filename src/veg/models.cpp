@@ -137,4 +137,41 @@ ModelData make_rock() {
     return out;
 }
 
+ModelData make_tuft() {
+    ModelData out;
+    const glm::vec3 blade{0.36f, 0.56f, 0.24f};
+    // Abanico de 5 hojas: conos finos e inclinados alrededor del centro.
+    for (int i = 0; i < 5; ++i) {
+        const float a = glm::two_pi<float>() * static_cast<float>(i) / 5.0f;
+        const float lean = 0.16f + 0.1f * hash01(91u + static_cast<std::uint32_t>(i));
+        const float height = 0.38f + 0.25f * hash01(113u + static_cast<std::uint32_t>(i));
+
+        const auto apex = static_cast<std::uint32_t>(out.vertices.size());
+        out.vertices.push_back(
+            {{lean * std::cos(a), height, lean * std::sin(a)},
+             blade * (0.9f + 0.2f * hash01(131u + static_cast<std::uint32_t>(i)))});
+        const auto base = static_cast<std::uint32_t>(out.vertices.size());
+        for (int k = 0; k < 3; ++k) {
+            const float b = glm::two_pi<float>() * static_cast<float>(k) / 3.0f;
+            out.vertices.push_back(
+                {{0.05f * std::cos(b) + 0.04f * std::cos(a),
+                  0.0f,
+                  0.05f * std::sin(b) + 0.04f * std::sin(a)},
+                 blade * 0.8f});
+        }
+        for (int k = 0; k < 3; ++k) {
+            out.indices.insert(out.indices.end(),
+                               {apex, base + static_cast<std::uint32_t>((k + 1) % 3),
+                                base + static_cast<std::uint32_t>(k)});
+        }
+    }
+    return out;
+}
+
+ModelData make_bush() {
+    ModelData out;
+    add_deformed_icosphere(out, 0.7f, 0.45f, 0.75f, 0.5f, kLeafColor * 0.9f, 143u);
+    return out;
+}
+
 } // namespace veg

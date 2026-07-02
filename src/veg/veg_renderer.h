@@ -25,7 +25,8 @@ public:
 private:
     struct Cell {
         glm::vec2 center{0.0f};
-        std::vector<render::InstancedMesh> batches; // pino/frondoso/roca
+        std::vector<render::InstancedMesh> batches_far;  // árboles y rocas
+        std::vector<render::InstancedMesh> batches_near; // matas y arbustos
     };
 
     std::vector<Cell> cells_;

@@ -17,6 +17,7 @@ float DetailSampler::material_roughness(Material m) {
         case Material::Rock: return 1.6f;    // el roquedo es abrupto
         case Material::Snow: return 0.6f;
         case Material::RiverBed: return 0.25f;
+        case Material::LakeBed: return 0.2f;
     }
     return 1.0f;
 }
@@ -42,12 +43,14 @@ float DetailSampler::height(float wx, float wz) const {
 
     const float rough = material_roughness(material_near(wx, wz));
 
-    // Dos escalas: ondulación de ~30 m y rugosidad de ~7 m.
+    // Tres escalas: ondulación de ~30 m, rugosidad de ~7 m y grano de ~2 m
+    // (el grano solo se aprecia en el LOD ultra, celdas de 30 cm).
     const glm::vec3 p{wx, 0.0f, wz};
     const float coarse = noise_.fbm(p * (1.0f / 30.0f), 3);
     const float fine = noise_.fbm(p * (1.0f / 7.0f) + glm::vec3{13.7f, 0.0f, -41.2f}, 2);
+    const float grain = noise_.perlin(p * (1.0f / 2.2f) + glm::vec3{-77.3f, 0.0f, 29.1f});
 
-    return base + amplitude * rough * (0.75f * coarse + 0.35f * fine);
+    return base + amplitude * rough * (0.75f * coarse + 0.35f * fine + 0.12f * grain);
 }
 
 } // namespace terrain

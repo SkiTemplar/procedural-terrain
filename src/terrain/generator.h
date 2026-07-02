@@ -17,6 +17,7 @@ enum class Material : std::uint8_t {
     Rock,
     Snow,
     RiverBed,
+    LakeBed,
 };
 
 struct TerrainData {

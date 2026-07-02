@@ -171,6 +171,59 @@ TEST(Generator, LosRiosExisten) {
     EXPECT_GT(max_flow, effective_river_threshold(cfg));
 }
 
+TEST(Generator, SinHierbaNiBosqueBajoElAgua) {
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const int res = data.height.resolution();
+
+    for (int z = 0; z < res; ++z) {
+        for (int x = 0; x < res; ++x) {
+            const size_t i = static_cast<size_t>(z) * res + x;
+            const float wl = data.hydrology.water_level[i];
+            if (std::isnan(wl) || data.height.at(x, z) >= wl - 0.05f) {
+                continue;
+            }
+            const auto m = data.material[i];
+            EXPECT_TRUE(m == terrain::Material::LakeBed
+                        || m == terrain::Material::RiverBed
+                        || m == terrain::Material::Seabed)
+                << "material vegetal sumergido en (" << x << ", " << z << ")";
+        }
+    }
+}
+
+TEST(Generator, SinMicrolagosDeUnaCelda) {
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const int res = data.height.resolution();
+    const auto& wl = data.hydrology.water_level;
+
+    // Toda celda con agua sobre el nivel del mar debe tener al menos un
+    // vecino con agua (los charcos de 1 celda se purgan).
+    for (int z = 1; z < res - 1; ++z) {
+        for (int x = 1; x < res - 1; ++x) {
+            const size_t i = static_cast<size_t>(z) * res + x;
+            if (std::isnan(wl[i])) {
+                continue;
+            }
+            bool has_wet_neighbor = false;
+            for (int dz = -1; dz <= 1 && !has_wet_neighbor; ++dz) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dx == 0 && dz == 0) {
+                        continue;
+                    }
+                    if (!std::isnan(wl[static_cast<size_t>(z + dz) * res + (x + dx)])) {
+                        has_wet_neighbor = true;
+                        break;
+                    }
+                }
+            }
+            EXPECT_TRUE(has_wet_neighbor)
+                << "celda de agua aislada en (" << x << ", " << z << ")";
+        }
+    }
+}
+
 TEST(Erosion, ModificaElTerrenoSinRomperlo) {
     terrain::TerrainConfig cfg = test_config();
     terrain::Heightfield hf(cfg.resolution, cfg.size_m);

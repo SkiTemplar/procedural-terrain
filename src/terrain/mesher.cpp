@@ -16,6 +16,7 @@ glm::vec3 material_color(Material m) {
         case Material::Rock: return {0.49f, 0.46f, 0.43f};
         case Material::Snow: return {0.93f, 0.94f, 0.96f};
         case Material::RiverBed: return {0.56f, 0.53f, 0.43f};
+        case Material::LakeBed: return {0.42f, 0.42f, 0.32f};
     }
     return {1.0f, 0.0f, 1.0f};
 }
