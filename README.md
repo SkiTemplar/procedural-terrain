@@ -1,19 +1,54 @@
 # Procedural Terrain
 
-OpenGL project scaffolded by ULTRON Control Center.
+Juego de exploración: caminar/volar por un archipiélago generado
+proceduralmente (tectónica, erosión, ríos, biomas). Fase 2: planeta esférico.
 
-**Kind:** Simple (Hello World)
+Diseño completo: `docs/superpowers/specs/2026-07-02-procedural-terrain-design.md`
+
+## Estado
+
+- [x] **Hito 1 — Base**: ventana GL 4.6, cámara voladora, grid flat-shaded, ImGui
+- [ ] Hito 2 — Isla básica (fBM + continentalidad, mar, playas, modo caminar)
+- [ ] Hito 3 — Tectónica (placas, cordilleras, fallas)
+- [ ] Hito 4 — Erosión hidráulica + ríos/lagos
+- [ ] Hito 5 — Biomas + vegetación instanciada
+- [ ] Hito 6 — Pulido (LOD, presets, perf)
+- [ ] Fase 2 — Planeta cube-sphere
+
+## Controles
+
+| Tecla | Acción |
+|-------|--------|
+| `WASD` + ratón | Moverse / mirar |
+| `Espacio` / `Ctrl` | Subir / bajar (volando) |
+| `Shift` | Acelerar ×5 |
+| `Esc` | Soltar/capturar ratón (para usar el panel de debug) |
+| `F` | Alternar caminar↔volar *(Hito 2)* |
 
 ## Build
 
-1. Open the folder in your IDE (CLion / VS Code with CMake Tools).
-2. Configure with the `Debug-OpenGL` preset (`CMakePresets.json`).
-3. Build: `cmake --build --preset Debug-OpenGL` or your IDE shortcut.
+Requiere MSVC Build Tools 2022, vcpkg en `C:/vcpkg` y Ninja en el PATH
+(o usar CLion, que lo trae). Desde una consola con `vcvars64`:
 
-## Dependencies (via vcpkg manifest)
+```
+cmake --preset Debug-OpenGL
+cmake --build cmake-build-debug-opengl
+cmake-build-debug-opengl\ProceduralTerrain.exe
+```
 
-- **GLFW3** — window + input + context
-- **GLAD**  — OpenGL function loader
-- **GLM**   — math (vectors, matrices)
+## Dependencias (vcpkg manifest)
 
-vcpkg toolchain expected at `C:/vcpkg/scripts/buildsystems/vcpkg.cmake`.
+- **GLFW3** — ventana + input + contexto
+- **GLAD** — loader de OpenGL (con `GLFW_INCLUDE_NONE` global)
+- **GLM** — matemáticas
+- **ImGui** — panel de debug (sliders, wireframe, sol)
+- **GoogleTest** — tests del pipeline de generación (desde Hito 2)
+
+## Estructura
+
+```
+src/core/     ventana, input, reloj de frame
+src/render/   shader, mesh, cámara, shaders de terreno
+src/terrain/  generación (Hito 1: grid placeholder)
+src/ui/       overlay ImGui
+```

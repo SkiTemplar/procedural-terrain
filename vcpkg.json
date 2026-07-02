@@ -1,9 +1,14 @@
 {
-  "name": "procedural_terrain",
+  "name": "procedural-terrain",
   "version-string": "1.0.0",
   "dependencies": [
     "glfw3",
     "glad",
-    "glm"
+    "glm",
+    {
+      "name": "imgui",
+      "features": ["glfw-binding", "opengl3-binding"]
+    },
+    "gtest"
   ]
 }
