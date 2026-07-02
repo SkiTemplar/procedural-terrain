@@ -130,12 +130,13 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                                          static_cast<std::uint32_t>(z), salt + 6)
                                 < conifer_bias;
                 const float scale = 0.75f + 0.7f * scale_r;
-                render::Instance inst{{wx, wy - 0.15f, wz, scale},
+                // Base bien hundida: en pendiente los troncos no quedan al aire.
+                render::Instance inst{{wx, wy - 0.35f, wz, scale},
                                       {tint, tint, tint, yaw}};
                 (pine ? cell.pines : cell.broadleafs).push_back(inst);
             } else if (roll < tree_p + rock_p) {
                 const float scale = 0.4f + 1.8f * scale_r;
-                cell.rocks.push_back(render::Instance{{wx, wy - 0.2f * scale, wz, scale},
+                cell.rocks.push_back(render::Instance{{wx, wy - 0.3f * scale, wz, scale},
                                                       {tint, tint, tint, yaw}});
             } else if (roll < tree_p + rock_p + tuft_p) {
                 const float scale = 0.6f + 0.7f * scale_r;

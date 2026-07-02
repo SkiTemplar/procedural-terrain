@@ -172,7 +172,7 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                 const Material m = sampler_->material_near(wx, wz);
                 const float wy = sampler_->height(wx, wz);
                 float tint =
-                    0.90f + 0.20f * hash01(chunk.x0 * sub + i, chunk.z0 * sub + j);
+                    0.94f + 0.12f * hash01(chunk.x0 * sub + i, chunk.z0 * sub + j);
                 if (m == Material::Rock) {
                     tint *= rock_banding(wy);
                 }
@@ -187,7 +187,7 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
             const int sz = std::min(chunk.z0 + j * stride, res - 1);
             const Material m = material_at(sx, sz);
             const float wy = hf.at(sx, sz);
-            float tint = 0.90f + 0.20f * hash01(sx, sz);
+            float tint = 0.94f + 0.12f * hash01(sx, sz);
             if (m == Material::Rock) {
                 tint *= rock_banding(wy);
             }

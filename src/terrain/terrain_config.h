@@ -7,7 +7,7 @@ namespace terrain {
 // Parámetros del pipeline de generación. Pocos y con significado físico;
 // todos tuneables desde el panel de ImGui.
 struct TerrainConfig {
-    std::uint32_t seed = 1337;
+    std::uint32_t seed = 20260703;
 
     // Dominio
     float size_m = 5000.0f; // lado de la isla
@@ -21,7 +21,7 @@ struct TerrainConfig {
 
     // Relieve
     float base_height_m = 180.0f;      // colinas (fbm)
-    float mountain_height_m = 1400.0f; // cordilleras (ridged)
+    float mountain_height_m = 1800.0f; // cordilleras (ridged)
 
     // Tectónica: las cordilleras siguen los bordes convergentes de placa.
     float tectonic_strength = 1.0f; // multiplicador del uplift
@@ -33,9 +33,10 @@ struct TerrainConfig {
     float erosion_deposit = 0.30f;  // deposit rate
     float erosion_inertia = 0.10f;
 
-    // Erosión térmica (pedreras, faldas al pie de la montaña)
-    int thermal_iterations = 6;
-    float talus_slope = 0.9f; // tan del ángulo de reposo
+    // Erosión térmica (pedreras, faldas al pie de la montaña). Las pasadas
+    // altas son las que imponen el ángulo de reposo en las laderas grandes.
+    int thermal_iterations = 16;
+    float talus_slope = 0.75f; // tan del ángulo de reposo (~37°)
 
     // Costa: comprime las alturas bajas → playas anchas y planas.
     float coast_flatten_band_m = 9.0f;   // banda sobre el mar que se aplana
@@ -50,8 +51,8 @@ struct TerrainConfig {
     // Erosión fluvial (stream power law, Braun & Willett 2013): talla el
     // perfil longitudinal de la red de drenaje → valles en V y cañones donde
     // coinciden caudal y pendiente, perfiles cóncavos sin caídas verticales.
-    float fluvial_strength = 0.35f;
-    int fluvial_iterations = 2;
+    float fluvial_strength = 0.45f;
+    int fluvial_iterations = 4;
 
     // Detalle geométrico fino (solo malla cercana + suelo al caminar)
     float detail_amplitude_m = 1.4f;

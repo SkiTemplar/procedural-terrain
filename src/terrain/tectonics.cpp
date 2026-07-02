@@ -8,9 +8,11 @@ namespace terrain {
 
 namespace {
 
-// Anchos de banda de cada tipo de borde, en metros.
-constexpr float kMountainBandM = 420.0f;
-constexpr float kRiftBandM = 220.0f;
+// Anchos de banda de cada tipo de borde, en metros. La banda orogénica es
+// ancha a propósito: el uplift debe repartirse en varios km para producir
+// laderas de montaña; con bandas estrechas salían murallas verticales.
+constexpr float kMountainBandM = 1800.0f;
+constexpr float kRiftBandM = 500.0f;
 constexpr float kFaultBandM = 70.0f;
 
 } // namespace

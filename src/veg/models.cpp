@@ -51,7 +51,7 @@ void add_cone(ModelData& out, float radius, float y0, float y1, int sides,
     const auto base = static_cast<std::uint32_t>(out.vertices.size());
     for (int i = 0; i < sides; ++i) {
         const float a = glm::two_pi<float>() * static_cast<float>(i) / sides;
-        const float wobble = 0.85f + 0.3f * hash01(seed * 31u + static_cast<std::uint32_t>(i));
+        const float wobble = 0.92f + 0.16f * hash01(seed * 31u + static_cast<std::uint32_t>(i));
         out.vertices.push_back(
             {{radius * wobble * std::cos(a), y0, radius * wobble * std::sin(a)}, color});
     }

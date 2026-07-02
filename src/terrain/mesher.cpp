@@ -67,12 +67,14 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
 
     for (int z = 0; z < res - 1; ++z) {
         for (int x = 0; x < res - 1; ++x) {
-            float level = -1e9f;
+            // Fallback = MÍNIMO de los niveles definidos: con el máximo la
+            // lámina se estiraba hacia arriba sobre las orillas.
+            float level = 1e9f;
             bool any = false;
             for (const auto [dx, dz] : {std::pair{0, 0}, {1, 0}, {0, 1}, {1, 1}}) {
                 const float v = wl[sample_index(x + dx, z + dz)];
                 if (!std::isnan(v)) {
-                    level = std::max(level, v);
+                    level = std::min(level, v);
                     any = true;
                 }
             }

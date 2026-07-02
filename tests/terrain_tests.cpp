@@ -19,6 +19,10 @@ terrain::TerrainConfig test_config() {
     cfg.island_radius = 0.45f;
     cfg.coast_warp_m = 300.0f;
     cfg.erosion_droplets = 8000;
+    // Alturas proporcionales al dominio de 3 km (el default está pensado
+    // para 5 km): mismas pendientes relativas que el mapa real.
+    cfg.mountain_height_m = 1000.0f;
+    cfg.base_height_m = 140.0f;
     // El umbral se expresa en celdas equivalentes de un mapa 1024:
     // 3840 × (128²/1024²) = 60 celdas efectivas en este mapa de test.
     cfg.river_flow_threshold = 3840.0f;
@@ -287,6 +291,31 @@ TEST(Generator, ElAguaDeLosRiosNoFlota) {
     EXPECT_LT(median, 4.0f);
     EXPECT_GT(median, 0.0f);
     EXPECT_GT(static_cast<float>(contained) / static_cast<float>(total), 0.97f);
+}
+
+TEST(Generator, SinMurallasVerticales) {
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const int res = data.height.resolution();
+    const float cell = data.height.cell_size();
+
+    // Los bordes de placa no deben producir murallas REGIONALES: el p99 de
+    // pendiente queda acotado (<1.6 ≈ 58°). Los cañones fluviales legítimos
+    // son paredes de pocas celdas y viven en la cola extrema — se les da
+    // margen (p99.9 < 4.5) pero no barra libre.
+    std::vector<float> slopes;
+    slopes.reserve(static_cast<size_t>(res) * res);
+    for (int z = 0; z < res; ++z) {
+        for (int x = 0; x < res - 1; ++x) {
+            slopes.push_back(
+                std::abs(data.height.at(x + 1, z) - data.height.at(x, z)) / cell);
+        }
+    }
+    std::sort(slopes.begin(), slopes.end());
+    const float p99 = slopes[static_cast<size_t>(slopes.size() * 0.99)];
+    const float p999 = slopes[static_cast<size_t>(slopes.size() * 0.999)];
+    EXPECT_LT(p99, 1.6f);
+    EXPECT_LT(p999, 4.5f);
 }
 
 TEST(Tectonics, DeterministaYAcotada) {

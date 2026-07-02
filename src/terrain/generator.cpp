@@ -154,6 +154,38 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                                / (1024.0f * 1024.0f);
     const auto rows = row_indices(res);
 
+    // Máscara de ribera: agua interior dilatada ~4 celdas. Los ríos y lagos
+    // concentran humedad → bosque de galería a su alrededor.
+    std::vector<std::uint8_t> riparian(data.hydrology.water_level.size(), 0);
+    for (size_t i = 0; i < riparian.size(); ++i) {
+        riparian[i] = std::isnan(data.hydrology.water_level[i]) ? 0 : 1;
+    }
+    std::vector<std::uint8_t> dilated(riparian.size());
+    for (int pass = 0; pass < 4; ++pass) {
+        std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
+            for (int x = 0; x < res; ++x) {
+                const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
+                               + static_cast<size_t>(x);
+                std::uint8_t v = riparian[i];
+                for (int dz = -1; dz <= 1 && !v; ++dz) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int nx = x + dx;
+                        const int nz = z + dz;
+                        if (nx < 0 || nz < 0 || nx >= res || nz >= res) {
+                            continue;
+                        }
+                        if (riparian[static_cast<size_t>(nz) * res + nx]) {
+                            v = 1;
+                            break;
+                        }
+                    }
+                }
+                dilated[i] = v;
+            }
+        });
+        std::swap(riparian, dilated);
+    }
+
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
         for (int x = 0; x < res; ++x) {
             const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
@@ -209,10 +241,14 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                                                            : Material::Grass;
                 } else {
                     // Bosque: denso abajo, se aclara mucho antes de la treeline.
+                    // La ribera de ríos y lagos concentra bosque de galería.
                     const float forest =
                         noise.fbm(p_km * kForestFreq + glm::vec3{-29.1f, 0.0f, 63.8f}, 4);
-                    const float forest_threshold =
+                    float forest_threshold =
                         0.06f + 0.70f * smoothstep(treeline - 350.0f, treeline, h);
+                    if (riparian[i]) {
+                        forest_threshold -= 0.30f;
+                    }
                     if (forest > forest_threshold) {
                         m = Material::Forest;
                     }

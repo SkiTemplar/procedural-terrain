@@ -61,8 +61,8 @@ void main() {
     // para no meter ruido en la distancia.
     float dist = length(v_world_pos - u_camera_pos);
     float tex = 0.55 * vnoise(v_world_pos.xz * 0.65) + 0.45 * vnoise(v_world_pos.xz * 0.11);
-    float tex_fade = exp(-dist * 0.002);
-    lit *= 1.0 + (tex - 0.5) * 0.16 * tex_fade;
+    float tex_fade = exp(-dist * 0.0035);
+    lit *= 1.0 + (tex - 0.5) * 0.10 * tex_fade;
 
     float fog = 1.0 - exp(-u_fog_density * dist);
     vec3 color = mix(lit, u_sky_color, fog);

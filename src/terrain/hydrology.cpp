@@ -1,5 +1,7 @@
 #include "terrain/hydrology.h"
 
+#include <glm/common.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -235,12 +237,20 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
         return std::min(std::log(out.flow[i] / threshold + 1.0f) / 3.0f, 1.0f);
     };
 
+    // Los ríos nacen gradualmente: la lámina crece de 0 durante el primer
+    // tramo tras superar el umbral (nada de arroyos que aparecen de la nada).
+    const auto water_depth_of = [&](size_t i) {
+        const float birth = glm::clamp(
+            (out.flow[i] / threshold - 1.0f) / 1.5f, 0.0f, 1.0f);
+        return (0.35f + 1.1f * intensity_of(i)) * birth;
+    };
+
     for (const size_t i : order) { // de arriba a abajo
         if (!is_river(i)) {
             continue;
         }
         if (level[i] == std::numeric_limits<float>::infinity()) {
-            level[i] = bed0[i] + 0.35f + 1.1f * intensity_of(i);
+            level[i] = bed0[i] + water_depth_of(i);
         }
         // Los lagos imponen su lámina.
         if (!std::isnan(out.water_level[i])) {
@@ -248,7 +258,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
         }
         const size_t down = downstream[i];
         if (down != kNone && is_river(down)) {
-            const float own_down = bed0[down] + 0.35f + 1.1f * intensity_of(down);
+            const float own_down = bed0[down] + water_depth_of(down);
             const float candidate = std::min(level[i], own_down);
             if (level[down] == std::numeric_limits<float>::infinity()
                 || candidate < level[down]) {
@@ -336,6 +346,10 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
                             out.water_level[ni] = std::isnan(out.water_level[ni])
                                 ? candidate
                                 : std::min(out.water_level[ni], candidate);
+                            // Socavón garantizado: toda celda con lámina tiene
+                            // cauce debajo — sin agua "pasando por encima".
+                            hf.data()[ni] =
+                                std::min(hf.data()[ni], candidate - 0.35f);
                         }
                     }
                 }
