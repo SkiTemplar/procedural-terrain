@@ -20,6 +20,16 @@ float rock_banding(float y) {
     return 0.93f + 0.07f * std::sin(y * 0.35f);
 }
 
+// Color del suelo con gradiente de bosque: la pradera oscurece suavemente
+// hacia el verde de bosque según la densidad — sin frontera binaria.
+glm::vec3 ground_color(Material m, float forest_density) {
+    if (m == Material::Grass || m == Material::Forest) {
+        return glm::mix(material_color(Material::Grass),
+                        material_color(Material::Forest), forest_density);
+    }
+    return material_color(m);
+}
+
 // Malla de rejilla + faldón perimetral. get_vertex(i, j) devuelve el vértice
 // (posición+color) del nodo (i, j) de una rejilla de (w+1)×(h+1) nodos.
 // La generación de vértices va en paralelo (get_vertex debe ser thread-safe);
@@ -176,7 +186,9 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                 if (m == Material::Rock) {
                     tint *= rock_banding(wy);
                 }
-                return render::Vertex{{wx, wy, wz}, material_color(m) * tint};
+                const glm::vec3 color =
+                    ground_color(m, sampler_->forest_density_near(wx, wz));
+                return render::Vertex{{wx, wy, wz}, color * tint};
             });
         }
         const int stride = level == 2 ? 1 : 4;
@@ -191,8 +203,11 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
             if (m == Material::Rock) {
                 tint *= rock_banding(wy);
             }
+            const float density = data_->forest_density[
+                static_cast<size_t>(sz) * static_cast<size_t>(res)
+                + static_cast<size_t>(sx)];
             return render::Vertex{{hf.world_x(sx), wy, hf.world_z(sz)},
-                                  material_color(m) * tint};
+                                  ground_color(m, density) * tint};
         });
     }();
 

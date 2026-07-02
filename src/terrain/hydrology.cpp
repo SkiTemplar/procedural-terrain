@@ -113,8 +113,8 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                 }
                 const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f,
                                      hf.world_z(z) / 1000.0f};
-                hf.data()[i] += noise.fbm(p_km * 2.3f + glm::vec3{5.9f, 0.0f, -71.2f}, 2)
-                              * 1.2f * flatness[i];
+                hf.data()[i] += noise.fbm(p_km * 4.5f + glm::vec3{5.9f, 0.0f, -71.2f}, 2)
+                              * 0.8f * flatness[i];
             }
         }
     }
@@ -134,15 +134,25 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     out.water_level.assign(filled.size(), kNoWater);
     out.lake.assign(filled.size(), 0);
 
-    // Flujo D8: cada celda vierte a su vecino más bajo. Se guarda el índice
-    // aguas abajo para poder recorrer los cauces después.
+    // Flujo D8 con desempate estocástico: cuando dos vecinos bajan casi lo
+    // mismo, un hash por celda decide — los cauces serpentean localmente en
+    // vez de trazar rectas paralelas siguiendo el gradiente dominante.
+    const auto cell_hash = [](int x, int z) {
+        std::uint32_t h = static_cast<std::uint32_t>(x) * 374761393u
+                        + static_cast<std::uint32_t>(z) * 668265263u;
+        h = (h ^ (h >> 13)) * 1274126177u;
+        return static_cast<float>(h & 0xFFFFu) / 65535.0f;
+    };
+
     std::vector<size_t> downstream(filled.size(), kNone);
     for (const size_t i : order) {
         const int x = static_cast<int>(i % static_cast<size_t>(res));
         const int z = static_cast<int>(i / static_cast<size_t>(res));
 
         float best_drop = 0.0f;
+        float second_drop = 0.0f;
         size_t best = kNone;
+        size_t second = kNone;
         for (int n = 0; n < 8; ++n) {
             const int nx = x + kDx[n];
             const int nz = z + kDz[n];
@@ -151,9 +161,18 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
             }
             const float drop = filled[i] - filled[idx(nx, nz)];
             if (drop > best_drop) {
+                second_drop = best_drop;
+                second = best;
                 best_drop = drop;
                 best = idx(nx, nz);
+            } else if (drop > second_drop) {
+                second_drop = drop;
+                second = idx(nx, nz);
             }
+        }
+        if (second != kNone && second_drop > 0.55f * best_drop
+            && cell_hash(x, z) < 0.5f) {
+            best = second;
         }
         downstream[i] = best;
         if (best != kNone) {

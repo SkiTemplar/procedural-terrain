@@ -73,7 +73,23 @@ void run() {
         auto world = std::make_unique<World>(state.pending_config);
         state.last_generation_seconds =
             std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
-        std::cout << "Terreno generado en " << state.last_generation_seconds << " s\n";
+
+        // Informe numérico: permite juzgar el carácter del mundo sin volar.
+        const auto& data = world->data;
+        float max_h = -1e9f;
+        size_t counts[8] = {};
+        for (size_t i = 0; i < data.material.size(); ++i) {
+            max_h = std::max(max_h, data.height.data()[i]);
+            counts[static_cast<size_t>(data.material[i])]++;
+        }
+        const float total = static_cast<float>(data.material.size());
+        std::cout << "Terreno generado en " << state.last_generation_seconds
+                  << " s | alt max " << static_cast<int>(max_h) << " m | mar "
+                  << static_cast<int>(100.0f * counts[0] / total) << "% hierba "
+                  << static_cast<int>(100.0f * counts[2] / total) << "% bosque "
+                  << static_cast<int>(100.0f * counts[3] / total) << "% roca "
+                  << static_cast<int>(100.0f * counts[4] / total) << "% nieve "
+                  << static_cast<int>(100.0f * counts[5] / total) << "%\n";
         return world;
     };
 

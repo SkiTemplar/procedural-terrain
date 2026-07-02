@@ -24,16 +24,25 @@ float DetailSampler::material_roughness(Material m) {
     return 1.0f;
 }
 
-Material DetailSampler::material_near(float wx, float wz) const {
-    const auto& hf = data_->height;
+namespace {
+
+size_t nearest_index(const Heightfield& hf, float wx, float wz) {
     const int res = hf.resolution();
     const float half = hf.size() * 0.5f;
     const float inv_cell = 1.0f / hf.cell_size();
-
     const int x = std::clamp(static_cast<int>(std::round((wx + half) * inv_cell)), 0, res - 1);
     const int z = std::clamp(static_cast<int>(std::round((wz + half) * inv_cell)), 0, res - 1);
-    return data_->material[static_cast<size_t>(z) * static_cast<size_t>(res)
-                           + static_cast<size_t>(x)];
+    return static_cast<size_t>(z) * static_cast<size_t>(res) + static_cast<size_t>(x);
+}
+
+} // namespace
+
+Material DetailSampler::material_near(float wx, float wz) const {
+    return data_->material[nearest_index(data_->height, wx, wz)];
+}
+
+float DetailSampler::forest_density_near(float wx, float wz) const {
+    return data_->forest_density[nearest_index(data_->height, wx, wz)];
 }
 
 float DetailSampler::height(float wx, float wz) const {

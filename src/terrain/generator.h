@@ -23,7 +23,8 @@ enum class Material : std::uint8_t {
 struct TerrainData {
     Heightfield height{2, 1.0f};
     Hydrology hydrology;
-    std::vector<Material> material; // por muestra del heightfield
+    std::vector<Material> material;      // por muestra del heightfield
+    std::vector<float> forest_density;   // [0,1] gradiente de bosque
     TerrainConfig config;
 };
 

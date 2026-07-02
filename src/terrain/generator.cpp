@@ -17,9 +17,10 @@ namespace {
 
 // Frecuencias en 1/km: el ruido se muestrea con la posición en kilómetros
 // para que los parámetros sean independientes del tamaño del mapa.
-constexpr float kBaseFreq = 0.45f;     // rugosidad de montaña
-constexpr float kHillFreq = 0.18f;     // colinillas de pradera (~1-5 km)
-constexpr float kMountainFreq = 0.15f; // cordilleras (cresta ~3.3 km)
+// Frecuencias del sistema ORIGINAL (hito 2, el carácter que funcionó):
+constexpr float kBaseFreq = 0.45f;      // colinas
+constexpr float kMountainFreq = 0.28f;  // cordilleras
+constexpr float kRangeMaskFreq = 0.13f; // dónde hay cordillera
 constexpr float kWarpFreq = 0.35f;
 
 float smoothstep(float edge0, float edge1, float x) {
@@ -61,44 +62,19 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
                 * smoothstep(0.78f, 0.95f, d) * smoothstep(1.35f, 1.0f, d);
             continent = std::max(continent, satellite * 0.5f);
 
-            // Macizos por doble máscara de ruido: 'bulk' lento (1-2 macizos
-            // por isla) recortado por 'shape' medio (bordes orgánicos).
-            const float bulk = noise.fbm(pr * 0.08f + glm::vec3{53.7f, 0.0f, -11.9f}, 3)
-                             * 0.5f + 0.5f;
-            const float shape = noise.fbm(pr * 0.22f + glm::vec3{-8.1f, 0.0f, 77.3f}, 3)
-                              * 0.5f + 0.5f;
-            const float range_mask =
-                smoothstep(0.40f, 0.72f, bulk) * smoothstep(0.38f, 0.68f, shape);
-
-            // Base: colinillas suaves (fbm lento) en pradera, rugosidad solo
-            // dentro de la montaña — ni caos de montículos ni meseta.
-            const float hill =
-                noise.fbm(pr * kHillFreq, 3, 2.2f, 0.42f) * 0.5f + 0.5f;
-            const float rough = noise.fbm(pr * kBaseFreq, 5) * 0.5f + 0.5f;
-            const float prairie_w = 1.0f - smoothstep(0.30f, 0.65f, range_mask);
-            const float base01 = rough + (hill - rough) * prairie_w;
-
+            // Relieve del sistema ORIGINAL (hito 2): fBM de colinas + ridged²
+            // con máscara orgánica. Fue el carácter más natural: montañas
+            // altas de verdad, lagos de montaña, praderas onduladas.
+            const float base01 = noise.fbm(pr * kBaseFreq, 5) * 0.5f + 0.5f;
             const float ridge = noise.ridged(pr * kMountainFreq, 5);
+            const float range_mask = smoothstep(
+                0.45f, 0.75f,
+                noise.fbm(pr * kRangeMaskFreq + glm::vec3{53.7f, 0.0f, -11.9f}, 3)
+                    * 0.5f + 0.5f);
+
             float land = continent * (cfg.base_height_m * base01)
                        + std::pow(continent, 1.5f) * cfg.mountain_height_m
-                             * std::pow(ridge, 1.1f) * range_mask;
-
-            // Detalle ridged fino solo en las cimas: crestería alpina.
-            const float ridge2 =
-                noise.ridged(pr * 0.55f + glm::vec3{17.0f, 0.0f, -33.0f}, 4);
-            land += 90.0f * smoothstep(0.6f, 1.0f, range_mask)
-                  * continent * continent * ridge2;
-
-            // Curva de valles: comprime las alturas bajas para que los fondos
-            // de valle sean anchos y planos y el relieve se concentre arriba.
-            // Se normaliza por el techo local (colinas + cordillera efectiva),
-            // no por el máximo global, para no aplastar las zonas sin montaña.
-            if (land > 0.0f) {
-                const float local_ceiling =
-                    cfg.base_height_m + cfg.mountain_height_m * range_mask;
-                const float norm = std::min(land / local_ceiling, 1.0f);
-                land = local_ceiling * std::pow(norm, 1.5f);
-            }
+                             * ridge * ridge * range_mask;
 
             const float seabed = (1.0f - continent) * cfg.sea_depth;
             hf.at(x, z) = cfg.sea_level + land - seabed;
@@ -158,6 +134,7 @@ void classify_materials(TerrainData& data, const Noise& noise) {
     const int res = hf.resolution();
     data.material.assign(static_cast<size_t>(res) * static_cast<size_t>(res),
                          Material::Grass);
+    data.forest_density.assign(data.material.size(), 0.0f);
 
     const float threshold_flow = cfg.river_flow_threshold
                                * (static_cast<float>(res) * static_cast<float>(res))
@@ -264,7 +241,12 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                     if (riparian[i]) {
                         forest_threshold -= 0.20f;
                     }
-                    if (forest_n > forest_threshold) {
+                    // GRADIENTE, no binario: la densidad crece suave a través
+                    // del umbral; el material solo etiqueta el núcleo denso.
+                    const float density = glm::clamp(
+                        (forest_n - forest_threshold + 0.18f) / 0.36f, 0.0f, 1.0f);
+                    data.forest_density[i] = density;
+                    if (density > 0.5f) {
                         m = Material::Forest;
                     }
                 }

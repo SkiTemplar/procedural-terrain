@@ -19,11 +19,10 @@ struct TerrainConfig {
     float island_radius = 0.55f; // fracción del semiancho donde empieza la costa
     float coast_warp_m = 700.0f; // distorsión de la línea de costa
 
-    // Relieve
-    float base_height_m = 70.0f;       // colinillas (fbm) — ni caos ni meseta
-    // Montañas altas (mucha nieve); la máscara de ruido reparte los macizos
-    // con laderas de varios km, sin bordes de placa.
-    float mountain_height_m = 1300.0f;
+    // Relieve — valores del sistema original (hito 2): el carácter que
+    // funcionó, con montañas altas, praderas onduladas y lagos de montaña.
+    float base_height_m = 180.0f;
+    float mountain_height_m = 1200.0f;
 
     // Erosión hidráulica (gotas)
     int erosion_droplets = 600000;
@@ -31,10 +30,10 @@ struct TerrainConfig {
     float erosion_deposit = 0.30f;  // deposit rate
     float erosion_inertia = 0.10f;
 
-    // Erosión térmica (pedreras, faldas al pie de la montaña). Las pasadas
-    // altas son las que imponen el ángulo de reposo en las laderas grandes.
-    int thermal_iterations = 32;
-    float talus_slope = 0.75f; // tan del ángulo de reposo (~37°)
+    // Erosión térmica (pedreras, faldas al pie de la montaña). Moderada:
+    // la agresiva (32 iter, 37°) planchaba el carácter del relieve original.
+    int thermal_iterations = 8;
+    float talus_slope = 0.9f; // tan del ángulo de reposo (~42°)
 
     // Costa: comprime las alturas bajas → playas anchas y planas. Banda
     // ancha: con 9 m la transición parecía un escalón de rasante.
