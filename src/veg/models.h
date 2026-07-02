@@ -19,5 +19,6 @@ ModelData make_broadleaf(); // frondoso: tronco + copa icosférica deformada (~7
 ModelData make_rock();      // pedrusco: icosfera deformada (~1 m)
 ModelData make_tuft();      // mata de hierba: abanico de conos finos (~0.5 m)
 ModelData make_bush();      // arbusto: icosfera achatada (~1 m)
+ModelData make_log();       // tronco caído: prisma tumbado con conicidad (~4 m)
 
 } // namespace veg

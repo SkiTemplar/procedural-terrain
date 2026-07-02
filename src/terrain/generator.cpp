@@ -75,9 +75,9 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
                        + std::pow(continent, 1.5f) * cfg.mountain_height_m
                              * ridge * ridge * range_mask;
 
-            // Rifts (fosas divergentes) y zanjas de falla transformante.
+            // Rifts (fosas divergentes). Las zanjas de falla se eliminaron:
+            // cortaban la isla con líneas artificiales.
             land -= continent * cfg.rift_depth_m * tect.rift;
-            land -= continent * cfg.fault_depth_m * tect.fault;
 
             // Curva de valles: comprime las alturas bajas para que los fondos
             // de valle sean anchos y planos y el relieve se concentre arriba.
@@ -87,7 +87,7 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
                 const float local_ceiling =
                     cfg.base_height_m + cfg.mountain_height_m * range_mask;
                 const float norm = std::min(land / local_ceiling, 1.0f);
-                land = local_ceiling * std::pow(norm, 1.35f);
+                land = local_ceiling * std::pow(norm, 1.5f);
             }
 
             const float seabed = (1.0f - continent) * cfg.sea_depth;
@@ -96,41 +96,49 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
     });
 }
 
-// Erosión costera simplificada: la franja baja junto al mar se comprime hacia
-// el nivel del mar → playas anchas y llanas. Solo donde la costa ya es suave:
-// las costas abruptas se dejan intactas y quedan como acantilados de roca.
-void flatten_coast(Heightfield& hf, const TerrainConfig& cfg) {
-    const float band = cfg.coast_flatten_band_m;
+// Costa por sectores: un ruido de baja frecuencia (~2 km) decide qué tramos
+// de litoral son playa (perfil comprimido, llano) y cuáles acantilado (la
+// masa baja se empuja hacia arriba → pared que cae al mar). Así los
+// acantilados son tramos de costa coherentes, no artefactos puntuales.
+void shape_coast(Heightfield& hf, const Noise& noise, const TerrainConfig& cfg) {
+    constexpr float kCliffBandM = 30.0f; // altura del frente de acantilado
+    const float beach_band = cfg.coast_flatten_band_m;
     const int res = hf.resolution();
     const std::vector<float> original(hf.data());
-    const float inv_cell = 1.0f / hf.cell_size();
+    const auto rows = row_indices(res);
 
-    for (int z = 1; z < res - 1; ++z) {
+    std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
         for (int x = 1; x < res - 1; ++x) {
             const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
                            + static_cast<size_t>(x);
             const float rel = original[i] - cfg.sea_level;
-            if (rel <= 0.0f || rel >= band) {
+            if (rel <= 0.0f || rel >= kCliffBandM) {
                 continue;
             }
-            // Pendiente local sobre el terreno original.
-            const float slope = std::max(
-                std::abs(original[i + 1] - original[i - 1]),
-                std::abs(original[i + static_cast<size_t>(res)]
-                         - original[i - static_cast<size_t>(res)]))
-                * 0.5f * inv_cell;
-            // Costa suave → playa; costa abrupta → acantilado sin tocar.
-            const float cliff_keep = smoothstep(0.3f, 0.6f, slope);
-            if (cliff_keep >= 1.0f) {
-                continue;
+
+            const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f, hf.world_z(z) / 1000.0f};
+            const float cliff = smoothstep(
+                0.18f, 0.42f,
+                noise.fbm(p_km * 0.55f + glm::vec3{-61.4f, 0.0f, 23.8f}, 3));
+
+            // Perfil de playa: compresión suave dentro de la banda baja.
+            float beach_h = original[i];
+            if (rel < beach_band) {
+                const float t = rel / beach_band;
+                const float ease = t * t * (3.0f - 2.0f * t);
+                const float compress =
+                    1.0f - cfg.coast_flatten_strength * (1.0f - ease);
+                beach_h = cfg.sea_level + rel * compress;
             }
-            const float t = rel / band;
-            const float ease = t * t * (3.0f - 2.0f * t);
-            const float compress =
-                1.0f - cfg.coast_flatten_strength * (1.0f - ease) * (1.0f - cliff_keep);
-            hf.data()[i] = cfg.sea_level + rel * compress;
+
+            // Perfil de acantilado: la cota sube de golpe junto al agua
+            // (exponente < 1 → pared) y remata en una repisa alta.
+            const float t = rel / kCliffBandM;
+            const float cliff_h = cfg.sea_level + kCliffBandM * std::pow(t, 0.35f);
+
+            hf.data()[i] = beach_h + (cliff_h - beach_h) * cliff;
         }
-    }
+    });
 }
 
 // Nieve y pisos de vegetación realistas. La nieve no es una cota: depende de
@@ -182,13 +190,15 @@ void classify_materials(TerrainData& data, const Noise& noise) {
 
                 // Score de nieve: altitud relativa + umbría − pendiente + parches.
                 float snow_score =
-                    (h - (cfg.snow_line_m + snow_edge_jitter)) / 140.0f;
+                    (h - (cfg.snow_line_m + snow_edge_jitter)) / 120.0f;
                 snow_score += 0.30f * std::max(n.z, 0.0f); // cara norte
-                snow_score -= 0.85f * slope;               // paredes desnudas
+                snow_score -= 0.75f * slope;               // paredes desnudas
                 snow_score += 0.25f * patch;               // parches irregulares
                 snow_score += 0.18f * speckle;             // moteado del borde
 
-                const float treeline = cfg.snow_line_m - 260.0f
+                // Treeline bien por debajo de la nieve: la alta montaña es
+                // roca y pradera rala, no bosque.
+                const float treeline = cfg.snow_line_m - 380.0f
                     + noise.fbm(p_km * 2.3f + glm::vec3{41.0f, 0.0f, -8.5f}, 2) * 80.0f;
 
                 if (snow_score > 0.0f) {
@@ -196,17 +206,16 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                 } else if (slope > cfg.rock_slope) {
                     m = Material::Rock;
                 } else if (h > treeline) {
-                    // Piso alpino: pradera rala con roquedo a parches, más
-                    // roca cuanto más cerca de la nieve.
+                    // Piso alpino: cada vez más roca al acercarse a la nieve.
                     const float alpine_t = smoothstep(treeline, cfg.snow_line_m, h);
-                    m = (patch > 0.35f - 0.45f * alpine_t) ? Material::Rock
+                    m = (patch > 0.25f - 0.55f * alpine_t) ? Material::Rock
                                                            : Material::Grass;
                 } else {
-                    // Bosque: denso abajo, se aclara al acercarse a la treeline.
+                    // Bosque: denso abajo, se aclara mucho antes de la treeline.
                     const float forest =
                         noise.fbm(p_km * kForestFreq + glm::vec3{-29.1f, 0.0f, 63.8f}, 4);
                     const float forest_threshold =
-                        0.06f + 0.55f * smoothstep(treeline - 250.0f, treeline, h);
+                        0.06f + 0.70f * smoothstep(treeline - 350.0f, treeline, h);
                     if (forest > forest_threshold) {
                         m = Material::Forest;
                     }
@@ -229,7 +238,7 @@ TerrainData generate(const TerrainConfig& cfg) {
     build_base_relief(data.height, noise, cfg);
     erode(data.height, cfg);
     thermal_erode(data.height, cfg.thermal_iterations, cfg.talus_slope);
-    flatten_coast(data.height, cfg);
+    shape_coast(data.height, noise, cfg);
     data.hydrology = compute_hydrology(data.height, cfg);
     classify_materials(data, noise);
 

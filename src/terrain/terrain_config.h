@@ -21,12 +21,11 @@ struct TerrainConfig {
 
     // Relieve
     float base_height_m = 180.0f;      // colinas (fbm)
-    float mountain_height_m = 1200.0f; // cordilleras (ridged)
+    float mountain_height_m = 1400.0f; // cordilleras (ridged)
 
     // Tectónica: las cordilleras siguen los bordes convergentes de placa.
     float tectonic_strength = 1.0f; // multiplicador del uplift
-    float rift_depth_m = 45.0f;     // hundimiento en bordes divergentes
-    float fault_depth_m = 5.0f;     // zanja de las fallas transformantes
+    float rift_depth_m = 25.0f;     // hundimiento en bordes divergentes
 
     // Erosión hidráulica (gotas)
     int erosion_droplets = 600000;
@@ -52,7 +51,7 @@ struct TerrainConfig {
     float detail_amplitude_m = 1.4f;
 
     // Clasificación
-    float snow_line_m = 900.0f;
+    float snow_line_m = 750.0f;
     float rock_slope = 0.85f; // pendiente (tan) a partir de la cual es roca
     float beach_band_m = 7.0f;
 };

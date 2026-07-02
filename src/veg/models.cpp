@@ -174,4 +174,40 @@ ModelData make_bush() {
     return out;
 }
 
+ModelData make_log() {
+    ModelData out;
+    const glm::vec3 bark = kTrunkColor * 0.85f;
+    constexpr int kSides = 6;
+    constexpr float kLength = 4.2f;
+    constexpr float kR0 = 0.38f; // base
+    constexpr float kR1 = 0.26f; // punta
+
+    // Prisma tumbado a lo largo de +X, apoyado en el suelo (y ≈ radio).
+    const auto base = static_cast<std::uint32_t>(out.vertices.size());
+    for (int i = 0; i < kSides; ++i) {
+        const float a = glm::two_pi<float>() * static_cast<float>(i) / kSides;
+        const float cy = std::cos(a);
+        const float cz = std::sin(a);
+        out.vertices.push_back({{0.0f, kR0 * (cy + 0.85f), kR0 * cz}, bark});
+        out.vertices.push_back(
+            {{kLength, kR1 * (cy + 0.85f), kR1 * cz}, bark * 1.12f});
+    }
+    for (int i = 0; i < kSides; ++i) {
+        const auto a0 = base + static_cast<std::uint32_t>(2 * i);
+        const auto a1 = a0 + 1;
+        const auto b0 = base + static_cast<std::uint32_t>(2 * ((i + 1) % kSides));
+        const auto b1 = b0 + 1;
+        out.indices.insert(out.indices.end(), {a0, b0, a1, a1, b0, b1});
+    }
+    // Tapa del extremo grueso (abanico).
+    const auto center = static_cast<std::uint32_t>(out.vertices.size());
+    out.vertices.push_back({{0.0f, kR0 * 0.85f, 0.0f}, bark * 0.9f});
+    for (int i = 0; i < kSides; ++i) {
+        const auto a0 = base + static_cast<std::uint32_t>(2 * i);
+        const auto b0 = base + static_cast<std::uint32_t>(2 * ((i + 1) % kSides));
+        out.indices.insert(out.indices.end(), {center, a0, b0});
+    }
+    return out;
+}
+
 } // namespace veg

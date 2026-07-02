@@ -11,7 +11,11 @@ namespace terrain {
 namespace {
 
 constexpr float kNoWater = std::numeric_limits<float>::quiet_NaN();
-constexpr float kLakeEpsilon = 0.05f; // m de relleno para considerar lago
+constexpr float kLakeEpsilon = 0.15f; // m de relleno para considerar lago
+// Pendiente mínima del relleno (priority-flood+epsilon, Barnes 2014): sin
+// ella las zonas rellenadas quedan planas, el D8 no encuentra vecino más
+// bajo y la acumulación de flujo se corta — los ríos morían a trozos.
+constexpr float kFillEpsilon = 0.0002f;
 
 struct Cell {
     float height;
@@ -67,7 +71,7 @@ std::vector<float> fill_depressions(const Heightfield& hf) {
                 continue;
             }
             processed[ni] = true;
-            filled[ni] = std::max(filled[ni], cell.height);
+            filled[ni] = std::max(filled[ni], cell.height + kFillEpsilon);
             open.push({filled[ni], nx, nz});
         }
     }
@@ -237,7 +241,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
 
             // Llanura aluvial: los ríos grandes abren un valle ancho y somero
             // alrededor del cauce (perfil suave, sin tocar laderas altas).
-            if (intensity > 0.45f) {
+            if (intensity > 0.35f) {
                 const int flood_radius = radius * 4;
                 const float flood_depth = depth * 0.15f;
                 for (int dz = -flood_radius; dz <= flood_radius; ++dz) {

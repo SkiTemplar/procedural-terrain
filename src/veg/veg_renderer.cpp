@@ -24,6 +24,7 @@ struct Placement {
     std::vector<render::Instance> rocks;
     std::vector<render::Instance> tufts;
     std::vector<render::Instance> bushes;
+    std::vector<render::Instance> logs;
 };
 
 // Tintes de flor para una fracción de las matas (multiplican el verde base).
@@ -70,23 +71,27 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             float rock_p = 0.0f;
             float tuft_p = 0.0f;
             float bush_p = 0.0f;
+            float boulder_p = 0.0f;
+            float log_p = 0.0f;
             switch (m) {
                 case terrain::Material::Forest:
-                    tree_p = 0.080f; rock_p = 0.0012f; tuft_p = 0.050f; bush_p = 0.012f;
+                    tree_p = 0.080f; rock_p = 0.0012f; tuft_p = 0.085f;
+                    bush_p = 0.012f; boulder_p = 0.00035f; log_p = 0.0025f;
                     break;
                 case terrain::Material::Grass:
-                    tree_p = 0.0040f; rock_p = 0.0020f; tuft_p = 0.120f; bush_p = 0.010f;
+                    tree_p = 0.0040f; rock_p = 0.0020f; tuft_p = 0.200f;
+                    bush_p = 0.010f; boulder_p = 0.00045f;
                     break;
                 case terrain::Material::Rock:
-                    rock_p = 0.010f;
+                    rock_p = 0.010f; boulder_p = 0.0008f;
                     break;
                 case terrain::Material::Sand:
-                    tuft_p = 0.004f; // hierba rala de duna
+                    tuft_p = 0.008f; // hierba rala de duna
                     break;
                 default:
                     break;
             }
-            const float total_p = tree_p + rock_p + tuft_p + bush_p;
+            const float total_p = tree_p + rock_p + tuft_p + bush_p + boulder_p + log_p;
             const float roll = hash01(static_cast<std::uint32_t>(x),
                                       static_cast<std::uint32_t>(z), salt);
             if (roll >= total_p) {
@@ -133,7 +138,7 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 cell.rocks.push_back(render::Instance{{wx, wy - 0.2f * scale, wz, scale},
                                                       {tint, tint, tint, yaw}});
             } else if (roll < tree_p + rock_p + tuft_p) {
-                const float scale = 0.8f + 1.0f * scale_r;
+                const float scale = 0.6f + 0.7f * scale_r;
                 glm::vec3 t{tint, tint, tint};
                 // Una fracción de las matas florece.
                 const float flower = hash01(static_cast<std::uint32_t>(x),
@@ -143,10 +148,39 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 }
                 cell.tufts.push_back(
                     render::Instance{{wx, wy - 0.04f, wz, scale}, {t.r, t.g, t.b, yaw}});
-            } else {
+            } else if (roll < tree_p + rock_p + tuft_p + bush_p) {
                 const float scale = 0.6f + 0.9f * scale_r;
                 cell.bushes.push_back(render::Instance{{wx, wy - 0.08f, wz, scale},
                                                        {tint, tint, tint, yaw}});
+            } else if (roll < tree_p + rock_p + tuft_p + bush_p + boulder_p) {
+                // Roca grande con séquito: 2-3 rocas medianas alrededor.
+                const float scale = 2.6f + 3.0f * scale_r;
+                cell.rocks.push_back(render::Instance{{wx, wy - 0.25f * scale, wz, scale},
+                                                      {tint, tint, tint, yaw}});
+                const int companions = 2 + static_cast<int>(
+                    hash01(static_cast<std::uint32_t>(x),
+                           static_cast<std::uint32_t>(z), salt + 8) * 2.0f);
+                for (int c = 0; c < companions; ++c) {
+                    const float ca = hash01(static_cast<std::uint32_t>(x + c),
+                                            static_cast<std::uint32_t>(z), salt + 9)
+                                   * 6.2831853f;
+                    const float cd = scale * (0.8f + 0.6f * hash01(
+                        static_cast<std::uint32_t>(x),
+                        static_cast<std::uint32_t>(z + c), salt + 10));
+                    const float cwx = wx + cd * std::cos(ca);
+                    const float cwz = wz + cd * std::sin(ca);
+                    const float cwy = sampler.height(cwx, cwz);
+                    const float cscale = 0.6f + 1.1f * hash01(
+                        static_cast<std::uint32_t>(x + c),
+                        static_cast<std::uint32_t>(z + c), salt + 11);
+                    cell.rocks.push_back(
+                        render::Instance{{cwx, cwy - 0.2f * cscale, cwz, cscale},
+                                         {tint, tint, tint, ca}});
+                }
+            } else {
+                const float scale = 0.8f + 0.6f * scale_r;
+                cell.logs.push_back(render::Instance{{wx, wy - 0.05f, wz, scale},
+                                                     {tint, tint, tint, yaw}});
             }
         }
     }
@@ -159,12 +193,13 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
     const ModelData rock = make_rock();
     const ModelData tuft = make_tuft();
     const ModelData bush = make_bush();
+    const ModelData log_model = make_log();
 
     for (int cz = 0; cz < cells_per_side; ++cz) {
         for (int cx = 0; cx < cells_per_side; ++cx) {
             Placement& p = placements[static_cast<size_t>(cz) * cells_per_side + cx];
             if (p.pines.empty() && p.broadleafs.empty() && p.rocks.empty()
-                && p.tufts.empty() && p.bushes.empty()) {
+                && p.tufts.empty() && p.bushes.empty() && p.logs.empty()) {
                 continue;
             }
             Cell cell;
@@ -181,6 +216,7 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             add(cell.batches_far, pine, p.pines);
             add(cell.batches_far, broadleaf, p.broadleafs);
             add(cell.batches_far, rock, p.rocks);
+            add(cell.batches_far, log_model, p.logs);
             add(cell.batches_near, tuft, p.tufts);
             add(cell.batches_near, bush, p.bushes);
             cells_.push_back(std::move(cell));

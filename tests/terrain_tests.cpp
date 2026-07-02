@@ -225,6 +225,22 @@ TEST(Generator, SinMicrolagosDeUnaCelda) {
     }
 }
 
+TEST(Generator, ElRioPrincipalDesembocaEnElMar) {
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+
+    // La celda con máxima acumulación es la desembocadura y debe estar a cota
+    // de mar. Sin el drenaje continuo (priority-flood+epsilon) el flujo se
+    // cortaba en cualquier llanura interior a media altura.
+    const auto& flow = data.hydrology.flow;
+    const size_t imax = static_cast<size_t>(
+        std::max_element(flow.begin(), flow.end()) - flow.begin());
+    const int res = data.height.resolution();
+    const int x = static_cast<int>(imax % static_cast<size_t>(res));
+    const int z = static_cast<int>(imax / static_cast<size_t>(res));
+    EXPECT_LT(data.height.at(x, z), cfg.sea_level + 10.0f);
+}
+
 TEST(Tectonics, DeterministaYAcotada) {
     const terrain::Tectonics a(42, 5000.0f);
     const terrain::Tectonics b(42, 5000.0f);
