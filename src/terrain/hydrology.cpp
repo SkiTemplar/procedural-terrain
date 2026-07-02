@@ -126,22 +126,52 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg) {
         }
     }
 
-    // Ríos: talla el cauce proporcional al log del flujo y pon lámina de agua.
+    // Ríos: pocos pero grandes. El cauce se talla con anchura y profundidad
+    // proporcionales al log del flujo, con perfil parabólico (hondo en el eje,
+    // suave en las orillas).
+    const std::vector<float> pre_carve(hf.data());
     for (int z = 1; z < res - 1; ++z) {
         for (int x = 1; x < res - 1; ++x) {
             const size_t i = idx(x, z);
-            if (out.flow[i] < cfg.river_flow_threshold || hf.at(x, z) <= cfg.sea_level) {
+            if (out.flow[i] < cfg.river_flow_threshold
+                || pre_carve[i] <= cfg.sea_level) {
                 continue;
             }
             const float intensity = std::min(
-                std::log(out.flow[i] / cfg.river_flow_threshold + 1.0f), 3.0f);
-            const float depth = cfg.river_max_depth_m * intensity / 3.0f;
+                std::log(out.flow[i] / cfg.river_flow_threshold + 1.0f) / 3.0f, 1.0f);
+            const float depth = cfg.river_max_depth_m * intensity;
+            const int radius = std::max(
+                1, static_cast<int>(std::round(cfg.river_max_width_cells * intensity)));
 
-            const float ground = hf.at(x, z) - depth;
-            hf.at(x, z) = ground;
-            // Lámina de agua a media profundidad del cauce.
-            if (std::isnan(out.water_level[i])) {
-                out.water_level[i] = ground + depth * 0.5f;
+            const float axis_level = pre_carve[i] - depth;
+
+            for (int dz = -radius; dz <= radius; ++dz) {
+                for (int dx = -radius; dx <= radius; ++dx) {
+                    const int nx = x + dx;
+                    const int nz = z + dz;
+                    if (nx < 1 || nz < 1 || nx >= res - 1 || nz >= res - 1) {
+                        continue;
+                    }
+                    const float r = std::sqrt(static_cast<float>(dx * dx + dz * dz))
+                                  / static_cast<float>(radius);
+                    if (r > 1.0f) {
+                        continue;
+                    }
+                    const size_t ni = idx(nx, nz);
+                    // Perfil parabólico: máximo en el eje, 0 en la orilla.
+                    const float carve_depth = depth * (1.0f - r * r);
+                    const float target = axis_level + (depth - carve_depth);
+                    if (hf.data()[ni] > target) {
+                        hf.data()[ni] = target;
+                    }
+                    // Lámina de agua común al tramo, algo por encima del eje.
+                    const float level = axis_level + depth * 0.55f;
+                    if (std::isnan(out.water_level[ni]) || out.water_level[ni] < level) {
+                        if (hf.data()[ni] < level) {
+                            out.water_level[ni] = level;
+                        }
+                    }
+                }
             }
         }
     }

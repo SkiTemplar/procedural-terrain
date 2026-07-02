@@ -67,7 +67,10 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         ImGui::SliderFloat("altura colinas", &cfg.base_height_m, 30.0f, 500.0f, "%.0f m");
         ImGui::SliderFloat("altura montanas", &cfg.mountain_height_m, 0.0f, 2500.0f, "%.0f m");
         ImGui::SliderInt("gotas erosion", &cfg.erosion_droplets, 0, 600000);
-        ImGui::SliderFloat("umbral rios", &cfg.river_flow_threshold, 50.0f, 2000.0f, "%.0f");
+        ImGui::SliderFloat("umbral rios", &cfg.river_flow_threshold, 100.0f, 5000.0f, "%.0f");
+        ImGui::SliderInt("anchura rios", &cfg.river_max_width_cells, 1, 6);
+        ImGui::SliderFloat("aplanado costa", &cfg.coast_flatten_strength, 0.0f, 1.0f);
+        ImGui::SliderFloat("detalle fino", &cfg.detail_amplitude_m, 0.0f, 3.0f, "%.1f m");
         ImGui::SliderFloat("linea de nieve", &cfg.snow_line_m, 300.0f, 2400.0f, "%.0f m");
 
         if (ImGui::Button("Regenerar", ImVec2(-1.0f, 0.0f))) {

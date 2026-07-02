@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <utility>
+#include <vector>
 
 namespace terrain {
 
@@ -130,6 +132,50 @@ void erode(Heightfield& hf, const TerrainConfig& cfg) {
             water *= (1.0f - kEvaporation);
             cx = nx;
             cz = nz;
+        }
+    }
+}
+
+void thermal_erode(Heightfield& hf, int iterations, float talus_slope) {
+    const int res = hf.resolution();
+    const float max_diff = talus_slope * hf.cell_size();
+    constexpr float kTransfer = 0.5f; // fracción del exceso que se desprende
+
+    std::vector<float> delta(static_cast<size_t>(res) * static_cast<size_t>(res));
+    const auto idx = [res](int x, int z) {
+        return static_cast<size_t>(z) * static_cast<size_t>(res) + static_cast<size_t>(x);
+    };
+
+    for (int it = 0; it < iterations; ++it) {
+        std::fill(delta.begin(), delta.end(), 0.0f);
+
+        for (int z = 1; z < res - 1; ++z) {
+            for (int x = 1; x < res - 1; ++x) {
+                const float h = hf.at(x, z);
+                // Vecino más bajo (4-conectado basta y es estable).
+                float lowest = h;
+                int lx = x;
+                int lz = z;
+                for (const auto [dx, dz] :
+                     {std::pair{-1, 0}, {1, 0}, {0, -1}, {0, 1}}) {
+                    const float nh = hf.at(x + dx, z + dz);
+                    if (nh < lowest) {
+                        lowest = nh;
+                        lx = x + dx;
+                        lz = z + dz;
+                    }
+                }
+                const float diff = h - lowest;
+                if (diff > max_diff) {
+                    const float moved = kTransfer * (diff - max_diff) * 0.5f;
+                    delta[idx(x, z)] -= moved;
+                    delta[idx(lx, lz)] += moved;
+                }
+            }
+        }
+
+        for (size_t i = 0; i < delta.size(); ++i) {
+            hf.data()[i] += delta[i];
         }
     }
 }

@@ -8,7 +8,7 @@
 namespace player {
 
 void Controller::update(render::Camera& camera, const core::Input& input,
-                        const terrain::Heightfield& ground, float dt) {
+                        const terrain::DetailSampler& ground, float dt) {
     if (input.was_pressed(GLFW_KEY_F)) {
         flying = !flying;
         vertical_velocity_ = 0.0f;
@@ -52,7 +52,7 @@ void Controller::update(render::Camera& camera, const core::Input& input,
     vertical_velocity_ -= kGravity * dt;
     camera.position.y += vertical_velocity_ * dt;
 
-    const float floor_y = ground.sample(camera.position.x, camera.position.z) + kEyeHeight;
+    const float floor_y = ground.height(camera.position.x, camera.position.z) + kEyeHeight;
     if (camera.position.y <= floor_y) {
         camera.position.y = floor_y;
         vertical_velocity_ = 0.0f;

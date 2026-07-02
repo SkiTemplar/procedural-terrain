@@ -12,4 +12,9 @@ namespace terrain {
 // Determinista: la seed del config alimenta el RNG de las gotas.
 void erode(Heightfield& hf, const TerrainConfig& cfg);
 
+// Erosión térmica: donde la pendiente supera el ángulo de reposo (talus),
+// el material se desprende hacia el vecino más bajo. Suaviza agujas y crea
+// pedreras/faldas naturales al pie de las montañas.
+void thermal_erode(Heightfield& hf, int iterations, float talus_slope);
+
 } // namespace terrain

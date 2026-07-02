@@ -17,6 +17,7 @@ add_library(terrain_gen STATIC
         src/terrain/erosion.cpp
         src/terrain/hydrology.cpp
         src/terrain/generator.cpp
+        src/terrain/detail.cpp
 )
 target_include_directories(terrain_gen PUBLIC src)
 target_link_libraries(terrain_gen PUBLIC glm::glm)
@@ -29,6 +30,7 @@ add_executable(ProceduralTerrain
         src/render/camera.cpp
         src/render/mesh.cpp
         src/terrain/mesher.cpp
+        src/terrain/chunked_terrain.cpp
         src/player/controller.cpp
         src/ui/debug_ui.cpp
 )

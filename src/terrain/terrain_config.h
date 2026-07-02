@@ -29,14 +29,26 @@ struct TerrainConfig {
     float erosion_deposit = 0.30f;  // deposit rate
     float erosion_inertia = 0.10f;
 
-    // Hidrología
-    float river_flow_threshold = 220.0f; // acumulación mínima para ser río
-    float river_max_depth_m = 6.0f;
+    // Erosión térmica (pedreras, faldas al pie de la montaña)
+    int thermal_iterations = 4;
+    float talus_slope = 0.9f; // tan del ángulo de reposo
+
+    // Costa: comprime las alturas bajas → playas anchas y planas.
+    float coast_flatten_band_m = 9.0f;   // banda sobre el mar que se aplana
+    float coast_flatten_strength = 0.65f; // 0 = nada, 1 = playa totalmente plana
+
+    // Hidrología: pocos ríos pero grandes.
+    float river_flow_threshold = 900.0f; // acumulación mínima para ser río
+    float river_max_depth_m = 7.0f;
+    int river_max_width_cells = 3;       // radio máximo del cauce
+
+    // Detalle geométrico fino (solo malla cercana + suelo al caminar)
+    float detail_amplitude_m = 1.4f;
 
     // Clasificación
     float snow_line_m = 900.0f;
     float rock_slope = 0.85f; // pendiente (tan) a partir de la cual es roca
-    float beach_band_m = 5.0f;
+    float beach_band_m = 7.0f;
 };
 
 } // namespace terrain

@@ -44,12 +44,38 @@ void build_base_relief(Heightfield& hf, const Noise& noise, const TerrainConfig&
                 0.45f, 0.75f,
                 noise.fbm(pw * kRangeMaskFreq + glm::vec3{53.7f, 0.0f, -11.9f}, 3) * 0.5f + 0.5f);
 
-            const float land = continent * (cfg.base_height_m * base01)
-                             + std::pow(continent, 1.5f) * cfg.mountain_height_m
-                                   * ridge * ridge * range_mask;
-            const float seabed = (1.0f - continent) * cfg.sea_depth;
+            float land = continent * (cfg.base_height_m * base01)
+                       + std::pow(continent, 1.5f) * cfg.mountain_height_m
+                             * ridge * ridge * range_mask;
 
+            // Curva de valles: comprime las alturas bajas para que los fondos
+            // de valle sean anchos y planos y el relieve se concentre arriba.
+            // Se normaliza por el techo local (colinas + cordillera efectiva),
+            // no por el máximo global, para no aplastar las zonas sin montaña.
+            if (land > 0.0f) {
+                const float local_ceiling =
+                    cfg.base_height_m + cfg.mountain_height_m * range_mask;
+                const float norm = std::min(land / local_ceiling, 1.0f);
+                land = local_ceiling * std::pow(norm, 1.35f);
+            }
+
+            const float seabed = (1.0f - continent) * cfg.sea_depth;
             hf.at(x, z) = cfg.sea_level + land - seabed;
+        }
+    }
+}
+
+// Erosión costera simplificada: la franja baja junto al mar se comprime hacia
+// el nivel del mar → playas anchas y llanas donde el terreno ya era suave.
+void flatten_coast(Heightfield& hf, const TerrainConfig& cfg) {
+    const float band = cfg.coast_flatten_band_m;
+    for (float& h : hf.data()) {
+        const float rel = h - cfg.sea_level;
+        if (rel > 0.0f && rel < band) {
+            const float t = rel / band; // 0 en la orilla, 1 al final de la banda
+            const float ease = t * t * (3.0f - 2.0f * t);
+            const float compress = 1.0f - cfg.coast_flatten_strength * (1.0f - ease);
+            h = cfg.sea_level + rel * compress;
         }
     }
 }
@@ -110,6 +136,8 @@ TerrainData generate(const TerrainConfig& cfg) {
 
     build_base_relief(data.height, noise, cfg);
     erode(data.height, cfg);
+    thermal_erode(data.height, cfg.thermal_iterations, cfg.talus_slope);
+    flatten_coast(data.height, cfg);
     data.hydrology = compute_hydrology(data.height, cfg);
     classify_materials(data, noise);
 

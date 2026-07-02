@@ -5,6 +5,7 @@
 #include "render/camera.h"
 #include "render/shader.h"
 #include "render/terrain_shaders.h"
+#include "terrain/chunked_terrain.h"
 #include "terrain/generator.h"
 #include "terrain/mesher.h"
 #include "ui/debug_ui.h"
@@ -14,20 +15,30 @@
 #include <chrono>
 #include <exception>
 #include <iostream>
+#include <memory>
+#include <optional>
 
 namespace {
 
 constexpr glm::vec3 kSkyColor{0.53f, 0.71f, 0.92f};
 
+// En heap y no-movible: ChunkedTerrain y DetailSampler guardan punteros a data.
 struct World {
     terrain::TerrainData data;
-    terrain::TerrainMeshes meshes;
+    terrain::DetailSampler sampler;
+    terrain::ChunkedTerrain ground;
+    std::optional<render::Mesh> water;
     render::Mesh sea;
 
     explicit World(const terrain::TerrainConfig& cfg)
         : data(terrain::generate(cfg)),
-          meshes(terrain::build_meshes(data)),
+          sampler(data),
+          ground(data, sampler),
+          water(terrain::build_water_mesh(data)),
           sea(terrain::build_sea_plane(cfg.size_m, cfg.sea_level)) {}
+
+    World(const World&) = delete;
+    World& operator=(const World&) = delete;
 };
 
 void set_common_uniforms(const render::Shader& shader, const render::Camera& camera,
@@ -55,17 +66,17 @@ void run() {
 
     const auto generate_world = [&state]() {
         const auto start = std::chrono::steady_clock::now();
-        World world(state.pending_config);
+        auto world = std::make_unique<World>(state.pending_config);
         state.last_generation_seconds =
             std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
         std::cout << "Terreno generado en " << state.last_generation_seconds << " s\n";
         return world;
     };
 
-    World world = generate_world();
+    std::unique_ptr<World> world = generate_world();
 
     // Spawn: volando sobre la costa sur mirando al centro de la isla.
-    camera.position = {0.0f, 350.0f, world.data.config.size_m * 0.45f};
+    camera.position = {0.0f, 350.0f, world->data.config.size_m * 0.45f};
     camera.yaw = -90.0f;
     camera.pitch = -12.0f;
 
@@ -80,16 +91,18 @@ void run() {
             window.set_mouse_captured(!window.is_mouse_captured());
         }
         if (window.is_mouse_captured()) {
-            controller.update(camera, input, world.data.height, clock.dt);
+            controller.update(camera, input, world->sampler, clock.dt);
         }
 
         if (state.regenerate_requested) {
             state.regenerate_requested = false;
             world = generate_world();
             camera.position.y =
-                world.data.height.sample(camera.position.x, camera.position.z) + 350.0f;
+                world->data.height.sample(camera.position.x, camera.position.z) + 350.0f;
             controller.flying = true;
         }
+
+        world->ground.update(camera.position);
 
         glClearColor(kSkyColor.r, kSkyColor.g, kSkyColor.b, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -97,8 +110,8 @@ void run() {
 
         terrain_shader.use();
         set_common_uniforms(terrain_shader, camera, window.aspect(), state);
-        for (const auto& chunk : world.meshes.ground_chunks) {
-            chunk.draw();
+        for (const render::Mesh* chunk : world->ground.visible_meshes()) {
+            chunk->draw();
         }
 
         // Agua después del terreno, con blending.
@@ -107,9 +120,9 @@ void run() {
         water_shader.use();
         set_common_uniforms(water_shader, camera, window.aspect(), state);
         water_shader.set_float("u_time", clock.total);
-        world.sea.draw();
-        for (const auto& chunk : world.meshes.water_chunks) {
-            chunk.draw();
+        world->sea.draw();
+        if (world->water) {
+            world->water->draw();
         }
         glDisable(GL_BLEND);
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "render/camera.h"
-#include "terrain/heightfield.h"
+#include "terrain/detail.h"
 
 namespace core {
 class Input;
@@ -9,8 +9,8 @@ class Input;
 
 namespace player {
 
-// Andar/volar. F alterna. Caminando: gravedad, suelo por interpolación
-// bilineal del heightfield, Espacio salta, Shift esprinta.
+// Andar/volar. F alterna. Caminando: gravedad, suelo del DetailSampler (la
+// misma superficie que dibuja la malla fina), Espacio salta, Shift esprinta.
 class Controller {
 public:
     bool flying = true;
@@ -18,7 +18,7 @@ public:
     float sprint_factor = 2.0f;
 
     void update(render::Camera& camera, const core::Input& input,
-                const terrain::Heightfield& ground, float dt);
+                const terrain::DetailSampler& ground, float dt);
 
 private:
     float vertical_velocity_ = 0.0f;

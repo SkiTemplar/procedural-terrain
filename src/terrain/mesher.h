@@ -3,18 +3,18 @@
 #include "render/mesh.h"
 #include "terrain/generator.h"
 
-#include <vector>
+#include <optional>
 
 namespace terrain {
 
-struct TerrainMeshes {
-    std::vector<render::Mesh> ground_chunks;
-    std::vector<render::Mesh> water_chunks; // lagos y ríos (puede estar vacío)
-};
+// Color base por material (low-poly: color plano por triángulo + jitter).
+glm::vec3 material_color(Material m);
 
-// Convierte el TerrainData en mallas por chunks. El color va por vértice y el
-// shader lo interpola `flat`, así cada triángulo queda de un color (low-poly).
-TerrainMeshes build_meshes(const TerrainData& data, int chunk_cells = 128);
+// Hash determinista → [0,1): variación sutil de tono por vértice.
+float hash01(int x, int z);
+
+// Lámina de agua interior (lagos + ríos). std::nullopt si no hay agua.
+std::optional<render::Mesh> build_water_mesh(const TerrainData& data);
 
 // Plano del mar, bastante mayor que la isla para que se pierda en la niebla.
 render::Mesh build_sea_plane(float island_size_m, float sea_level);
