@@ -145,9 +145,27 @@ ChunkedTerrain::ChunkedTerrain(const TerrainData& data, const DetailSampler& sam
             chunk.x0 = cx * chunk_cells_;
             chunk.z0 = cz * chunk_cells_;
             const auto& hf = data_->height;
-            const float x_mid = hf.world_x(std::min(chunk.x0 + chunk_cells_ / 2, hf.resolution() - 1));
-            const float z_mid = hf.world_z(std::min(chunk.z0 + chunk_cells_ / 2, hf.resolution() - 1));
+            const int res = hf.resolution();
+            const float x_mid = hf.world_x(std::min(chunk.x0 + chunk_cells_ / 2, res - 1));
+            const float z_mid = hf.world_z(std::min(chunk.z0 + chunk_cells_ / 2, res - 1));
             chunk.center = {x_mid, z_mid};
+
+            // AABB: extremos de altura del chunk + margen (faldón hacia
+            // abajo, ruido de detalle hacia arriba).
+            const int x1 = std::min(chunk.x0 + chunk_cells_, res - 1);
+            const int z1 = std::min(chunk.z0 + chunk_cells_, res - 1);
+            float y_min = 1e9f;
+            float y_max = -1e9f;
+            for (int z = chunk.z0; z <= z1; ++z) {
+                for (int x = chunk.x0; x <= x1; ++x) {
+                    const float h = hf.at(x, z);
+                    y_min = std::min(y_min, h);
+                    y_max = std::max(y_max, h);
+                }
+            }
+            chunk.aabb_min = {hf.world_x(chunk.x0), y_min - kSkirtDepth - 2.0f,
+                              hf.world_z(chunk.z0)};
+            chunk.aabb_max = {hf.world_x(x1), y_max + 3.0f, hf.world_z(z1)};
         }
     }
     // Arranque: todo en el nivel más basto (rápido); update() irá refinando.
@@ -173,7 +191,8 @@ int ChunkedTerrain::desired_level(const Chunk& chunk, const glm::vec3& camera_po
     return 4;
 }
 
-void ChunkedTerrain::update(const glm::vec3& camera_pos, int max_rebuilds) {
+void ChunkedTerrain::update(const glm::vec3& camera_pos, const glm::mat4& view_proj,
+                            int max_rebuilds) {
     // Reconstruir primero lo más cercano que esté desactualizado.
     std::vector<std::pair<float, Chunk*>> stale;
     for (auto& chunk : chunks_) {
@@ -192,10 +211,36 @@ void ChunkedTerrain::update(const glm::vec3& camera_pos, int max_rebuilds) {
                 desired_level(*stale[static_cast<size_t>(i)].second, camera_pos));
     }
 
+    // Frustum culling (Gribb-Hartmann): 6 planos de view_proj contra el AABB
+    // de cada chunk con el test del vértice positivo. Sin esto se dibujaban
+    // los 4096 chunks por frame, mirases donde mirases.
+    glm::vec4 planes[6];
+    const glm::mat4 m = glm::transpose(view_proj); // filas de view_proj
+    planes[0] = m[3] + m[0]; // izquierda
+    planes[1] = m[3] - m[0]; // derecha
+    planes[2] = m[3] + m[1]; // abajo
+    planes[3] = m[3] - m[1]; // arriba
+    planes[4] = m[3] + m[2]; // cerca
+    planes[5] = m[3] - m[2]; // lejos
+
     visible_.clear();
     visible_.reserve(chunks_.size());
     for (const auto& chunk : chunks_) {
-        if (chunk.mesh) {
+        if (!chunk.mesh) {
+            continue;
+        }
+        bool inside = true;
+        for (const glm::vec4& p : planes) {
+            const glm::vec3 positive{
+                p.x >= 0.0f ? chunk.aabb_max.x : chunk.aabb_min.x,
+                p.y >= 0.0f ? chunk.aabb_max.y : chunk.aabb_min.y,
+                p.z >= 0.0f ? chunk.aabb_max.z : chunk.aabb_min.z};
+            if (glm::dot(glm::vec3{p}, positive) + p.w < 0.0f) {
+                inside = false;
+                break;
+            }
+        }
+        if (inside) {
             visible_.push_back(chunk.mesh.get());
         }
     }

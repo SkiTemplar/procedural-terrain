@@ -462,6 +462,37 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
         }
     }
 
+    // 4) Tensión de superficie: la lámina no cae a MUROS verticales. En los
+    // vertederos de lago y knickpoints el nivel caía varios metros en una
+    // celda y el agua se dibujaba como una pared azul cruzando el río. Donde
+    // el nivel cae más de ~40° hacia la receptora, se reparte en una rampa
+    // de cascada a lo largo del flujo (procesando de cumbre a mar, las
+    // rampas largas se encadenan solas).
+    {
+        const float max_ws_slope = 0.85f; // tan de la lámina más empinada
+        for (const size_t i : order) {
+            const size_t down = downstream[i];
+            if (down == kNone || out.lake[down]) {
+                continue; // el lago impone su propia lámina
+            }
+            const float li = out.water_level[i];
+            const float ld = out.water_level[down];
+            if (std::isnan(li) || std::isnan(ld)) {
+                continue;
+            }
+            const int xi = static_cast<int>(i % static_cast<size_t>(res));
+            const int zi = static_cast<int>(i / static_cast<size_t>(res));
+            const int xd = static_cast<int>(down % static_cast<size_t>(res));
+            const int zd = static_cast<int>(down / static_cast<size_t>(res));
+            const float dist = hf.cell_size()
+                             * ((xi != xd && zi != zd) ? 1.4142f : 1.0f);
+            const float max_drop = max_ws_slope * dist;
+            if (li - ld > max_drop) {
+                out.water_level[down] = li - max_drop;
+            }
+        }
+    }
+
     // Limpieza final: sin celdas de agua huérfanas (el nacimiento de un río
     // puede pintar una única celda suelta que se ve como un píxel de agua).
     for (int z = 1; z < res - 1; ++z) {

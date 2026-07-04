@@ -43,6 +43,9 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
 
     ImGui::Begin("Debug");
     ImGui::Text("%.1f fps (%.2f ms)", 1.0f / dt, dt * 1000.0f);
+    if (state.total_chunks > 0) {
+        ImGui::Text("chunks: %d/%d", state.visible_chunks, state.total_chunks);
+    }
     ImGui::Text("pos: %.0f, %.0f, %.0f  [%s]", camera.position.x, camera.position.y,
                 camera.position.z, controller.flying ? "volando (F)" : "caminando (F)");
 

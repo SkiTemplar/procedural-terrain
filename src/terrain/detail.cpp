@@ -57,6 +57,29 @@ glm::vec3 DetailSampler::normal_near(float wx, float wz) const {
                         static_cast<int>(i / static_cast<size_t>(res)));
 }
 
+float DetailSampler::roughness_at(float wx, float wz) const {
+    const auto& hf = data_->height;
+    const int res = hf.resolution();
+    const float half = hf.size() * 0.5f;
+    const float inv_cell = 1.0f / hf.cell_size();
+    const float fx = std::clamp((wx + half) * inv_cell,
+                                0.0f, static_cast<float>(res - 1));
+    const float fz = std::clamp((wz + half) * inv_cell,
+                                0.0f, static_cast<float>(res - 1));
+    const int x0 = std::min(static_cast<int>(fx), res - 2);
+    const int z0 = std::min(static_cast<int>(fz), res - 2);
+    const float tx = fx - static_cast<float>(x0);
+    const float tz = fz - static_cast<float>(z0);
+    const auto rough = [&](int x, int z) {
+        return material_roughness(
+            data_->material[static_cast<size_t>(z) * static_cast<size_t>(res)
+                            + static_cast<size_t>(x)]);
+    };
+    const float top = std::lerp(rough(x0, z0), rough(x0 + 1, z0), tx);
+    const float bot = std::lerp(rough(x0, z0 + 1), rough(x0 + 1, z0 + 1), tx);
+    return std::lerp(top, bot, tz);
+}
+
 float DetailSampler::height(float wx, float wz) const {
     const float base = data_->height.sample(wx, wz);
     const float amplitude = data_->config.detail_amplitude_m;
@@ -64,7 +87,7 @@ float DetailSampler::height(float wx, float wz) const {
         return base;
     }
 
-    const float rough = material_roughness(material_near(wx, wz));
+    const float rough = roughness_at(wx, wz);
 
     // Tres escalas: ondulación de ~30 m, rugosidad de ~7 m y grano de ~2 m
     // (el grano solo se aprecia en el LOD ultra, celdas de 30 cm).

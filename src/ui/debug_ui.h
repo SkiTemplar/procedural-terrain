@@ -32,6 +32,10 @@ struct DebugState {
     const char* generation_phase = nullptr;
     float generation_elapsed = 0.0f;
 
+    // Diagnóstico del frustum culling (chunks dibujados / totales).
+    int visible_chunks = 0;
+    int total_chunks = 0;
+
     glm::vec3 sun_dir() const;
 };
 

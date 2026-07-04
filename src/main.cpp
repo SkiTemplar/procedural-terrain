@@ -178,7 +178,11 @@ void run(std::optional<std::uint32_t> seed_override) {
         glPolygonMode(GL_FRONT_AND_BACK, state.wireframe ? GL_LINE : GL_FILL);
 
         if (world) {
-            world->ground.update(camera.position);
+            world->ground.update(camera.position,
+                                 camera.proj(window.aspect()) * camera.view());
+            state.visible_chunks =
+                static_cast<int>(world->ground.visible_meshes().size());
+            state.total_chunks = world->ground.total_chunks();
 
             terrain_shader.use();
             set_common_uniforms(terrain_shader, camera, window.aspect(), state);

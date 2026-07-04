@@ -23,6 +23,10 @@ private:
     Noise noise_;
 
     static float material_roughness(Material m);
+    // Rugosidad interpolada bilinealmente entre celdas: con nearest, cada
+    // celda suelta de roca en la pradera saltaba de 0.4 a 1.5 de golpe y al
+    // caminar aparecían montículos con bordes de un vértice.
+    float roughness_at(float wx, float wz) const;
 };
 
 } // namespace terrain

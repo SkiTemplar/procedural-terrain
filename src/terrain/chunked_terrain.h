@@ -23,11 +23,15 @@ class ChunkedTerrain {
 public:
     ChunkedTerrain(const TerrainData& data, const DetailSampler& sampler);
 
-    // Ajusta los LOD deseados a la posición de la cámara y reconstruye
-    // como mucho `max_rebuilds` chunks (los más cercanos primero).
-    void update(const glm::vec3& camera_pos, int max_rebuilds = 2);
+    // Ajusta los LOD deseados a la posición de la cámara, reconstruye como
+    // mucho `max_rebuilds` chunks (los más cercanos primero) y recorta
+    // `visible_` al frustum (view_proj): sin culling se emitían los 4096
+    // chunks en draw calls cada frame, mirases donde mirases.
+    void update(const glm::vec3& camera_pos, const glm::mat4& view_proj,
+                int max_rebuilds = 2);
 
     const std::vector<const render::Mesh*>& visible_meshes() const { return visible_; }
+    int total_chunks() const { return static_cast<int>(chunks_.size()); }
 
     static constexpr float kUltraDistance = 250.0f;  // m → nivel 0
     static constexpr float kFineDistance = 600.0f;   // m → nivel 1
@@ -39,6 +43,10 @@ private:
         int x0 = 0; // celda inicial en el heightfield
         int z0 = 0;
         glm::vec2 center{0.0f};
+        // AABB en mundo para el frustum culling (y con margen de faldón
+        // y ruido de detalle).
+        glm::vec3 aabb_min{0.0f};
+        glm::vec3 aabb_max{0.0f};
         int level = -1; // -1 = sin malla
         std::unique_ptr<render::Mesh> mesh;
     };

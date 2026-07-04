@@ -182,6 +182,102 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
     });
 }
 
+// Circos glaciares: cubetas someras con morrena en cabeceras altas. No crean
+// agua por sí mismas — el priority-flood de la hidrología las llena y salen
+// ibones (lagos de montaña). Solo son visibles a resolución alta: en los
+// mapas de test la purga de microlagos se los come (por diseño).
+void carve_cirques(Heightfield& hf, const Noise& noise) {
+    const int res = hf.resolution();
+    const float cell = hf.cell_size();
+    const float max_h = *std::max_element(hf.data().begin(), hf.data().end());
+    if (max_h < 300.0f) {
+        return;
+    }
+    const float lo = 0.45f * max_h;
+    const float hi = 0.85f * max_h;
+    // Un candidato por ~220 m, con jitter y sorteo por ruido: reparto
+    // irregular sin acumularse en una esquina del scan.
+    const int step = std::max(2, static_cast<int>(std::round(220.0f / cell)));
+    std::vector<glm::vec2> placed;
+
+    for (int gz = step; gz < res - step; gz += step) {
+        for (int gx = step; gx < res - step; gx += step) {
+            const glm::vec3 g_km{hf.world_x(gx) / 1000.0f, 0.0f,
+                                 hf.world_z(gz) / 1000.0f};
+            if (noise.perlin(g_km * 9.7f + glm::vec3{31.4f, 0.0f, -15.9f}) < 0.42f) {
+                continue; // sorteo: ~1 de cada 5 candidatos
+            }
+            const int jitter_r = step / 3;
+            const int x = gx + static_cast<int>(
+                jitter_r * noise.perlin(g_km * 5.1f + glm::vec3{8.8f, 0.0f, 2.2f}));
+            const int z = gz + static_cast<int>(
+                jitter_r * noise.perlin(g_km * 5.3f + glm::vec3{-3.9f, 0.0f, 7.1f}));
+            if (x < step || z < step || x >= res - step || z >= res - step) {
+                continue;
+            }
+            const float h = hf.at(x, z);
+            if (h < lo || h > hi) {
+                continue; // cabeceras y collados, ni llanura ni cumbre
+            }
+            const int d = std::max(1, static_cast<int>(std::round(12.0f / cell)));
+            const float slope = std::max(
+                std::abs(hf.at(x + d, z) - hf.at(x - d, z)),
+                std::abs(hf.at(x, z + d) - hf.at(x, z - d)))
+                * 0.5f / (static_cast<float>(d) * cell);
+            if (slope > 0.35f) {
+                continue; // en pared no se sostiene una cubeta
+            }
+            const glm::vec2 pos{hf.world_x(x), hf.world_z(z)};
+            bool crowded = false;
+            for (const glm::vec2& p : placed) {
+                if (glm::distance(p, pos) < 500.0f) {
+                    crowded = true;
+                    break;
+                }
+            }
+            if (crowded) {
+                continue;
+            }
+            placed.push_back(pos);
+
+            // Cubeta: suelo hundido 3 m que sube parabólico hasta el borde,
+            // con labio de morrena (~1.7 m) que garantiza el embalse. La
+            // lámina resultante (~1.5 m) supera el umbral de purga de lagos.
+            const float radius_m = 22.0f + 18.0f
+                * (0.5f + 0.5f * noise.perlin(g_km * 6.9f
+                                              + glm::vec3{-21.2f, 0.0f, 44.8f}));
+            const int rc = std::max(2, static_cast<int>(std::round(
+                radius_m * 1.3f / cell)));
+            const float floor_h = h - 3.0f;
+            for (int dz = -rc; dz <= rc; ++dz) {
+                for (int dx = -rc; dx <= rc; ++dx) {
+                    const int nx = x + dx;
+                    const int nz = z + dz;
+                    if (nx < 1 || nz < 1 || nx >= res - 1 || nz >= res - 1) {
+                        continue;
+                    }
+                    const float r = std::sqrt(static_cast<float>(dx * dx + dz * dz))
+                                  * cell / radius_m;
+                    float& cell_h = hf.at(nx, nz);
+                    if (r <= 1.0f) {
+                        cell_h = std::min(cell_h, floor_h + 1.4f * r * r);
+                    } else if (r <= 1.3f) {
+                        // Morrena: cresta a +1.7 m del suelo de la cubeta,
+                        // FUNDIDA con el terreno hacia fuera (nada de repisas
+                        // circulares con borde de acantilado).
+                        const float t = (r - 1.0f) / 0.3f;
+                        const float w = 1.0f - t * t;
+                        const float crest = floor_h + 1.7f;
+                        if (cell_h < crest) {
+                            cell_h += (crest - cell_h) * w;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Playas: la franja baja junto al mar se comprime SOLO donde la costa ya es
 // suave Y el clima acompaña — en el sector frío casi no se aplana (costa
 // abrupta tipo Escocia), en el cálido las playas son anchas y llanas.
@@ -242,6 +338,14 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                                * (static_cast<float>(res) * static_cast<float>(res))
                                / (1024.0f * 1024.0f);
     const auto rows = row_indices(res);
+
+    // Línea de nieve ADAPTATIVA: cada seed culmina a una cota distinta; si la
+    // cordillera no llega a la línea nominal, la nieve baja para coronar
+    // igualmente (~tercio superior del relieve). El slider queda como tope.
+    const float max_h =
+        *std::max_element(hf.data().begin(), hf.data().end());
+    const float snow_line = std::min(cfg.snow_line_m, 0.68f * max_h);
+    const float treeline_base = snow_line - 240.0f;
 
     // Máscara de ribera: agua interior dilatada ~4 celdas. Los ríos y lagos
     // concentran humedad → bosque de galería a su alrededor.
@@ -312,7 +416,7 @@ void classify_materials(TerrainData& data, const Noise& noise) {
 
                 // Score de nieve: altitud relativa + umbría − pendiente + parches.
                 float snow_score =
-                    (h - (cfg.snow_line_m + snow_edge_jitter)) / 120.0f;
+                    (h - (snow_line + snow_edge_jitter)) / 120.0f;
                 snow_score += 0.30f * std::max(n.z, 0.0f); // cara norte
                 // La nieve NO se acumula en paredes: penalización fuerte por
                 // pendiente — los acantilados quedan de roca viva.
@@ -322,7 +426,7 @@ void classify_materials(TerrainData& data, const Noise& noise) {
 
                 // Treeline por debajo de la nieve; con la nieve baja, el
                 // bosque conserva la mayor parte de la isla.
-                const float treeline = cfg.snow_line_m - 240.0f
+                const float treeline = treeline_base
                     + noise.fbm(p_km * 2.3f + glm::vec3{41.0f, 0.0f, -8.5f}, 2) * 80.0f;
 
                 // Corte físico duro: por encima de ~49° la nieve no puede
@@ -333,7 +437,7 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                     m = Material::Rock;
                 } else if (h > treeline) {
                     // Piso alpino: cada vez más roca al acercarse a la nieve.
-                    const float alpine_t = smoothstep(treeline, cfg.snow_line_m, h);
+                    const float alpine_t = smoothstep(treeline, snow_line, h);
                     m = (patch > 0.25f - 0.55f * alpine_t) ? Material::Rock
                                                            : Material::Grass;
                 } else {
@@ -388,6 +492,7 @@ TerrainData generate(const TerrainConfig& cfg,
     report("erosion termica");
     thermal_erode(data.height, cfg.thermal_iterations, cfg.talus_slope);
     smooth_peaks(data.height, 2, 1.2f);
+    carve_cirques(data.height, noise);
     report("costa");
     shape_coast(data, cfg);
     report("hidrologia");

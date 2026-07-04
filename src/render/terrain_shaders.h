@@ -82,10 +82,13 @@ void main() {
 
     // Textura procedural sutil en dos escalas (~1.5 m y ~9 m): rompe el color
     // plano de cada cara sin perder la estética low-poly. Se atenúa de lejos
-    // para no meter ruido en la distancia.
-    float tex = 0.55 * vnoise(v_world_pos.xz * 0.65) + 0.45 * vnoise(v_world_pos.xz * 0.11);
+    // y a partir de ahí ni se calcula (8 hashes por píxel que no se ven).
     float tex_fade = exp(-dist_cam * 0.0035);
-    lit *= 1.0 + (tex - 0.5) * 0.10 * tex_fade;
+    if (tex_fade > 0.02) {
+        float tex = 0.55 * vnoise(v_world_pos.xz * 0.65)
+                  + 0.45 * vnoise(v_world_pos.xz * 0.11);
+        lit *= 1.0 + (tex - 0.5) * 0.10 * tex_fade;
+    }
 
     float fog = 1.0 - exp(-u_fog_density * dist_cam);
     vec3 color = mix(lit, u_sky_color, fog);
