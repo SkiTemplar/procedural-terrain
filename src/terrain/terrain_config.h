@@ -19,21 +19,22 @@ struct TerrainConfig {
     float island_radius = 0.55f; // fracción del semiancho donde empieza la costa
     float coast_warp_m = 700.0f; // distorsión de la línea de costa
 
-    // Relieve — valores del sistema original (hito 2): el carácter que
-    // funcionó, con montañas altas, praderas onduladas y lagos de montaña.
+    // Relieve: el LEM (uplift + stream power) genera la forma normalizada;
+    // esta es su escala vertical. base_height ya solo son las colinillas.
     float base_height_m = 180.0f;
-    float mountain_height_m = 1800.0f; // la erosión rebaja ~un tercio
+    float mountain_height_m = 1400.0f;
 
-    // Erosión hidráulica (gotas) — escalada al área de 10×10
-    int erosion_droplets = 1200000;
+    // Erosión hidráulica (gotas): con el LEM ya no esculpe la forma, solo
+    // texturiza laderas y conos de deyección.
+    int erosion_droplets = 400000;
     float erosion_strength = 0.30f; // erode rate
     float erosion_deposit = 0.30f;  // deposit rate
     float erosion_inertia = 0.10f;
 
     // Erosión térmica (pedreras, faldas al pie de la montaña). Moderada:
     // la agresiva (32 iter, 37°) planchaba el carácter del relieve original.
-    int thermal_iterations = 12;
-    float talus_slope = 0.9f; // tan del ángulo de reposo (~42°)
+    int thermal_iterations = 3;
+    float talus_slope = 0.72f; // tan del ángulo de reposo (~36°)
 
     // Costa: comprime las alturas bajas → playas anchas y planas. 25 m:
     // con 40 la rampa arena→hierba se veía como un degradado artificial.

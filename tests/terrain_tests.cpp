@@ -316,6 +316,25 @@ TEST(Generator, SinMurallasVerticales) {
     std::sort(slopes.begin(), slopes.end());
     const float p99 = slopes[static_cast<size_t>(slopes.size() * 0.99)];
     const float p999 = slopes[static_cast<size_t>(slopes.size() * 0.999)];
+
+    // Diagnóstico: dónde viven las peores pendientes.
+    if (p99 >= 1.6f) {
+        int printed = 0;
+        for (int z = 0; z < res && printed < 8; ++z) {
+            for (int x = 0; x < res - 1 && printed < 8; ++x) {
+                const float s =
+                    std::abs(data.height.at(x + 1, z) - data.height.at(x, z)) / cell;
+                if (s > 2.5f) {
+                    const size_t i = static_cast<size_t>(z) * res + x;
+                    printf("  pendiente %.1f en (%d,%d) h=%.0f->%.0f agua=%d rio=%.0f\n",
+                           s, x, z, data.height.at(x, z), data.height.at(x + 1, z),
+                           std::isnan(data.hydrology.water_level[i]) ? 0 : 1,
+                           data.hydrology.flow[i]);
+                    ++printed;
+                }
+            }
+        }
+    }
     EXPECT_LT(p99, 1.6f);
     EXPECT_LT(p999, 4.5f);
 }

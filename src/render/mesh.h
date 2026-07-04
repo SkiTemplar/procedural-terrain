@@ -11,6 +11,7 @@ namespace render {
 struct Vertex {
     glm::vec3 position;
     glm::vec3 color;
+    glm::vec3 normal{0.0f, 0.0f, 0.0f}; // normal suave (para el blend lejano)
 };
 
 // VAO+VBO+EBO indexado. RAII, move-only.

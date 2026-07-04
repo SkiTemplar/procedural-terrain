@@ -49,6 +49,14 @@ float DetailSampler::climate_near(float wx, float wz) const {
     return data_->climate[nearest_index(data_->height, wx, wz)];
 }
 
+glm::vec3 DetailSampler::normal_near(float wx, float wz) const {
+    const auto& hf = data_->height;
+    const size_t i = nearest_index(hf, wx, wz);
+    const int res = hf.resolution();
+    return hf.normal_at(static_cast<int>(i % static_cast<size_t>(res)),
+                        static_cast<int>(i / static_cast<size_t>(res)));
+}
+
 float DetailSampler::height(float wx, float wz) const {
     const float base = data_->height.sample(wx, wz);
     const float amplitude = data_->config.detail_amplitude_m;

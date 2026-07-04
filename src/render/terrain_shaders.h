@@ -8,16 +8,21 @@ constexpr const char* kTerrainVert = R"glsl(
 #version 460 core
 layout (location = 0) in vec3 a_pos;
 layout (location = 1) in vec3 a_color;
+layout (location = 2) in vec3 a_normal;
 
 uniform mat4 u_view;
 uniform mat4 u_proj;
 
 out vec3 v_world_pos;
 flat out vec3 v_color;
+out vec3 v_color_smooth;
+out vec3 v_normal_smooth;
 
 void main() {
     v_world_pos = a_pos;
     v_color = a_color;
+    v_color_smooth = a_color;
+    v_normal_smooth = a_normal;
     gl_Position = u_proj * u_view * vec4(a_pos, 1.0);
 }
 )glsl";
@@ -26,11 +31,14 @@ constexpr const char* kTerrainFrag = R"glsl(
 #version 460 core
 in vec3 v_world_pos;
 flat in vec3 v_color;
+in vec3 v_color_smooth;
+in vec3 v_normal_smooth;
 
 uniform vec3 u_sun_dir;      // hacia el sol, normalizado
 uniform vec3 u_camera_pos;
 uniform vec3 u_sky_color;
-uniform float u_fog_density; // exponencial
+uniform float u_fog_density;  // exponencial
+uniform float u_smooth_blend; // 1 = mezclar a suave en distancia; 0 = solo flat
 
 out vec4 frag_color;
 
@@ -52,7 +60,16 @@ float vnoise(vec2 p) {
 }
 
 void main() {
-    vec3 normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
+    // Facetado puro de cerca; a media distancia la normal y el color mezclan
+    // hacia la versión suave — sin shimmer ni "pixelado" de triángulos
+    // subpíxel (blended normals / soft flat shading).
+    float dist_cam = length(v_world_pos - u_camera_pos);
+    float smooth_k = u_smooth_blend * clamp((dist_cam - 150.0) / 300.0, 0.0, 1.0);
+
+    vec3 n_flat = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
+    vec3 n_soft = normalize(v_normal_smooth + vec3(1e-5));
+    vec3 normal = normalize(mix(n_flat, n_soft, smooth_k));
+    vec3 albedo = mix(v_color, v_color_smooth, smooth_k);
 
     // Iluminación de exterior: sol cálido + ambiente hemisférico (las caras
     // que miran al cielo reciben azul frío; las que miran al suelo, rebote
@@ -61,17 +78,16 @@ void main() {
     float diffuse = max(dot(normal, u_sun_dir), 0.0);
     float sky_facing = normal.y * 0.5 + 0.5;
     vec3 hemi = mix(vec3(0.30, 0.31, 0.26), vec3(0.55, 0.65, 0.82), sky_facing);
-    vec3 lit = v_color * (0.50 * hemi + 0.72 * diffuse * sun_color);
+    vec3 lit = albedo * (0.50 * hemi + 0.72 * diffuse * sun_color);
 
     // Textura procedural sutil en dos escalas (~1.5 m y ~9 m): rompe el color
     // plano de cada cara sin perder la estética low-poly. Se atenúa de lejos
     // para no meter ruido en la distancia.
-    float dist = length(v_world_pos - u_camera_pos);
     float tex = 0.55 * vnoise(v_world_pos.xz * 0.65) + 0.45 * vnoise(v_world_pos.xz * 0.11);
-    float tex_fade = exp(-dist * 0.0035);
+    float tex_fade = exp(-dist_cam * 0.0035);
     lit *= 1.0 + (tex - 0.5) * 0.10 * tex_fade;
 
-    float fog = 1.0 - exp(-u_fog_density * dist);
+    float fog = 1.0 - exp(-u_fog_density * dist_cam);
     vec3 color = mix(lit, u_sky_color, fog);
 
     frag_color = vec4(color, 1.0);
@@ -92,6 +108,8 @@ uniform mat4 u_proj;
 
 out vec3 v_world_pos;
 flat out vec3 v_color;
+out vec3 v_color_smooth;
+out vec3 v_normal_smooth;
 
 void main() {
     float c = cos(i_tint_yaw.w);
@@ -100,6 +118,8 @@ void main() {
     p = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z) + i_pos_scale.xyz;
     v_world_pos = p;
     v_color = a_color * i_tint_yaw.rgb;
+    v_color_smooth = v_color;
+    v_normal_smooth = vec3(0.0, 1.0, 0.0); // sin uso: la vegetación va con u_smooth_blend=0
     gl_Position = u_proj * u_view * vec4(p, 1.0);
 }
 )glsl";

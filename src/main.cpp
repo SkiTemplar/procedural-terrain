@@ -130,12 +130,14 @@ void run() {
 
         terrain_shader.use();
         set_common_uniforms(terrain_shader, camera, window.aspect(), state);
+        terrain_shader.set_float("u_smooth_blend", 1.0f);
         for (const render::Mesh* chunk : world->ground.visible_meshes()) {
             chunk->draw();
         }
 
         veg_shader.use();
         set_common_uniforms(veg_shader, camera, window.aspect(), state);
+        veg_shader.set_float("u_smooth_blend", 0.0f);
         world->vegetation.draw(camera.position, state.veg_draw_distance);
 
         // Agua después del terreno, con blending.

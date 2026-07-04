@@ -1,6 +1,7 @@
 #include "terrain/generator.h"
 
 #include "terrain/erosion.h"
+#include "terrain/lem.h"
 #include "terrain/noise.h"
 
 #include <glm/glm.hpp>
@@ -17,10 +18,6 @@ namespace {
 
 // Frecuencias en 1/km: el ruido se muestrea con la posición en kilómetros
 // para que los parámetros sean independientes del tamaño del mapa.
-// Frecuencias del sistema ORIGINAL (hito 2, el carácter que funcionó):
-constexpr float kBaseFreq = 0.45f;      // colinas
-constexpr float kMountainFreq = 0.28f;  // cordilleras
-constexpr float kRangeMaskFreq = 0.13f; // dónde hay cordillera
 constexpr float kWarpFreq = 0.35f;
 
 float smoothstep(float edge0, float edge1, float x) {
@@ -34,71 +31,126 @@ std::vector<int> row_indices(int res) {
     return rows;
 }
 
+struct CoastSample {
+    float continent;
+    float climate;
+};
+
+// Continentalidad + clima en un punto (compartido entre el uplift macro y la
+// amplificación): bahías/penínsulas por warp compuesto, sectores de clima
+// nítidos, islotes satélite concentrados en el sector cálido.
+CoastSample coast_at(const Noise& noise, const TerrainConfig& cfg,
+                     const glm::vec3& p_km) {
+    const float half_km = cfg.size_m * 0.5f / 1000.0f;
+    const glm::vec3 pw = noise.warp(
+        noise.warp(p_km, 1.8f, 0.12f), cfg.coast_warp_m / 1000.0f, kWarpFreq);
+
+    const float d = glm::length(glm::vec2{pw.x, pw.z}) / half_km;
+    float continent = 1.0f - smoothstep(cfg.island_radius, 1.0f, d);
+
+    const float climate_raw =
+        noise.fbm(pw * 0.14f + glm::vec3{-64.2f, 0.0f, 38.5f}, 2) * 0.5f + 0.5f;
+    const float climate = smoothstep(0.42f, 0.58f, climate_raw);
+
+    const float satellite =
+        smoothstep(0.60f, 0.72f,
+                   noise.fbm(pw * 0.9f + glm::vec3{97.1f, 0.0f, -44.3f}, 3)
+                       * 0.5f + 0.5f)
+        * smoothstep(0.78f, 0.95f, d) * smoothstep(1.35f, 1.0f, d)
+        * (0.5f + climate);
+    continent = std::max(continent, satellite * 0.5f);
+
+    return {continent, climate};
+}
+
+// Pipeline INVERTIDO (Cordonnier 2016 / FastScape): la forma macro sale de un
+// modelo de evolución del paisaje (uplift + stream power a estado
+// estacionario → red dendrítica de valles y divisorias reales), y el ruido
+// queda como mero detalle de laderas amortiguado por pendiente (Quilez,
+// morenoise). El ruido ya no ES la montaña.
 void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfig& cfg) {
     Heightfield& hf = data.height;
+    const int res = hf.resolution();
     data.climate.assign(hf.data().size(), 0.5f);
-    const float half_km = cfg.size_m * 0.5f / 1000.0f;
-    const auto rows = row_indices(hf.resolution());
 
+    // ---- Fase A: uplift en grid macro + LEM ----
+    const int macro_res = std::clamp(cfg.resolution / 4, 64, 1024);
+    const float macro_cell = cfg.size_m / static_cast<float>(macro_res - 1);
+    std::vector<float> uplift(static_cast<size_t>(macro_res) * macro_res);
+    {
+        const auto mrows = row_indices(macro_res);
+        std::for_each(std::execution::par, mrows.begin(), mrows.end(), [&](int z) {
+            for (int x = 0; x < macro_res; ++x) {
+                const float wx = -cfg.size_m * 0.5f + static_cast<float>(x) * macro_cell;
+                const float wz = -cfg.size_m * 0.5f + static_cast<float>(z) * macro_cell;
+                const glm::vec3 p_km{wx / 1000.0f, 0.0f, wz / 1000.0f};
+                const CoastSample cs = coast_at(noise, cfg, p_km);
+                // Dónde se concentra el levantamiento (macizos): máscara
+                // lenta; el LEM esculpirá el resto.
+                const float mask = noise.fbm(
+                    p_km * 0.10f + glm::vec3{53.7f, 0.0f, -11.9f}, 2) * 0.5f + 0.5f;
+                uplift[static_cast<size_t>(z) * macro_res + x] =
+                    std::pow(cs.continent, 1.5f)
+                    * (0.15f + 0.85f * smoothstep(0.30f, 0.70f, mask));
+            }
+        });
+    }
+    // El uplift acumulado dobla la cota objetivo: la incisión del propio LEM
+    // rebaja hasta dejar cumbres del orden de mountain_height.
+    const std::vector<float> macro_h =
+        run_lem(uplift, macro_res, macro_cell, 2.0f * cfg.mountain_height_m);
+
+    // ---- Fase B: amplificación bicúbica + colinillas ----
+    const float to_macro = static_cast<float>(macro_res - 1) / static_cast<float>(res - 1);
+    const auto rows = row_indices(res);
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
-        for (int x = 0; x < hf.resolution(); ++x) {
+        for (int x = 0; x < res; ++x) {
             const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f, hf.world_z(z) / 1000.0f};
-            // Warp de costa en dos escalas compuestas: los lóbulos grandes
-            // (~1.8 km) crean bahías y penínsulas; el fino retuerce el
-            // litoral. El relieve usa un warp suave aparte (el fuerte
-            // comprimía laderas en paredes).
-            const glm::vec3 pw = noise.warp(
-                noise.warp(p_km, 1.8f, 0.12f), cfg.coast_warp_m / 1000.0f, kWarpFreq);
-            const glm::vec3 pr = noise.warp(p_km, 0.25f * cfg.coast_warp_m / 1000.0f,
-                                            kWarpFreq);
+            const CoastSample cs = coast_at(noise, cfg, p_km);
+            data.climate[static_cast<size_t>(z) * res + static_cast<size_t>(x)] =
+                cs.climate;
 
-            // Continentalidad: 1 en el centro, 0 mar adentro; la costa cae
-            // entre island_radius y 1.0 del semiancho (sobre la pos. distorsionada).
-            const float d = glm::length(glm::vec2{pw.x, pw.z}) / half_km;
-            float continent = 1.0f - smoothstep(cfg.island_radius, 1.0f, d);
+            // El macro ya viene en metros con pendientes físicas.
+            const float macro = sample_bicubic(
+                macro_h, macro_res, static_cast<float>(x) * to_macro,
+                static_cast<float>(z) * to_macro);
 
-            // Clima regional en SECTORES nítidos (transición corta, sin
-            // mezcla): o Escocia o Caribe, con una franja de contacto breve.
-            const float climate_raw =
-                noise.fbm(pw * 0.14f + glm::vec3{-64.2f, 0.0f, 38.5f}, 2) * 0.5f + 0.5f;
-            const float climate = smoothstep(0.42f, 0.58f, climate_raw);
-            data.climate[static_cast<size_t>(z) * hf.resolution()
-                         + static_cast<size_t>(x)] = climate;
+            float h = cfg.sea_level + macro;
+            h -= (1.0f - cs.continent) * cfg.sea_depth;
+            // Colinillas suaves de pradera (el LEM deja las zonas de poco
+            // uplift casi planas; esto les da su ondulación).
+            h += cs.continent
+               * noise.fbm(p_km * 0.35f + glm::vec3{11.3f, 0.0f, -6.1f}, 3) * 24.0f;
+            hf.at(x, z) = h;
+        }
+    });
 
-            // Islitas satélite: motas de tierra baja en el anillo exterior;
-            // el sector cálido concentra más islotes (cayos).
-            const float satellite =
-                smoothstep(0.60f, 0.72f,
-                           noise.fbm(pw * 0.9f + glm::vec3{97.1f, 0.0f, -44.3f}, 3)
-                               * 0.5f + 0.5f)
-                * smoothstep(0.78f, 0.95f, d) * smoothstep(1.35f, 1.0f, d)
-                * (0.5f + climate);
-            continent = std::max(continent, satellite * 0.5f);
-
-            // Relieve del sistema ORIGINAL (hito 2): fBM de colinas + ridged²
-            // con máscara orgánica. Fue el carácter más natural: montañas
-            // altas de verdad, lagos de montaña, praderas onduladas.
-            const float base01 = noise.fbm(pr * kBaseFreq, 5) * 0.5f + 0.5f;
-            // El ridged puro forma celdas cerradas (anillos de cresta con
-            // hoyo = "socavones" que acaban en lago). Mezclado con fbm las
-            // cordilleras se vuelven lomas y espolones conectados.
-            const float ridged_raw = noise.ridged(pr * kMountainFreq, 4);
-            const float mound =
-                noise.fbm(pr * 0.30f + glm::vec3{-47.9f, 0.0f, 12.6f}, 3) * 0.5f + 0.5f;
-            const float ridge = 0.70f * ridged_raw + 0.30f * mound;
-            // Umbrales generosos: más área de montaña y picos que sobreviven
-            // a la erosión (con 0.45-0.75 salían islas de 300 m sin nieve).
-            const float range_mask = smoothstep(
-                0.36f, 0.66f,
-                noise.fbm(pr * kRangeMaskFreq + glm::vec3{53.7f, 0.0f, -11.9f}, 3)
-                    * 0.5f + 0.5f);
-
-            float land = continent * (cfg.base_height_m * base01)
-                       + std::pow(continent, 1.5f) * cfg.mountain_height_m
-                             * ridge * ridge * range_mask;
-
-            const float seabed = (1.0f - continent) * cfg.sea_depth;
-            hf.at(x, z) = cfg.sea_level + land - seabed;
+    // ---- Detalle de laderas amortiguado por pendiente ----
+    // Máximo en pendiente media (laderas), casi nulo en fondos de valle
+    // (deposición) y en paredes (roca lisa): el detalle no delata el ruido.
+    const std::vector<float> base(hf.data());
+    const float inv_cell = 1.0f / hf.cell_size();
+    std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
+        if (z < 1 || z >= res - 1) {
+            return;
+        }
+        for (int x = 1; x < res - 1; ++x) {
+            const size_t i = static_cast<size_t>(z) * res + static_cast<size_t>(x);
+            const float slope = std::max(
+                std::abs(base[i + 1] - base[i - 1]),
+                std::abs(base[i + static_cast<size_t>(res)]
+                         - base[i - static_cast<size_t>(res)]))
+                * 0.5f * inv_cell;
+            const float amp = 32.0f * glm::clamp(slope / 0.12f, 0.0f, 1.0f)
+                            / (1.0f + 10.0f * slope * slope);
+            if (amp < 0.5f) {
+                continue;
+            }
+            // Pocas octavas y longitud de onda larga: la amplitud amortigua,
+            // pero es el GRADIENTE de las octavas finas lo que crea paredes.
+            const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f, hf.world_z(z) / 1000.0f};
+            hf.data()[i] +=
+                amp * noise.fbm(p_km * 0.8f + glm::vec3{-71.6f, 0.0f, 33.9f}, 3);
         }
     });
 }

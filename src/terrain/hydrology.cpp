@@ -381,10 +381,14 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                 1, static_cast<int>(
                        std::round(max_radius * intensity * birth * narrow)));
             const float surface = level[i];
-            // El cauce siempre queda bajo la lámina: donde el lecho subía,
-            // el río corta su salida (canal continuo, sin tramos secos).
+            // El cauce corta su salida en los vertederos, pero SOLO hasta
+            // ~6 m de garganta: sin límite, excavaba zanjas de decenas de
+            // metros de paredes verticales atravesando laderas. Si el
+            // vertedero es más alto, lo que hay ahí es un lago, no un tajo.
+            const float bed_target = bed0[i] - depth * 0.4f;
             const float axis_bed =
-                std::min(bed0[i] - depth * 0.4f, surface - 0.5f * birth);
+                std::max(std::min(bed_target, surface - 0.5f * birth),
+                         bed_target - 6.0f);
 
             // Llanura aluvial: los ríos grandes abren un valle ancho y somero
             // SOLO en terreno llano (los valles gigantes se forman abajo, no
