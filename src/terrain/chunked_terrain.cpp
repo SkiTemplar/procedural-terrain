@@ -57,7 +57,8 @@ render::Mesh build_grid_mesh(int w, int h, GetVertex&& get_vertex) {
             vertices[static_cast<size_t>(j) * (w + 1) + i] = get_vertex(i, j);
         }
     });
-    vertices.reserve(vertices.size() + 2 * static_cast<size_t>(w + h + 2));
+    // 2·(w+h) aristas de perímetro × 2 vértices nuevos por arista.
+    vertices.reserve(vertices.size() + 4 * static_cast<size_t>(w + h));
 
     std::vector<std::uint32_t> indices;
     indices.reserve(static_cast<size_t>(w) * h * 6 + 2 * static_cast<size_t>(w + h) * 6);

@@ -78,6 +78,13 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
     const float macro_cell = cfg.size_m / static_cast<float>(macro_res - 1);
     std::vector<float> uplift(static_cast<size_t>(macro_res) * macro_res);
     {
+        // Orientación tectónica fija por seed: el uplift es ANISÓTROPO
+        // (crestas ridged alargadas ~3:1 a lo largo del eje) — cordilleras
+        // lineales con espolones, como las reales, en vez de macizos blob.
+        const float theta =
+            noise.fbm(glm::vec3{7.7f, 0.0f, 13.1f}, 1) * 3.14159f;
+        const glm::vec2 axis{std::cos(theta), std::sin(theta)};
+
         const auto mrows = row_indices(macro_res);
         std::for_each(std::execution::par, mrows.begin(), mrows.end(), [&](int z) {
             for (int x = 0; x < macro_res; ++x) {
@@ -85,13 +92,29 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 const float wz = -cfg.size_m * 0.5f + static_cast<float>(z) * macro_cell;
                 const glm::vec3 p_km{wx / 1000.0f, 0.0f, wz / 1000.0f};
                 const CoastSample cs = coast_at(noise, cfg, p_km);
-                // Dónde se concentra el levantamiento (macizos): máscara
-                // lenta; el LEM esculpirá el resto.
-                const float mask = noise.fbm(
-                    p_km * 0.10f + glm::vec3{53.7f, 0.0f, -11.9f}, 2) * 0.5f + 0.5f;
+
+                // Espinazo: ridged muestreado con el dominio comprimido a
+                // través del eje (λ ~12 km a lo largo, ~4 km a través).
+                const float u = p_km.x * axis.x + p_km.z * axis.y;
+                const float v = -p_km.x * axis.y + p_km.z * axis.x;
+                const float spine = smoothstep(
+                    0.30f, 0.72f,
+                    noise.ridged(glm::vec3{u * 0.08f, 0.0f, v * 0.26f}
+                                     + glm::vec3{19.3f, 0.0f, -7.4f}, 3));
+                // Máscara regional lenta: dónde vive la cordillera (evita un
+                // espinazo uniforme que cruce toda la isla).
+                const float mass = smoothstep(
+                    0.32f, 0.68f,
+                    noise.fbm(p_km * 0.10f + glm::vec3{53.7f, 0.0f, -11.9f}, 2)
+                        * 0.5f + 0.5f);
+                // Calibrado para conservar la cota del sistema anterior
+                // (media ~0.6, crestas → 1): el espinazo manda, la masa
+                // regional añade altiplanos y modula dónde culmina.
                 uplift[static_cast<size_t>(z) * macro_res + x] =
                     std::pow(cs.continent, 1.5f)
-                    * (0.15f + 0.85f * smoothstep(0.30f, 0.70f, mask));
+                    * (0.15f + 0.85f * glm::clamp(spine * (0.55f + 0.45f * mass)
+                                                      + 0.35f * mass,
+                                                  0.0f, 1.0f));
             }
         });
     }

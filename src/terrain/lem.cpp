@@ -11,11 +11,18 @@ namespace terrain {
 
 namespace {
 
-constexpr float kDiffusion = 0.24f;      // difusión de laderas fuerte: laderas
-                                         // anchas y crestas redondeadas (≤0.25
-                                         // por estabilidad del esquema explícito)
+constexpr float kDiffusion = 0.20f;      // difusión de laderas fuerte: laderas
+                                         // anchas y crestas redondeadas (límite
+                                         // de estabilidad 0.25; 0.20 deja margen
+                                         // frente al modo checkerboard)
 constexpr float kBaseUplift = 0.02f;     // por debajo: nivel de base (mar)
-constexpr float kHeadwaterSlope = 0.7f;  // pendiente de equilibrio en cabeceras
+constexpr float kHeadwaterSlope = 0.7f;  // pendiente de equilibrio en laderas (~35°)
+// Área crítica de canalización (Flint): por debajo no hay canal — la celda es
+// LADERA y su pendiente de equilibrio es kHeadwaterSlope, sea cual sea el
+// tamaño de celda. Sin esta referencia FÍSICA la pendiente escalaba con la
+// celda del grid (cell/√A): a macro fino el relieve de equilibrio se hundía a
+// ~200 m y las montañas desaparecían por diseño.
+constexpr float kChannelAreaM2 = 22500.0f; // (~150 m)² de ladera sin canal
 
 constexpr int kDx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
 constexpr int kDz[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
@@ -66,7 +73,10 @@ void fill_pits(std::vector<float>& h, int res) {
                 continue;
             }
             done[ni] = true;
-            h[ni] = std::max(h[ni], c.height + 0.01f);
+            // Epsilon mínimo: solo para que el D8 desempate. Con 0.01 m/celda
+            // las cuencas grandes acumulaban rampas artificiales de ~1 m que
+            // la bicúbica luego amplificaba.
+            h[ni] = std::max(h[ni], c.height + 0.0005f);
             open.push({h[ni], nx, nz});
         }
     }
@@ -80,10 +90,11 @@ std::vector<float> run_lem(const std::vector<float>& uplift, int macro_res,
     const int res = macro_res;
     const size_t n = static_cast<size_t>(res) * static_cast<size_t>(res);
     const float uplift_per_iter = uplift_total_m / static_cast<float>(iterations);
-    // Calibración física: en cabeceras (A = 1 celda) la pendiente de
-    // equilibrio Δh/d = U/(k·√A) vale kHeadwaterSlope; en cauces grandes
-    // decae con √A. La pendiente máxima del macro queda acotada por diseño.
-    const float k_dt = uplift_per_iter / (kHeadwaterSlope * cell_size_m);
+    // Calibración física e independiente del grid: la pendiente de equilibrio
+    // es kHeadwaterSlope en el dominio de ladera (A ≤ kChannelAreaM2) y decae
+    // como √(A0/A) en los canales (perfil cóncavo de Flint). La pendiente
+    // máxima del macro queda acotada por diseño.
+    const float k_dt = uplift_per_iter / kHeadwaterSlope;
 
     // Semilla: gradiente inicial proporcional al uplift, para que el primer
     // routing ya tenga pendientes hacia el mar.
@@ -95,9 +106,17 @@ std::vector<float> run_lem(const std::vector<float>& uplift, int macro_res,
     std::vector<std::uint32_t> receiver(n);
     std::vector<float> rcv_dist(n);
     std::vector<float> area(n);
-    std::vector<std::uint32_t> order(n);
-    std::iota(order.begin(), order.end(), 0u);
+    // Stack topológico de Braun & Willett: donantes en CRS (ndon/delta/donors)
+    // y recorrido BFS desde los nodos base. Sustituye al sort por altura:
+    // O(n) exacto por iteración y el receptor SIEMPRE se resuelve antes que
+    // sus donantes (el sort solo lo aproximaba).
+    std::vector<std::uint32_t> ndon(n);
+    std::vector<std::uint32_t> delta(n + 1);
+    std::vector<std::uint32_t> donors(n);
+    std::vector<std::uint32_t> stack(n);
     std::vector<float> lap(n);
+    std::vector<int> rows(static_cast<size_t>(res));
+    std::iota(rows.begin(), rows.end(), 0);
 
     const auto idx = [res](int x, int z) {
         return static_cast<size_t>(z) * static_cast<size_t>(res) + static_cast<size_t>(x);
@@ -105,7 +124,7 @@ std::vector<float> run_lem(const std::vector<float>& uplift, int macro_res,
 
     for (int it = 0; it < iterations; ++it) {
         // 1) Receptor de cada celda: vecino con máxima pendiente de bajada.
-        for (int z = 0; z < res; ++z) {
+        std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
             for (int x = 0; x < res; ++x) {
                 const size_t i = idx(x, z);
                 float best_slope = 0.0f;
@@ -130,24 +149,54 @@ std::vector<float> run_lem(const std::vector<float>& uplift, int macro_res,
                 receiver[i] = best;
                 rcv_dist[i] = best_d;
             }
+        });
+
+        // 2) Stack topológico: lista de donantes (CRS) + BFS desde los base
+        //    nodes (receiver[i] == i). Cada nodo aparece DESPUÉS de su receptor.
+        std::fill(ndon.begin(), ndon.end(), 0u);
+        for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(n); ++i) {
+            if (receiver[i] != i) {
+                ++ndon[receiver[i]];
+            }
+        }
+        delta[0] = 0;
+        for (size_t i = 0; i < n; ++i) {
+            delta[i + 1] = delta[i] + ndon[i];
+        }
+        std::fill(ndon.begin(), ndon.end(), 0u); // se reusa como cursor
+        for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(n); ++i) {
+            const std::uint32_t r = receiver[i];
+            if (r != i) {
+                donors[delta[r] + ndon[r]++] = i;
+            }
+        }
+        size_t top = 0;
+        for (std::uint32_t b = 0; b < static_cast<std::uint32_t>(n); ++b) {
+            if (receiver[b] == b) {
+                stack[top++] = b;
+            }
+        }
+        for (size_t s = 0; s < top; ++s) { // top crece durante el recorrido
+            const std::uint32_t c = stack[s];
+            for (std::uint32_t k = delta[c]; k < delta[c] + ndon[c]; ++k) {
+                stack[top++] = donors[k];
+            }
         }
 
-        // 2) Orden por altura descendente (los donantes antes que receptores).
-        std::sort(std::execution::par, order.begin(), order.end(),
-                  [&h](std::uint32_t a, std::uint32_t b) { return h[a] > h[b]; });
-
-        // 3) Área de drenaje acumulada aguas abajo.
+        // 3) Área de drenaje acumulada aguas abajo (stack inverso: donantes
+        //    antes que receptores).
         const float cell_area = cell_size_m * cell_size_m;
         std::fill(area.begin(), area.end(), cell_area);
-        for (const std::uint32_t i : order) {
+        for (size_t s = n; s-- > 0;) {
+            const std::uint32_t i = stack[s];
             if (receiver[i] != i) {
                 area[receiver[i]] += area[i];
             }
         }
 
-        // 4) Solver implícito (ascendente: receptores ya resueltos este paso).
-        for (auto rit = order.rbegin(); rit != order.rend(); ++rit) {
-            const std::uint32_t i = *rit;
+        // 4) Solver implícito (stack directo: el receptor ya está resuelto).
+        for (size_t s = 0; s < n; ++s) {
+            const std::uint32_t i = stack[s];
             if (uplift[i] < kBaseUplift) {
                 h[i] = 0.0f; // nivel de base: mar
                 continue;
@@ -157,24 +206,33 @@ std::vector<float> run_lem(const std::vector<float>& uplift, int macro_res,
                 h[i] += uplift_per_iter * uplift[i]; // pit: se rellena y drenará
                 continue;
             }
-            const float f = k_dt * std::sqrt(area[i]) / rcv_dist[i];
+            const float f = k_dt
+                          * std::sqrt(std::max(area[i], kChannelAreaM2)
+                                      / kChannelAreaM2)
+                          / rcv_dist[i];
             h[i] = (h[i] + uplift_per_iter * uplift[i] + f * h[r]) / (1.0f + f);
         }
 
         // 5) Difusión de laderas: crestas redondeadas, sin agujas.
-        for (int z = 1; z < res - 1; ++z) {
+        std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
+            if (z < 1 || z >= res - 1) {
+                return;
+            }
             for (int x = 1; x < res - 1; ++x) {
                 const size_t i = idx(x, z);
                 lap[i] = h[idx(x - 1, z)] + h[idx(x + 1, z)] + h[idx(x, z - 1)]
                        + h[idx(x, z + 1)] - 4.0f * h[i];
             }
-        }
-        for (int z = 1; z < res - 1; ++z) {
+        });
+        std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
+            if (z < 1 || z >= res - 1) {
+                return;
+            }
             for (int x = 1; x < res - 1; ++x) {
                 const size_t i = idx(x, z);
                 h[i] += kDiffusion * lap[i];
             }
-        }
+        });
 
         // 6) Manejo de lagos: relleno periódico para que las cuencas
         // endorreicas drenen en vez de inflarse como mesetas.
