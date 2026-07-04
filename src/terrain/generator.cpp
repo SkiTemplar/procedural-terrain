@@ -341,10 +341,12 @@ void classify_materials(TerrainData& data, const Noise& noise) {
 
     // Línea de nieve ADAPTATIVA: cada seed culmina a una cota distinta; si la
     // cordillera no llega a la línea nominal, la nieve baja para coronar
-    // igualmente (~tercio superior del relieve). El slider queda como tope.
+    // igualmente. 0.60: las paredes Matterhorn (muy empinadas) restan mucha
+    // superficie donde la nieve agarra — con 0.68 quedaba solo un 1% del
+    // mapa nevado. El slider queda como tope.
     const float max_h =
         *std::max_element(hf.data().begin(), hf.data().end());
-    const float snow_line = std::min(cfg.snow_line_m, 0.68f * max_h);
+    const float snow_line = std::min(cfg.snow_line_m, 0.60f * max_h);
     const float treeline_base = snow_line - 240.0f;
 
     // Máscara de ribera: agua interior dilatada ~4 celdas. Los ríos y lagos
