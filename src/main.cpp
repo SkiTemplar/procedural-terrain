@@ -15,11 +15,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <future>
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace {
@@ -59,7 +61,7 @@ void set_common_uniforms(const render::Shader& shader, const render::Camera& cam
     shader.set_float("u_fog_density", state.fog_density);
 }
 
-void run() {
+void run(std::optional<std::uint32_t> seed_override) {
     // Declarados ANTES que window a propósito: al cerrar durante una
     // generación, el destructor del future bloquea hasta que el worker
     // termina — con este orden la ventana (GL) muere al instante y el
@@ -80,6 +82,9 @@ void run() {
 
     ui::DebugUi debug_ui(window.handle());
     ui::DebugState state;
+    if (seed_override) {
+        state.pending_config.seed = *seed_override;
+    }
 
     // Generación asíncrona: el generate() (solo CPU) corre en un hilo de
     // trabajo y la ventana sigue viva con un overlay de progreso. El montaje
@@ -209,9 +214,19 @@ void run() {
 
 } // namespace
 
-int main() {
+// Uso: ProceduralTerrain [seed] — sin argumento usa la seed del config.
+int main(int argc, char** argv) {
+    std::optional<std::uint32_t> seed;
+    if (argc > 1) {
+        try {
+            seed = static_cast<std::uint32_t>(std::stoul(argv[1]));
+        } catch (const std::exception&) {
+            std::cerr << "Seed invalida: " << argv[1] << '\n';
+            return 1;
+        }
+    }
     try {
-        run();
+        run(seed);
     } catch (const std::exception& e) {
         std::cerr << "Error fatal: " << e.what() << '\n';
         return 1;

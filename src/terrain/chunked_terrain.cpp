@@ -20,16 +20,49 @@ float rock_banding(float y) {
     return 0.93f + 0.07f * std::sin(y * 0.35f);
 }
 
-// Color del suelo con gradiente de bosque, clima y altitud: la pradera funde
-// hacia bosque por densidad, se seca con la altura, empardece en el sector
-// frío; la arena es dorada en frío y clara caribeña en cálido.
-glm::vec3 ground_color(Material m, float forest_density, float climate, float y) {
+// Value noise sobre la retícula de hash01: determinista y compartido entre
+// niveles de LOD (mismo mundo → mismos parches, sin popping de color).
+float value_noise(float x, float z) {
+    const float fx = std::floor(x);
+    const float fz = std::floor(z);
+    const int xi = static_cast<int>(fx);
+    const int zi = static_cast<int>(fz);
+    float tx = x - fx;
+    float tz = z - fz;
+    tx = tx * tx * (3.0f - 2.0f * tx);
+    tz = tz * tz * (3.0f - 2.0f * tz);
+    const float a = hash01(xi, zi);
+    const float b = hash01(xi + 1, zi);
+    const float c = hash01(xi, zi + 1);
+    const float d = hash01(xi + 1, zi + 1);
+    return glm::mix(glm::mix(a, b, tx), glm::mix(c, d, tx), tz);
+}
+
+// Parches de pradera seca (~150-400 m): rompen el verde uniforme con calvas
+// pardas de hierba agostada. Umbral alto: manchas definidas, no un degradado.
+float dry_patch(float wx, float wz) {
+    const float n = 0.65f * value_noise(wx / 380.0f, wz / 380.0f)
+                  + 0.35f * value_noise(wx / 160.0f, wz / 160.0f);
+    return glm::smoothstep(0.52f, 0.80f, n);
+}
+
+// Color del suelo con gradiente de bosque, clima, altitud y parches secos:
+// la pradera funde hacia bosque por densidad, se seca con la altura y en
+// calvas locales (más en el sector cálido), empardece en el sector frío;
+// la arena es dorada en frío y clara caribeña en cálido.
+glm::vec3 ground_color(Material m, float forest_density, float climate, float y,
+                       float wx, float wz) {
     if (m == Material::Grass || m == Material::Forest) {
         glm::vec3 c = glm::mix(material_color(Material::Grass),
                                material_color(Material::Forest), forest_density);
-        const float dryness = glm::clamp((y - 200.0f) / 400.0f, 0.0f, 1.0f) * 0.30f
-                            + (1.0f - climate) * 0.18f;
-        return glm::mix(c, glm::vec3{0.58f, 0.55f, 0.33f}, dryness);
+        // El bosque denso protege del agostado: los parches viven en claros.
+        const float patch = dry_patch(wx, wz) * (1.0f - 0.8f * forest_density)
+                          * (0.55f + 0.45f * climate);
+        const float dryness = glm::clamp(
+            glm::clamp((y - 200.0f) / 400.0f, 0.0f, 1.0f) * 0.30f
+                + (1.0f - climate) * 0.18f + 0.55f * patch,
+            0.0f, 0.85f);
+        return glm::mix(c, glm::vec3{0.62f, 0.55f, 0.31f}, dryness);
     }
     if (m == Material::Sand) {
         // Arena común (dorada) por defecto; la blanca caribeña solo en el
@@ -203,7 +236,7 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                 }
                 const glm::vec3 color =
                     ground_color(m, sampler_->forest_density_near(wx, wz),
-                                 sampler_->climate_near(wx, wz), wy);
+                                 sampler_->climate_near(wx, wz), wy, wx, wz);
                 return render::Vertex{{wx, wy, wz}, color * tint,
                                       sampler_->normal_near(wx, wz)};
             });
@@ -224,7 +257,8 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                             + static_cast<size_t>(sx);
             return render::Vertex{
                 {hf.world_x(sx), wy, hf.world_z(sz)},
-                ground_color(m, data_->forest_density[si], data_->climate[si], wy)
+                ground_color(m, data_->forest_density[si], data_->climate[si], wy,
+                             hf.world_x(sx), hf.world_z(sz))
                     * tint,
                 hf.normal_at(sx, sz)};
         });

@@ -58,7 +58,12 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
             return vertex_of[i];
         }
         const float own = wl[i];
-        const float y = (std::isnan(own) ? fallback : own) - kWaterSink;
+        // Vértice de orilla (sin lámina propia): se POSA en el terreno si la
+        // orilla queda por debajo del nivel — antes heredaba el nivel del
+        // vecino y colgaba en el aire sobre el talud en los tramos empinados
+        // (el clásico "agua que no se pega al suelo" de los rápidos).
+        const float bank = std::min(fallback, hf.at(x, z) + 0.04f);
+        const float y = (std::isnan(own) ? bank : own) - kWaterSink;
         const float tint = 0.95f + 0.10f * hash01(x, z);
         vertex_of[i] = static_cast<std::uint32_t>(vertices.size());
         vertices.push_back({{hf.world_x(x), y, hf.world_z(z)}, kLakeColor * tint});

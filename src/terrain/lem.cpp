@@ -11,12 +11,17 @@ namespace terrain {
 
 namespace {
 
-constexpr float kDiffusion = 0.20f;      // difusión de laderas fuerte: laderas
-                                         // anchas y crestas redondeadas (límite
-                                         // de estabilidad 0.25; 0.20 deja margen
-                                         // frente al modo checkerboard)
+constexpr float kDiffusion = 0.17f;      // difusión de laderas: crestas definidas
+                                         // pero sin agujas (límite de estabilidad
+                                         // 0.25; con 0.20 las aristas quedaban
+                                         // demasiado romas para el look alpino)
 constexpr float kBaseUplift = 0.02f;     // por debajo: nivel de base (mar)
-constexpr float kHeadwaterSlope = 0.8f;  // pendiente de equilibrio en laderas (~39°)
+constexpr float kHeadwaterSlope = 0.9f;  // pendiente de equilibrio en laderas (~42°)
+// Dureza superlineal: S ∝ u^(1+kHardness) — la roca del núcleo orogénico
+// resiste más que las faldas. Con S ∝ u (lineal) todo el flanco escalaba
+// igual; así los paredones u≈1 llegan a ~42° mientras las faldas medias se
+// quedan como estaban → contraste tipo Matterhorn (pared desnuda vs nieve).
+constexpr float kHardness = 0.3f;
 // Concavidad θ del perfil (Flint: S ∝ A^-θ). El 0.5 físico de ríos maduros
 // hunde las cumbres en un dominio de 10 km — los canales largos pierden toda
 // la pendiente y el objetivo de altura se vuelve inalcanzable por diseño.
@@ -215,11 +220,15 @@ std::vector<float> run_lem(const std::vector<float>& uplift, int macro_res,
                 h[i] += uplift_per_iter * uplift[i]; // pit: se rellena y drenará
                 continue;
             }
+            // El divisor de dureza hace S ∝ u^(1+kHardness): erosiona más
+            // deprisa la roca blanda de poco uplift, menos el núcleo.
+            const float hardness =
+                std::pow(std::max(uplift[i], 0.05f), kHardness);
             const float f = k_dt
                           * std::pow(std::max(area[i], kChannelAreaM2)
                                          / kChannelAreaM2,
                                      kConcavity)
-                          / rcv_dist[i];
+                          / (rcv_dist[i] * hardness);
             h[i] = (h[i] + uplift_per_iter * uplift[i] + f * h[r]) / (1.0f + f);
         }
 

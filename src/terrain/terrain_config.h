@@ -36,9 +36,9 @@ struct TerrainConfig {
     // Erosión térmica (pedreras, faldas al pie de la montaña). Moderada:
     // la agresiva (32 iter, 37°) planchaba el carácter del relieve original.
     // El talus debe quedar POR ENCIMA de la pendiente de cabecera del LEM
-    // (~39°): con 36° desmochaba los flancos alpinos recién calibrados.
+    // (~42°): si no, la térmica desmocha los paredones tipo Matterhorn.
     int thermal_iterations = 3;
-    float talus_slope = 0.90f; // tan del ángulo de reposo (~42°)
+    float talus_slope = 1.00f; // tan del ángulo de reposo (45°)
 
     // Costa: comprime las alturas bajas → playas anchas y planas. 25 m:
     // con 40 la rampa arena→hierba se veía como un degradado artificial.
