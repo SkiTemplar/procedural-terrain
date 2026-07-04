@@ -89,7 +89,8 @@ void run() {
                   << static_cast<int>(100.0f * counts[2] / total) << "% bosque "
                   << static_cast<int>(100.0f * counts[3] / total) << "% roca "
                   << static_cast<int>(100.0f * counts[4] / total) << "% nieve "
-                  << static_cast<int>(100.0f * counts[5] / total) << "%\n";
+                  << static_cast<int>(100.0f * counts[5] / total) << "%"
+                  << std::endl; // flush: legible aunque stdout vaya a fichero
         return world;
     };
 

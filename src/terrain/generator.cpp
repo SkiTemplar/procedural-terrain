@@ -107,12 +107,15 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                     0.32f, 0.68f,
                     noise.fbm(p_km * 0.10f + glm::vec3{53.7f, 0.0f, -11.9f}, 2)
                         * 0.5f + 0.5f);
-                // Calibrado para conservar la cota del sistema anterior
-                // (media ~0.6, crestas → 1): el espinazo manda, la masa
-                // regional añade altiplanos y modula dónde culmina.
+                // El LEM solo levanta lo que el uplift marca (S ∝ u): con
+                // crestas u=1 de una celda las cumbres se quedaban al ~58%
+                // del objetivo. Ganancia del espinazo alta para que el
+                // NÚCLEO SATURE ancho (macizos enteros a u≈1, no filos);
+                // la masa regional sigue poniendo altiplanos y decidiendo
+                // dónde culmina la cordillera.
                 uplift[static_cast<size_t>(z) * macro_res + x] =
                     std::pow(cs.continent, 1.5f)
-                    * (0.15f + 0.85f * glm::clamp(spine * (0.55f + 0.45f * mass)
+                    * (0.15f + 0.85f * glm::clamp(spine * (0.75f + 0.45f * mass)
                                                       + 0.35f * mass,
                                                   0.0f, 1.0f));
             }
@@ -143,7 +146,8 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
             // Colinillas suaves de pradera (el LEM deja las zonas de poco
             // uplift casi planas; esto les da su ondulación).
             h += cs.continent
-               * noise.fbm(p_km * 0.35f + glm::vec3{11.3f, 0.0f, -6.1f}, 3) * 24.0f;
+               * noise.fbm(p_km * 0.35f + glm::vec3{11.3f, 0.0f, -6.1f}, 3)
+               * cfg.base_height_m;
             hf.at(x, z) = h;
         }
     });

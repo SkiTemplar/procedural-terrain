@@ -19,9 +19,10 @@ struct TerrainConfig {
     float island_radius = 0.55f; // fracción del semiancho donde empieza la costa
     float coast_warp_m = 700.0f; // distorsión de la línea de costa
 
-    // Relieve: el LEM (uplift + stream power) genera la forma normalizada;
-    // esta es su escala vertical. base_height ya solo son las colinillas.
-    float base_height_m = 180.0f;
+    // Relieve: el LEM (uplift + stream power) genera la forma; mountain_height
+    // es el objetivo de cumbre que calibra su ley de pendientes. base_height
+    // es la amplitud de las colinillas de pradera (antes un 24 hardcodeado).
+    float base_height_m = 24.0f;
     float mountain_height_m = 1400.0f;
 
     // Erosión hidráulica (gotas): con el LEM ya no esculpe la forma, solo
@@ -33,8 +34,10 @@ struct TerrainConfig {
 
     // Erosión térmica (pedreras, faldas al pie de la montaña). Moderada:
     // la agresiva (32 iter, 37°) planchaba el carácter del relieve original.
+    // El talus debe quedar POR ENCIMA de la pendiente de cabecera del LEM
+    // (~39°): con 36° desmochaba los flancos alpinos recién calibrados.
     int thermal_iterations = 3;
-    float talus_slope = 0.72f; // tan del ángulo de reposo (~36°)
+    float talus_slope = 0.90f; // tan del ángulo de reposo (~42°)
 
     // Costa: comprime las alturas bajas → playas anchas y planas. 25 m:
     // con 40 la rampa arena→hierba se veía como un degradado artificial.
@@ -58,8 +61,9 @@ struct TerrainConfig {
     // Detalle geométrico fino (solo malla cercana + suelo al caminar)
     float detail_amplitude_m = 1.0f;
 
-    // Clasificación
-    float snow_line_m = 480.0f;
+    // Clasificación. La nieve sigue a las cumbres nuevas (~1.2-1.4 km):
+    // con 480 m la mitad de la cordillera quedaba blanca.
+    float snow_line_m = 950.0f;
     float rock_slope = 0.85f; // pendiente (tan) a partir de la cual es roca
     float beach_band_m = 12.0f; // la arena cubre la mayor parte de la zona plana
 };

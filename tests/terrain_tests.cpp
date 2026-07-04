@@ -1,6 +1,7 @@
 #include "terrain/erosion.h"
 #include "terrain/generator.h"
 #include "terrain/heightfield.h"
+#include "terrain/lem.h"
 #include "terrain/noise.h"
 
 #include <gtest/gtest.h>
@@ -18,10 +19,12 @@ terrain::TerrainConfig test_config() {
     cfg.island_radius = 0.45f;
     cfg.coast_warp_m = 300.0f;
     cfg.erosion_droplets = 8000;
-    // Alturas proporcionales al dominio de 3 km (el default está pensado
-    // para 5 km): mismas pendientes relativas que el mapa real.
+    // Nota: las PENDIENTES del LEM no dependen de mountain_height (en
+    // equilibrio S = u·S0·(A0/A)^θ, el objetivo se cancela); este valor solo
+    // dimensiona el budget de uplift. Las laderas del mapa de test son las
+    // mismas que las del mapa real.
     cfg.mountain_height_m = 1000.0f;
-    cfg.base_height_m = 140.0f;
+    cfg.base_height_m = 24.0f; // mismo valor efectivo que el antiguo hardcode
     // El umbral se expresa en celdas equivalentes de un mapa 1024:
     // 3840 × (128²/1024²) = 60 celdas efectivas en este mapa de test.
     cfg.river_flow_threshold = 3840.0f;
@@ -302,9 +305,11 @@ TEST(Generator, SinMurallasVerticales) {
     const float cell = data.height.cell_size();
 
     // Los bordes de placa no deben producir murallas REGIONALES: el p99 de
-    // pendiente queda acotado (<1.6 ≈ 58°). Los cañones fluviales legítimos
-    // son paredes de pocas celdas y viven en la cola extrema — se les da
-    // margen (p99.9 < 4.5) pero no barra libre.
+    // pendiente queda acotado. El umbral está calibrado para el régimen
+    // ALPINO actual (cabeceras a 39°, núcleos de uplift saturados, θ=0.35):
+    // p99 < 2.3 (~66°) admite caras de roca en los flancos, no murallas.
+    // Los cañones fluviales legítimos son paredes de pocas celdas y viven en
+    // la cola extrema — se les da margen (p99.9 < 4.5) pero no barra libre.
     std::vector<float> slopes;
     slopes.reserve(static_cast<size_t>(res) * res);
     for (int z = 0; z < res; ++z) {
@@ -317,8 +322,10 @@ TEST(Generator, SinMurallasVerticales) {
     const float p99 = slopes[static_cast<size_t>(slopes.size() * 0.99)];
     const float p999 = slopes[static_cast<size_t>(slopes.size() * 0.999)];
 
+    printf("  pendientes: p99=%.2f p99.9=%.2f\n", p99, p999);
+
     // Diagnóstico: dónde viven las peores pendientes.
-    if (p99 >= 1.6f) {
+    if (p99 >= 2.3f) {
         int printed = 0;
         for (int z = 0; z < res && printed < 8; ++z) {
             for (int x = 0; x < res - 1 && printed < 8; ++x) {
@@ -335,8 +342,68 @@ TEST(Generator, SinMurallasVerticales) {
             }
         }
     }
-    EXPECT_LT(p99, 1.6f);
+    EXPECT_LT(p99, 2.3f);
     EXPECT_LT(p999, 4.5f);
+}
+
+TEST(Lem, LaCotaDeCumbreSigueElObjetivo) {
+    // Contrato del LEM: las cumbres deben quedar DEL ORDEN del objetivo
+    // pedido (no un 40% de él). En estado estacionario el uplift total se
+    // cancela (k_dt ∝ uplift_per_iter), así que la cota solo puede venir de
+    // la calibración de la ley de pendientes — esto es lo que se verifica.
+    // A ESCALA DE ISLA: con canales de ~3.5 km el área drenada crece tanto
+    // que el perfil cóncavo hunde las cumbres si la concavidad no está
+    // calibrada (un disco pequeño no reproduce el fallo).
+    const int res = 512;
+    const float size_m = 10000.0f;
+    const float cell = size_m / static_cast<float>(res - 1);
+    const float target_m = 1400.0f;
+
+    // Disco de uplift máximo con rizado determinista (el uplift real siempre
+    // trae gradientes; sin rizado la semilla inicial es una meseta plana).
+    const float radius_m = 0.35f * size_m;
+    std::vector<float> uplift(static_cast<size_t>(res) * res, 0.0f);
+    for (int z = 0; z < res; ++z) {
+        for (int x = 0; x < res; ++x) {
+            const float wx = (static_cast<float>(x) - 0.5f * (res - 1)) * cell;
+            const float wz = (static_cast<float>(z) - 0.5f * (res - 1)) * cell;
+            if (std::sqrt(wx * wx + wz * wz) >= radius_m) {
+                continue;
+            }
+            const float ripple = 0.5f
+                + 0.5f * std::sin(static_cast<float>(x) * 12.9898f
+                                  + static_cast<float>(z) * 78.233f);
+            uplift[static_cast<size_t>(z) * res + x] = 1.0f - 0.06f * ripple;
+        }
+    }
+
+    const auto h = terrain::run_lem(uplift, res, cell, target_m);
+    const float max_h = *std::max_element(h.begin(), h.end());
+    printf("  cumbre LEM: %.0f m (objetivo %.0f m)\n", max_h, target_m);
+
+    EXPECT_GT(max_h, 0.6f * target_m);
+    EXPECT_LT(max_h, 1.25f * target_m);
+}
+
+TEST(Generator, LasMontanasAlcanzanElObjetivoAEscalaIsla) {
+    // Contrato end-to-end de verticalidad: en el mapa REAL (10 km) las
+    // cumbres deben quedar al menos al 75% de mountain_height_m tras todo el
+    // pipeline (LEM + erosión + costa). El test del disco no basta: aquí
+    // entra el campo de uplift de verdad (espinazo ridged + máscara de masa),
+    // que es quien decide cuánta montaña ve el LEM.
+    terrain::TerrainConfig cfg;
+    cfg.seed = 31416;
+    cfg.resolution = 512; // macro 128: misma física, coste de test razonable
+    cfg.size_m = 10000.0f;
+    cfg.erosion_droplets = 20000;
+    const auto data = terrain::generate(cfg);
+
+    const float max_h =
+        *std::max_element(data.height.data().begin(), data.height.data().end());
+    printf("  cumbre generate(): %.0f m (objetivo %.0f m)\n", max_h,
+           cfg.mountain_height_m);
+    EXPECT_GT(max_h, 0.75f * cfg.mountain_height_m);
+    EXPECT_LT(max_h, 1.30f * cfg.mountain_height_m);
 }
 
 TEST(Erosion, ModificaElTerrenoSinRomperlo) {

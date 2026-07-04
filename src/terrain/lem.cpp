@@ -16,7 +16,13 @@ constexpr float kDiffusion = 0.20f;      // difusión de laderas fuerte: laderas
                                          // de estabilidad 0.25; 0.20 deja margen
                                          // frente al modo checkerboard)
 constexpr float kBaseUplift = 0.02f;     // por debajo: nivel de base (mar)
-constexpr float kHeadwaterSlope = 0.7f;  // pendiente de equilibrio en laderas (~35°)
+constexpr float kHeadwaterSlope = 0.8f;  // pendiente de equilibrio en laderas (~39°)
+// Concavidad θ del perfil (Flint: S ∝ A^-θ). El 0.5 físico de ríos maduros
+// hunde las cumbres en un dominio de 10 km — los canales largos pierden toda
+// la pendiente y el objetivo de altura se vuelve inalcanzable por diseño.
+// 0.35 es exageración vertical controlada: valles todavía cóncavos, pero que
+// conservan cota hacia el interior (cumbres ~1.2-1.4 km con uplift 1400).
+constexpr float kConcavity = 0.35f;
 // Área crítica de canalización (Flint): por debajo no hay canal — la celda es
 // LADERA y su pendiente de equilibrio es kHeadwaterSlope, sea cual sea el
 // tamaño de celda. Sin esta referencia FÍSICA la pendiente escalaba con la
@@ -92,8 +98,11 @@ std::vector<float> run_lem(const std::vector<float>& uplift, int macro_res,
     const float uplift_per_iter = uplift_total_m / static_cast<float>(iterations);
     // Calibración física e independiente del grid: la pendiente de equilibrio
     // es kHeadwaterSlope en el dominio de ladera (A ≤ kChannelAreaM2) y decae
-    // como √(A0/A) en los canales (perfil cóncavo de Flint). La pendiente
-    // máxima del macro queda acotada por diseño.
+    // como (A0/A)^θ en los canales (perfil cóncavo de Flint). La pendiente
+    // máxima del macro queda acotada por diseño. OJO: en estado estacionario
+    // S = u·kHeadwaterSlope·(A0/A)^θ — el uplift total se CANCELA (k_dt
+    // escala con él); la cota de cumbre la fijan estas constantes y el campo
+    // de uplift, no el budget.
     const float k_dt = uplift_per_iter / kHeadwaterSlope;
 
     // Semilla: gradiente inicial proporcional al uplift, para que el primer
@@ -207,8 +216,9 @@ std::vector<float> run_lem(const std::vector<float>& uplift, int macro_res,
                 continue;
             }
             const float f = k_dt
-                          * std::sqrt(std::max(area[i], kChannelAreaM2)
-                                      / kChannelAreaM2)
+                          * std::pow(std::max(area[i], kChannelAreaM2)
+                                         / kChannelAreaM2,
+                                     kConcavity)
                           / rcv_dist[i];
             h[i] = (h[i] + uplift_per_iter * uplift[i] + f * h[r]) / (1.0f + f);
         }
