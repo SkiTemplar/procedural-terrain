@@ -368,19 +368,31 @@ void classify_materials(TerrainData& data, const Noise& noise) {
 
 } // namespace
 
-TerrainData generate(const TerrainConfig& cfg) {
+TerrainData generate(const TerrainConfig& cfg,
+                     const std::function<void(const char*)>& progress) {
     TerrainData data;
     data.config = cfg;
     data.height = Heightfield(cfg.resolution, cfg.size_m);
 
     const Noise noise(cfg.seed);
+    const auto report = [&progress](const char* phase) {
+        if (progress) {
+            progress(phase);
+        }
+    };
 
+    report("relieve (LEM)");
     build_base_relief(data, noise, cfg);
+    report("erosion hidraulica");
     erode(data.height, cfg);
+    report("erosion termica");
     thermal_erode(data.height, cfg.thermal_iterations, cfg.talus_slope);
     smooth_peaks(data.height, 2, 1.2f);
+    report("costa");
     shape_coast(data, cfg);
+    report("hidrologia");
     data.hydrology = compute_hydrology(data.height, cfg, noise);
+    report("materiales");
     classify_materials(data, noise);
 
     return data;

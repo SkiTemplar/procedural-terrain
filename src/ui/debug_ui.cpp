@@ -76,9 +76,11 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         ImGui::SliderFloat("detalle fino", &cfg.detail_amplitude_m, 0.0f, 3.0f, "%.1f m");
         ImGui::SliderFloat("linea de nieve", &cfg.snow_line_m, 300.0f, 2400.0f, "%.0f m");
 
+        ImGui::BeginDisabled(state.generation_phase != nullptr);
         if (ImGui::Button("Regenerar", ImVec2(-1.0f, 0.0f))) {
             state.regenerate_requested = true;
         }
+        ImGui::EndDisabled();
         if (state.last_generation_seconds > 0.0f) {
             ImGui::TextDisabled("ultima generacion: %.1f s", state.last_generation_seconds);
         }
@@ -86,6 +88,21 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
 
     ImGui::TextDisabled("Esc: soltar/capturar raton · F: volar/caminar");
     ImGui::End();
+
+    // Overlay central mientras el hilo de trabajo cuece el mundo: la ventana
+    // sigue viva (antes se quedaba congelada ~3 min en Debug al arrancar).
+    if (state.generation_phase != nullptr) {
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowBgAlpha(0.75f);
+        ImGui::Begin("##generando", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize
+                         | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav
+                         | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::Text("Generando mundo: %s", state.generation_phase);
+        ImGui::TextDisabled("%.0f s", state.generation_elapsed);
+        ImGui::End();
+    }
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

@@ -27,6 +27,11 @@ struct DebugState {
     bool regenerate_requested = false;     // botón "Regenerar"
     float last_generation_seconds = 0.0f;
 
+    // Generación en curso (hilo de trabajo): fase actual o nullptr si no hay
+    // ninguna. Con fase activa se muestra el overlay y se bloquea "Regenerar".
+    const char* generation_phase = nullptr;
+    float generation_elapsed = 0.0f;
+
     glm::vec3 sun_dir() const;
 };
 

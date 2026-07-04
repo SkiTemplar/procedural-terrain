@@ -9,7 +9,8 @@ namespace terrain {
 struct TerrainConfig {
     std::uint32_t seed = 31416;
 
-    // Dominio: 10×10 km con celda ~2,4 m (la generación tarda ~1 min).
+    // Dominio: 10×10 km con celda ~2,4 m (generación ~2 min en Debug,
+    // asíncrona: la ventana abre al instante con overlay de progreso).
     float size_m = 10000.0f;
     int resolution = 4096;
     float sea_level = 0.0f;

@@ -5,6 +5,7 @@
 #include "terrain/terrain_config.h"
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace terrain {
@@ -30,6 +31,9 @@ struct TerrainData {
 };
 
 // Pipeline completo: continentalidad → relieve → erosión → hidrología → materiales.
-TerrainData generate(const TerrainConfig& cfg);
+// `progress` (opcional) se invoca al entrar en cada fase con un literal
+// estático — pensado para informar a la UI desde un hilo de trabajo.
+TerrainData generate(const TerrainConfig& cfg,
+                     const std::function<void(const char*)>& progress = {});
 
 } // namespace terrain
