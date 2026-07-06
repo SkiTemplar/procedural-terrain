@@ -45,4 +45,38 @@ void carve_cascades(Heightfield& hf, Hydrology& out,
                     float river_threshold, float max_flow, int max_radius,
                     float sea_level);
 
+// Parámetros compartidos por los pases de Agua v2 posteriores al tallado.
+struct RiverscapeParams {
+    float threshold;     // caudal mínimo de río (celdas equivalentes)
+    float max_flow;      // caudal máximo del mapa (normaliza w ∝ Q^0.4)
+    int max_radius;      // radio de cauce del río mayor, en celdas
+    float sea_level;
+    std::uint32_t seed;  // determinismo de deltas e islotes
+};
+
+// Confluencias limpias: en cada unión de ríos maduros, poza de socavación
+// (scour) con cama al mínimo de ambos cauces y fillet del esquinazo interior
+// (espigón de grava redondeado en vez de cuña vertical de hierba).
+void smooth_confluences(Heightfield& hf, Hydrology& out,
+                        const std::vector<std::size_t>& order,
+                        const std::vector<std::size_t>& downstream,
+                        const RiverscapeParams& p);
+
+// Deltas: en las bocas de caudal alto sobre costa tendida, lóbulo de
+// deposición a ras de mar surcado por distributarios que se bifurcan
+// recursivamente (brazos 100-220 m, w_hijo = w_padre/√2, 60-75° entre
+// hermanos). Las islas interdistributarias emergen solas del lóbulo.
+void build_deltas(Heightfield& hf, Hydrology& out,
+                  const std::vector<std::size_t>& order,
+                  const std::vector<std::size_t>& downstream,
+                  const RiverscapeParams& p);
+
+// Islotes fluviales: barras alargadas alineadas al flujo en los tramos
+// anchos y tendidos (elipse gaussiana con pico sobre la lámina, cauce
+// ensanchado alrededor para que el agua siga pasando).
+void stamp_channel_bars(Heightfield& hf, Hydrology& out,
+                        const std::vector<std::size_t>& order,
+                        const std::vector<std::size_t>& downstream,
+                        const RiverscapeParams& p);
+
 } // namespace terrain

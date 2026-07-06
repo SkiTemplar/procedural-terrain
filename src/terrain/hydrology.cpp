@@ -617,6 +617,16 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     // segunda pasada de monotonía, que solo talla.
     enforce_monotone_beds(hf, out, order, downstream, threshold, cfg.sea_level);
 
+    // ---- Agua v2: confluencias, deltas e islotes ----
+    // Poza de socavación + espigón de grava en cada unión madura; lóbulos
+    // deltaicos con distributarios en las bocas grandes de costa tendida;
+    // barras fluviales emergentes en los tramos anchos y tendidos.
+    const RiverscapeParams rsp{threshold, max_flow, max_radius, cfg.sea_level,
+                               cfg.seed};
+    smooth_confluences(hf, out, order, downstream, rsp);
+    build_deltas(hf, out, order, downstream, rsp);
+    stamp_channel_bars(hf, out, order, downstream, rsp);
+
     // 4) Tensión de superficie: la lámina no cae a MUROS verticales. En los
     // vertederos de lago y knickpoints NO declarados el nivel caía varios
     // metros en una celda y el agua se dibujaba como una pared azul cruzando
