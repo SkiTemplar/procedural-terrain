@@ -340,19 +340,23 @@ void sharpen_crags(Heightfield& hf, const Noise& noise) {
             // y frentes concretos), no en manta sobre toda la montaña — en
             // manta la vista aérea era un moiré de bancales artificial.
             const float outcrop = smoothstep(
-                0.38f, 0.58f,
+                0.50f, 0.70f,
                 noise.fbm(p_km * 0.9f + glm::vec3{27.9f, 0.0f, -52.1f}, 2)
                         * 0.5f + 0.5f);
             const float w = sw * outcrop;
             if (w < 0.02f) {
                 continue;
             }
-            // Espesor de estrato variable y buzamiento lento: las cornisas
-            // no son curvas de nivel perfectas.
-            const float spacing = 50.0f
-                * (1.0f + 0.3f * noise.perlin(p_km * 0.4f
-                                              + glm::vec3{61.7f, 0.0f, -24.3f}));
-            const float dip = 18.0f
+            // Espesor de estrato variable y buzamiento REAL: un desnivel
+            // lento de ±45 m inclina y desplaza las capas entre espolones —
+            // sin él los bancos eran curvas de nivel globales y toda la
+            // montaña se leía como una tarta de pisos.
+            const float spacing = 55.0f
+                * (1.0f + 0.35f * noise.perlin(p_km * 0.4f
+                                               + glm::vec3{61.7f, 0.0f, -24.3f}));
+            const float dip = 30.0f
+                * noise.perlin(p_km * 0.25f + glm::vec3{33.1f, 0.0f, -78.2f})
+                + 15.0f
                 * noise.perlin(p_km * 0.9f + glm::vec3{-9.4f, 0.0f, 47.6f});
             const float hh = base[i] + dip;
             const float band = std::floor(hh / spacing);
@@ -361,7 +365,7 @@ void sharpen_crags(Heightfield& hf, const Noise& noise) {
             // estrato. Desplazamiento acotado a ~spacing/2 — no crea picos.
             const float shelf = smoothstep(0.38f, 0.62f, t);
             const float target = (band + shelf) * spacing - dip;
-            hf.data()[i] = glm::mix(base[i], target, 0.55f * w);
+            hf.data()[i] = glm::mix(base[i], target, 0.42f * w);
         }
     });
 }
