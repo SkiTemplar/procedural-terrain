@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <limits>
 #include <queue>
 #include <vector>
@@ -119,7 +120,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
         }
     }
 
-    const std::vector<float> filled = fill_depressions(hf);
+    std::vector<float> filled = fill_depressions(hf);
 
     // Orden de proceso: de mayor a menor altura rellenada (el flujo baja).
     std::vector<size_t> order(filled.size());
@@ -180,66 +181,6 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
         }
     }
 
-    // Lagos: donde el relleno superó el suelo original.
-    for (size_t i = 0; i < filled.size(); ++i) {
-        if (filled[i] > hf.data()[i] + kLakeEpsilon && filled[i] > cfg.sea_level) {
-            out.water_level[i] = filled[i];
-        }
-    }
-
-    // Purga de microlagos: la erosión deja miles de charcos de 1-3 celdas que
-    // ensucian el mapa. Se eliminan las componentes conexas pequeñas o someras.
-    {
-        constexpr int kMinLakeCells = 60;
-        constexpr float kMinLakeDepth = 1.2f;
-
-        std::vector<bool> visited(filled.size(), false);
-        std::vector<size_t> component;
-        std::vector<size_t> stack;
-
-        for (size_t start = 0; start < filled.size(); ++start) {
-            if (visited[start] || std::isnan(out.water_level[start])) {
-                continue;
-            }
-            component.clear();
-            stack.assign(1, start);
-            visited[start] = true;
-            float max_depth = 0.0f;
-
-            while (!stack.empty()) {
-                const size_t i = stack.back();
-                stack.pop_back();
-                component.push_back(i);
-                max_depth = std::max(max_depth, out.water_level[i] - hf.data()[i]);
-
-                const int x = static_cast<int>(i % static_cast<size_t>(res));
-                const int z = static_cast<int>(i / static_cast<size_t>(res));
-                for (int n = 0; n < 8; ++n) {
-                    const int nx = x + kDx[n];
-                    const int nz = z + kDz[n];
-                    if (nx < 0 || nz < 0 || nx >= res || nz >= res) {
-                        continue;
-                    }
-                    const size_t ni = idx(nx, nz);
-                    if (!visited[ni] && !std::isnan(out.water_level[ni])) {
-                        visited[ni] = true;
-                        stack.push_back(ni);
-                    }
-                }
-            }
-
-            if (static_cast<int>(component.size()) < kMinLakeCells
-                || max_depth < kMinLakeDepth) {
-                for (const size_t i : component) {
-                    out.water_level[i] = kNoWater;
-                }
-            } else {
-                for (const size_t i : component) {
-                    out.lake[i] = 1;
-                }
-            }
-        }
-    }
 
     // ---- Ríos ----
     // El umbral se normaliza: expresado en celdas de un mapa 1024, escala con
@@ -288,6 +229,180 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                     * std::pow(slope + 1e-4f, 0.7f),
                 1.6f);
             h = std::max((h + f * h_down) / (1.0f + f), min_bed);
+        }
+    }
+
+    // ---- Sobreexcavación glaciar ----
+    // Lagos de montaña EMERGENTES: en los tramos altos y TENDIDOS de los
+    // valles con caudal, el hielo sobreexcavó pozas a lo largo del cauce
+    // alternadas con umbrales (paternoster). Se talla el terreno real y el
+    // priority-flood posterior decide dónde queda agua y hasta qué cota — la
+    // orilla sigue las curvas del valle. Nada de cubetas estampadas: las
+    // versiones anteriores colocaban circos por ruido y salían lagos
+    // colgados en las crestas.
+    const float terrain_max =
+        *std::max_element(hf.data().begin(), hf.data().end());
+    {
+        // Tras la incisión fluvial a propósito: es la que crea los fondos de
+        // valle tendidos donde el hielo pudo embalsar.
+        const float glacial_flow = 0.20f * threshold;
+        const float inv_cell = 1.0f / hf.cell_size();
+        // Brocha de ~16 m: en mapas gruesos (tests a 128²) es sub-celda y
+        // solo haría agujeros desproporcionados — el pase se apaga.
+        const int rc = static_cast<int>(std::round(16.0f * inv_cell));
+        if (terrain_max > 400.0f && rc >= 3) {
+            const float lo = 0.30f * terrain_max;
+            const float hi = 0.80f * terrain_max;
+            const std::vector<float> snapshot(hf.data());
+            for (int z = 2; z < res - 2; ++z) {
+                for (int x = 2; x < res - 2; ++x) {
+                    const size_t i = idx(x, z);
+                    if (out.flow[i] < glacial_flow) {
+                        continue; // solo donde el valle lleva caudal
+                    }
+                    const float h0 = snapshot[i];
+                    if (h0 < lo || h0 > hi) {
+                        continue; // banda glaciar
+                    }
+                    // Pendiente A LO LARGO del cauce (hacia la receptora):
+                    // la transversal incluye las paredes del valle en V y
+                    // vetaba todos los candidatos.
+                    const size_t down = downstream[i];
+                    if (down == kNone) {
+                        continue;
+                    }
+                    const int xd = static_cast<int>(down % static_cast<size_t>(res));
+                    const int zd = static_cast<int>(down / static_cast<size_t>(res));
+                    const float dist = hf.cell_size()
+                        * ((x != xd && z != zd) ? 1.4142f : 1.0f);
+                    const float s = (snapshot[i] - snapshot[down]) / dist;
+                    if (s > 0.12f) {
+                        continue; // en cascada el agua no se embalsa
+                    }
+                    // Pulso CORTO a lo largo del valle (λ ~400 m): poza o
+                    // umbral. Con λ larga el gradiente de la excavación no
+                    // superaba la pendiente del valle y la poza no cerraba
+                    // cubeta — profundizaba el cauce sin embalsar nada.
+                    const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f,
+                                         hf.world_z(z) / 1000.0f};
+                    const float pulse = noise.fbm(
+                        p_km * 2.5f + glm::vec3{-14.7f, 0.0f, 83.2f}, 2);
+                    if (pulse <= 0.20f) {
+                        continue;
+                    }
+                    // Cuanto más llano el tramo, más honda la poza respecto a
+                    // su pendiente — es lo que permite cerrar la cubeta.
+                    const float depth =
+                        (2.5f + 5.5f * glm::clamp((pulse - 0.20f) / 0.35f,
+                                                  0.0f, 1.0f))
+                        * (1.0f - s / 0.12f);
+                    if (depth < 1.5f) {
+                        continue;
+                    }
+                    for (int dz = -rc; dz <= rc; ++dz) {
+                        for (int dx = -rc; dx <= rc; ++dx) {
+                            const int nx = x + dx;
+                            const int nz = z + dz;
+                            if (nx < 1 || nz < 1 || nx >= res - 1
+                                || nz >= res - 1) {
+                                continue;
+                            }
+                            const float r2 =
+                                static_cast<float>(dx * dx + dz * dz)
+                                / static_cast<float>(rc * rc);
+                            if (r2 > 1.0f) {
+                                continue;
+                            }
+                            const size_t ni = idx(nx, nz);
+                            const float target =
+                                snapshot[ni] - depth * (1.0f - r2);
+                            if (hf.data()[ni] > target) {
+                                hf.data()[ni] = target;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // La incisión (y la sobreexcavación) han cambiado el terreno desde el
+    // primer relleno: recalcular SIEMPRE antes de detectar lagos. Con el
+    // relleno viejo, cada cauce tallado quedaba por debajo de él y salía una
+    // tira de "lago" fantasma a lo largo de todos los ríos.
+    filled = fill_depressions(hf);
+
+    // Lagos: donde el relleno superó el suelo original.
+    for (size_t i = 0; i < filled.size(); ++i) {
+        if (filled[i] > hf.data()[i] + kLakeEpsilon && filled[i] > cfg.sea_level) {
+            out.water_level[i] = filled[i];
+        }
+    }
+
+    // Purga de microlagos: la erosión deja miles de charcos de 1-3 celdas que
+    // ensucian el mapa. Se eliminan las componentes conexas pequeñas o someras.
+    {
+        constexpr int kMinLakeCells = 60;
+        constexpr float kMinLakeDepth = 1.2f;
+        int mountain_lakes_logged = 0;
+
+        std::vector<bool> visited(filled.size(), false);
+        std::vector<size_t> component;
+        std::vector<size_t> stack;
+
+        for (size_t start = 0; start < filled.size(); ++start) {
+            if (visited[start] || std::isnan(out.water_level[start])) {
+                continue;
+            }
+            component.clear();
+            stack.assign(1, start);
+            visited[start] = true;
+            float max_depth = 0.0f;
+
+            while (!stack.empty()) {
+                const size_t i = stack.back();
+                stack.pop_back();
+                component.push_back(i);
+                max_depth = std::max(max_depth, out.water_level[i] - hf.data()[i]);
+
+                const int x = static_cast<int>(i % static_cast<size_t>(res));
+                const int z = static_cast<int>(i / static_cast<size_t>(res));
+                for (int n = 0; n < 8; ++n) {
+                    const int nx = x + kDx[n];
+                    const int nz = z + kDz[n];
+                    if (nx < 0 || nz < 0 || nx >= res || nz >= res) {
+                        continue;
+                    }
+                    const size_t ni = idx(nx, nz);
+                    if (!visited[ni] && !std::isnan(out.water_level[ni])) {
+                        visited[ni] = true;
+                        stack.push_back(ni);
+                    }
+                }
+            }
+
+            if (static_cast<int>(component.size()) < kMinLakeCells
+                || max_depth < kMinLakeDepth) {
+                for (const size_t i : component) {
+                    out.water_level[i] = kNoWater;
+                }
+            } else {
+                for (const size_t i : component) {
+                    out.lake[i] = 1;
+                }
+                // Verificable sin volar a ciegas: los lagos de montaña son
+                // emergentes y encontrarlos a mano cuesta más que generarlos.
+                if (out.water_level[start] > 0.28f * terrain_max
+                    && mountain_lakes_logged < 8) {
+                    const int lx = static_cast<int>(start % static_cast<size_t>(res));
+                    const int lz = static_cast<int>(start / static_cast<size_t>(res));
+                    std::cout << "  lago de montana @ ("
+                              << static_cast<int>(hf.world_x(lx)) << ", "
+                              << static_cast<int>(hf.world_z(lz)) << ") cota "
+                              << static_cast<int>(out.water_level[start])
+                              << " m (" << component.size() << " celdas)\n";
+                    ++mountain_lakes_logged;
+                }
+            }
         }
     }
 

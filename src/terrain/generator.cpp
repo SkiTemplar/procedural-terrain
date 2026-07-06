@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <cmath>
 #include <execution>
-#include <iostream>
 #include <numeric>
 #include <vector>
 
@@ -149,8 +148,12 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                     noise.fbm(p_km * 0.09f + glm::vec3{-88.4f, 0.0f, 27.6f}, 2)
                             * 0.5f + 0.5f)
                     * (1.0f - 0.70f * spine);
+                // En sectores de costa expuesta el uplift NO se hunde hacia
+                // el mar (exponente 1.5 → 0.4): la montaña llega a la costa
+                // por sí misma y el acantilado es su cara contra el agua —
+                // nada de mesetas artificiales pegadas después.
                 uplift[static_cast<size_t>(z) * macro_res + x] =
-                    std::pow(cs.continent, 1.5f)
+                    std::pow(cs.continent, 1.5f - 1.1f * cs.cliff)
                     * (0.15f + 0.85f * glm::clamp(spine * (0.75f + 0.45f * mass)
                                                       + 0.35f * mass,
                                                   0.0f, 1.0f))
@@ -193,20 +196,12 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                       * noise.fbm(p_km * 1.7f + glm::vec3{88.8f, 0.0f, -3.4f},
                                   2);
             const float cliff_drop = 1.0f - smoothstep(0.04f, 0.09f, c_face);
-            h -= glm::mix(smooth_drop, cliff_drop, cs.cliff) * cfg.sea_depth;
-            // Meseta del acantilado (moor): el LEM deja la costa casi a cota
-            // cero, así que sin este levantamiento la pared moría bajo el
-            // agua y la meseta llana se clasificaba como arena. Altura MUY
-            // variable (tramos bajos de 20 m y frentes de 75+) con techo
-            // ondulado, fundida con el interior muy gradualmente.
-            const float moor = 22.0f + 48.0f
-                * (noise.fbm(p_km * 0.35f + glm::vec3{-41.2f, 0.0f, 18.7f}, 2)
-                       * 0.5f + 0.5f)
-                + 7.0f * noise.perlin(p_km * 1.3f
-                                      + glm::vec3{16.4f, 0.0f, -60.7f});
-            h += cs.cliff * std::max(moor, 0.0f)
-               * smoothstep(0.045f, 0.10f, c_face)
-               * (1.0f - smoothstep(0.35f, 0.75f, cs.continent));
+            // PUERTA DE RELIEVE: el perfil abrupto solo se aplica donde el
+            // LEM ya trae altura a la costa (el uplift de sector expuesto la
+            // trae). Si la tierra baja toca el mar, la costa queda suave —
+            // sin acantilados fake junto a praderas con lagos.
+            const float cliff_w = cs.cliff * smoothstep(12.0f, 40.0f, macro);
+            h -= glm::mix(smooth_drop, cliff_drop, cliff_w) * cfg.sea_depth;
             // Colinillas suaves de pradera (el LEM deja las zonas de poco
             // uplift casi planas; esto les da su ondulación). En los sectores
             // de tierras bajas (misma máscara que el uplift de Fase A) se
@@ -251,143 +246,6 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 amp * noise.fbm(p_km * 0.8f + glm::vec3{-71.6f, 0.0f, 33.9f}, 3);
         }
     });
-}
-
-// Circos glaciares: cubetas someras con morrena en cabeceras altas. No crean
-// agua por sí mismas — el priority-flood de la hidrología las llena y salen
-// ibones (lagos de montaña). Solo son visibles a resolución alta: en los
-// mapas de test la purga de microlagos se los come (por diseño).
-void carve_cirques(Heightfield& hf, const Noise& noise) {
-    const int res = hf.resolution();
-    const float cell = hf.cell_size();
-    const float max_h = *std::max_element(hf.data().begin(), hf.data().end());
-    if (max_h < 300.0f) {
-        return;
-    }
-    const float lo = 0.45f * max_h;
-    const float hi = 0.85f * max_h;
-    // Un candidato por ~220 m, con jitter y sorteo por ruido: reparto
-    // irregular sin acumularse en una esquina del scan.
-    const int step = std::max(2, static_cast<int>(std::round(220.0f / cell)));
-    std::vector<glm::vec2> placed;
-
-    for (int gz = step; gz < res - step; gz += step) {
-        for (int gx = step; gx < res - step; gx += step) {
-            const glm::vec3 g_km{hf.world_x(gx) / 1000.0f, 0.0f,
-                                 hf.world_z(gz) / 1000.0f};
-            if (noise.perlin(g_km * 9.7f + glm::vec3{31.4f, 0.0f, -15.9f}) < 0.38f) {
-                continue; // sorteo de candidatos
-            }
-            const int jitter_r = step / 3;
-            const int x = gx + static_cast<int>(
-                jitter_r * noise.perlin(g_km * 5.1f + glm::vec3{8.8f, 0.0f, 2.2f}));
-            const int z = gz + static_cast<int>(
-                jitter_r * noise.perlin(g_km * 5.3f + glm::vec3{-3.9f, 0.0f, 7.1f}));
-            if (x < step || z < step || x >= res - step || z >= res - step) {
-                continue;
-            }
-            const float h = hf.at(x, z);
-            if (h < lo || h > hi) {
-                continue; // cabeceras y collados, ni llanura ni cumbre
-            }
-            const int d = std::max(1, static_cast<int>(std::round(12.0f / cell)));
-            const float slope = std::max(
-                std::abs(hf.at(x + d, z) - hf.at(x - d, z)),
-                std::abs(hf.at(x, z + d) - hf.at(x, z - d)))
-                * 0.5f / (static_cast<float>(d) * cell);
-            if (slope > 0.40f) {
-                continue; // en pared no se sostiene una cubeta
-            }
-            const glm::vec2 pos{hf.world_x(x), hf.world_z(z)};
-            bool crowded = false;
-            for (const glm::vec2& p : placed) {
-                if (glm::distance(p, pos) < 500.0f) {
-                    crowded = true;
-                    break;
-                }
-            }
-            if (crowded) {
-                continue;
-            }
-            placed.push_back(pos);
-
-            // Cubeta: suelo hundido que sube parabólico hasta el borde, con
-            // labio de morrena que garantiza el embalse (la lámina supera el
-            // umbral de purga de lagos). Dos tallas: ibones normales y, de
-            // vez en cuando, un circo GRANDE — lago alpino de 60-120 m.
-            float radius_m = 22.0f + 18.0f
-                * (0.5f + 0.5f * noise.perlin(g_km * 6.9f
-                                              + glm::vec3{-21.2f, 0.0f, 44.8f}));
-            float depth = 3.0f;
-            // Umbral bajo a propósito: este perlin YA llega tras el sorteo de
-            // candidatos y los filtros de cota/pendiente/distancia — con 0.40
-            // la probabilidad conjunta daba CERO circos grandes por isla.
-            if (noise.perlin(g_km * 3.3f + glm::vec3{12.5f, 0.0f, -6.2f})
-                > 0.15f) {
-                radius_m *= 2.8f;
-                depth = 6.5f;
-                // Localizable sin volar a ciegas: el lago alpino grande es
-                // raro y verificarlo a mano costaba más que generarlo.
-                std::cout << "  circo grande @ (" << static_cast<int>(pos.x)
-                          << ", " << static_cast<int>(pos.y) << ") alt "
-                          << static_cast<int>(h) << " m\n";
-            }
-            // Cubeta EXCAVADA: el fondo se referencia al punto más BAJO del
-            // borde (8 muestras del anillo), no al centro — con el centro,
-            // en ladera la morrena levantaba una muralla circular para
-            // sostener el lago y salía un cráter colgado. Ahora se excava
-            // hacia dentro de la ladera y el labio apenas sube ~1.6 m.
-            float h_low = h;
-            for (int k = 0; k < 8; ++k) {
-                const float ang = static_cast<float>(k) * 0.785398f;
-                const int sx = x + static_cast<int>(
-                    std::round(std::cos(ang) * radius_m / cell));
-                const int sz = z + static_cast<int>(
-                    std::round(std::sin(ang) * radius_m / cell));
-                if (sx < 1 || sz < 1 || sx >= res - 1 || sz >= res - 1) {
-                    continue;
-                }
-                h_low = std::min(h_low, hf.at(sx, sz));
-            }
-            const float crest = h_low + 0.8f; // labio de morrena
-            const float floor_h = crest - depth;
-            // Margen extra en el barrido: la orilla ondulada (wob 1.3x)
-            // necesita sitio o los lóbulos salen cortados en seco.
-            const int rc = std::max(2, static_cast<int>(std::round(
-                radius_m * 1.7f / cell)));
-            for (int dz = -rc; dz <= rc; ++dz) {
-                for (int dx = -rc; dx <= rc; ++dx) {
-                    const int nx = x + dx;
-                    const int nz = z + dz;
-                    if (nx < 1 || nz < 1 || nx >= res - 1 || nz >= res - 1) {
-                        continue;
-                    }
-                    // Orilla IRREGULAR: el radio ondula por celda (λ ~70 m)
-                    // — sin esto la cubeta era un círculo perfecto con anillo
-                    // de morrena y el lago parecía un cráter.
-                    const float wob = 1.0f + 0.30f * noise.perlin(
-                        glm::vec3{hf.world_x(nx) / 1000.0f, 0.0f,
-                                  hf.world_z(nz) / 1000.0f} * 14.0f
-                        + glm::vec3{-55.6f, 0.0f, 21.9f});
-                    const float r = std::sqrt(static_cast<float>(dx * dx + dz * dz))
-                                  * cell / (radius_m * wob);
-                    float& cell_h = hf.at(nx, nz);
-                    if (r <= 1.0f) {
-                        cell_h = std::min(cell_h, floor_h + depth * r * r);
-                    } else if (r <= 1.3f) {
-                        // Morrena: cresta FUNDIDA con el terreno hacia fuera
-                        // y subida ACOTADA (≤1.6 m) — si el borde bajo queda
-                        // como vertedero natural, mejor que una muralla.
-                        const float t = (r - 1.0f) / 0.3f;
-                        const float w = 1.0f - t * t;
-                        if (cell_h < crest) {
-                            cell_h += std::min(crest - cell_h, 1.6f) * w;
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 // Paredones estratificados: en laderas ya muy empinadas la altura se remapea
@@ -688,7 +546,6 @@ TerrainData generate(const TerrainConfig& cfg,
     report("erosion termica");
     thermal_erode(data.height, cfg.thermal_iterations, cfg.talus_slope);
     smooth_peaks(data.height, 2, 1.2f);
-    carve_cirques(data.height, noise);
     sharpen_crags(data.height, noise);
     report("costa");
     shape_coast(data, cfg);
