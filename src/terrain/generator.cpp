@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <execution>
+#include <iostream>
 #include <numeric>
 #include <vector>
 
@@ -184,22 +185,38 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
             // hasta la misma línea de costa y cae a pico al mar (tipo
             // Escocia). Los ríos que alcanzan el borde saltan en cascada.
             const float smooth_drop = 1.0f - cs.continent;
-            const float cliff_drop =
-                1.0f - smoothstep(0.04f, 0.09f, cs.continent);
+            // Frente DENTADO: el acantilado no sigue la costa suave — un
+            // jitter de continentalidad (λ ~600 m) abre calas y adelanta
+            // espolones; sin él la muralla era una regla recta y uniforme.
+            const float c_face = cs.continent
+                + 0.06f * cs.cliff
+                      * noise.fbm(p_km * 1.7f + glm::vec3{88.8f, 0.0f, -3.4f},
+                                  2);
+            const float cliff_drop = 1.0f - smoothstep(0.04f, 0.09f, c_face);
             h -= glm::mix(smooth_drop, cliff_drop, cs.cliff) * cfg.sea_depth;
             // Meseta del acantilado (moor): el LEM deja la costa casi a cota
             // cero, así que sin este levantamiento la pared moría bajo el
-            // agua y la meseta llana se clasificaba como arena. Sube en la
-            // misma franja estrecha que la caída (frente visible de 40-70 m)
-            // y se funde con el interior muy gradualmente.
-            const float moor = 35.0f + 30.0f
-                * (noise.fbm(p_km * 0.5f + glm::vec3{-41.2f, 0.0f, 18.7f}, 2)
-                       * 0.5f + 0.5f);
-            h += cs.cliff * moor * smoothstep(0.045f, 0.10f, cs.continent)
+            // agua y la meseta llana se clasificaba como arena. Altura MUY
+            // variable (tramos bajos de 20 m y frentes de 75+) con techo
+            // ondulado, fundida con el interior muy gradualmente.
+            const float moor = 22.0f + 48.0f
+                * (noise.fbm(p_km * 0.35f + glm::vec3{-41.2f, 0.0f, 18.7f}, 2)
+                       * 0.5f + 0.5f)
+                + 7.0f * noise.perlin(p_km * 1.3f
+                                      + glm::vec3{16.4f, 0.0f, -60.7f});
+            h += cs.cliff * std::max(moor, 0.0f)
+               * smoothstep(0.045f, 0.10f, c_face)
                * (1.0f - smoothstep(0.35f, 0.75f, cs.continent));
             // Colinillas suaves de pradera (el LEM deja las zonas de poco
-            // uplift casi planas; esto les da su ondulación).
-            h += cs.continent
+            // uplift casi planas; esto les da su ondulación). En los sectores
+            // de tierras bajas (misma máscara que el uplift de Fase A) se
+            // amortiguan: a plena amplitud cerraban cubetas de 5-15 m y la
+            // llanura se llenaba de lagos-charco con forma de burbuja.
+            const float lowland = smoothstep(
+                0.52f, 0.70f,
+                noise.fbm(p_km * 0.09f + glm::vec3{-88.4f, 0.0f, 27.6f}, 2)
+                        * 0.5f + 0.5f);
+            h += cs.continent * (1.0f - 0.65f * lowland)
                * noise.fbm(p_km * 0.35f + glm::vec3{11.3f, 0.0f, -6.1f}, 3)
                * cfg.base_height_m;
             hf.at(x, z) = h;
@@ -258,8 +275,8 @@ void carve_cirques(Heightfield& hf, const Noise& noise) {
         for (int gx = step; gx < res - step; gx += step) {
             const glm::vec3 g_km{hf.world_x(gx) / 1000.0f, 0.0f,
                                  hf.world_z(gz) / 1000.0f};
-            if (noise.perlin(g_km * 9.7f + glm::vec3{31.4f, 0.0f, -15.9f}) < 0.42f) {
-                continue; // sorteo: ~1 de cada 5 candidatos
+            if (noise.perlin(g_km * 9.7f + glm::vec3{31.4f, 0.0f, -15.9f}) < 0.38f) {
+                continue; // sorteo de candidatos
             }
             const int jitter_r = step / 3;
             const int x = gx + static_cast<int>(
@@ -278,7 +295,7 @@ void carve_cirques(Heightfield& hf, const Noise& noise) {
                 std::abs(hf.at(x + d, z) - hf.at(x - d, z)),
                 std::abs(hf.at(x, z + d) - hf.at(x, z - d)))
                 * 0.5f / (static_cast<float>(d) * cell);
-            if (slope > 0.35f) {
+            if (slope > 0.40f) {
                 continue; // en pared no se sostiene una cubeta
             }
             const glm::vec2 pos{hf.world_x(x), hf.world_z(z)};
@@ -302,18 +319,42 @@ void carve_cirques(Heightfield& hf, const Noise& noise) {
                 * (0.5f + 0.5f * noise.perlin(g_km * 6.9f
                                               + glm::vec3{-21.2f, 0.0f, 44.8f}));
             float depth = 3.0f;
+            // Umbral bajo a propósito: este perlin YA llega tras el sorteo de
+            // candidatos y los filtros de cota/pendiente/distancia — con 0.40
+            // la probabilidad conjunta daba CERO circos grandes por isla.
             if (noise.perlin(g_km * 3.3f + glm::vec3{12.5f, 0.0f, -6.2f})
-                > 0.40f) {
+                > 0.15f) {
                 radius_m *= 2.8f;
                 depth = 6.5f;
+                // Localizable sin volar a ciegas: el lago alpino grande es
+                // raro y verificarlo a mano costaba más que generarlo.
+                std::cout << "  circo grande @ (" << static_cast<int>(pos.x)
+                          << ", " << static_cast<int>(pos.y) << ") alt "
+                          << static_cast<int>(h) << " m\n";
             }
-            const float bowl = depth * 0.47f; // coef. de la parábola
-            const float lip = depth * 0.57f;  // cresta de morrena
+            // Cubeta EXCAVADA: el fondo se referencia al punto más BAJO del
+            // borde (8 muestras del anillo), no al centro — con el centro,
+            // en ladera la morrena levantaba una muralla circular para
+            // sostener el lago y salía un cráter colgado. Ahora se excava
+            // hacia dentro de la ladera y el labio apenas sube ~1.6 m.
+            float h_low = h;
+            for (int k = 0; k < 8; ++k) {
+                const float ang = static_cast<float>(k) * 0.785398f;
+                const int sx = x + static_cast<int>(
+                    std::round(std::cos(ang) * radius_m / cell));
+                const int sz = z + static_cast<int>(
+                    std::round(std::sin(ang) * radius_m / cell));
+                if (sx < 1 || sz < 1 || sx >= res - 1 || sz >= res - 1) {
+                    continue;
+                }
+                h_low = std::min(h_low, hf.at(sx, sz));
+            }
+            const float crest = h_low + 0.8f; // labio de morrena
+            const float floor_h = crest - depth;
             // Margen extra en el barrido: la orilla ondulada (wob 1.3x)
             // necesita sitio o los lóbulos salen cortados en seco.
             const int rc = std::max(2, static_cast<int>(std::round(
                 radius_m * 1.7f / cell)));
-            const float floor_h = h - depth;
             for (int dz = -rc; dz <= rc; ++dz) {
                 for (int dx = -rc; dx <= rc; ++dx) {
                     const int nx = x + dx;
@@ -332,16 +373,15 @@ void carve_cirques(Heightfield& hf, const Noise& noise) {
                                   * cell / (radius_m * wob);
                     float& cell_h = hf.at(nx, nz);
                     if (r <= 1.0f) {
-                        cell_h = std::min(cell_h, floor_h + bowl * r * r);
+                        cell_h = std::min(cell_h, floor_h + depth * r * r);
                     } else if (r <= 1.3f) {
                         // Morrena: cresta FUNDIDA con el terreno hacia fuera
-                        // (nada de repisas circulares con borde de
-                        // acantilado).
+                        // y subida ACOTADA (≤1.6 m) — si el borde bajo queda
+                        // como vertedero natural, mejor que una muralla.
                         const float t = (r - 1.0f) / 0.3f;
                         const float w = 1.0f - t * t;
-                        const float crest = floor_h + lip;
                         if (cell_h < crest) {
-                            cell_h += (crest - cell_h) * w;
+                            cell_h += std::min(crest - cell_h, 1.6f) * w;
                         }
                     }
                 }
@@ -555,6 +595,11 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                        && slope < 0.35f) {
                 // La banda de arena crece con el clima: playones caribeños
                 // en el sector cálido, orillas mínimas en el frío.
+                m = Material::Sand;
+            } else if (riparian[i] && h < 60.0f && slope < 0.35f) {
+                // Orilla de lago/río de tierras bajas: franja de arena/limo.
+                // Sin ella el agua cortaba la hierba a ras y los lagos de
+                // pradera parecían pegados encima del prado.
                 m = Material::Sand;
             } else {
                 const float snow_edge_jitter =
