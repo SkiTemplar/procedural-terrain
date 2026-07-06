@@ -4,6 +4,7 @@ Juego de exploración: caminar/volar por un archipiélago generado
 proceduralmente (tectónica, erosión, ríos, biomas). Fase 2: planeta esférico.
 
 Diseño completo: `docs/superpowers/specs/2026-07-02-procedural-terrain-design.md`
+Plan maestro (fases restantes, criterios y manual de operaciones): `docs/plan-maestro.md`
 
 ## Estado
 
