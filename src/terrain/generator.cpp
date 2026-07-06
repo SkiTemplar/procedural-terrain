@@ -76,8 +76,15 @@ CoastSample coast_at(const Noise& noise, const TerrainConfig& cfg,
     // la máscara es cero la costa conserva su perfil suave de siempre.
     const float cliff_raw =
         noise.fbm(pw * 0.22f + glm::vec3{23.7f, 0.0f, 71.2f}, 2) * 0.5f + 0.5f;
-    const float cliff =
-        smoothstep(0.48f, 0.64f, cliff_raw) * (1.0f - 0.55f * climate);
+    // EXPOSICIÓN: los cabos y penínsulas (lóbulo negativo) reciben el oleaje
+    // de frente y se acantilan aunque el sector de ruido no lo marque — así
+    // la mainland siempre tiene tramos acantilados y las bahías quedan
+    // resguardadas para playas.
+    const float headland = smoothstep(0.0f, -0.35f, lobe);
+    const float cliff = glm::clamp(smoothstep(0.48f, 0.64f, cliff_raw)
+                                       + 0.55f * headland,
+                                   0.0f, 1.0f)
+                      * (1.0f - 0.55f * climate);
 
     return {continent, climate, cliff};
 }
@@ -296,14 +303,16 @@ void carve_cirques(Heightfield& hf, const Noise& noise) {
                                               + glm::vec3{-21.2f, 0.0f, 44.8f}));
             float depth = 3.0f;
             if (noise.perlin(g_km * 3.3f + glm::vec3{12.5f, 0.0f, -6.2f})
-                > 0.50f) {
+                > 0.40f) {
                 radius_m *= 2.8f;
                 depth = 6.5f;
             }
             const float bowl = depth * 0.47f; // coef. de la parábola
             const float lip = depth * 0.57f;  // cresta de morrena
+            // Margen extra en el barrido: la orilla ondulada (wob 1.3x)
+            // necesita sitio o los lóbulos salen cortados en seco.
             const int rc = std::max(2, static_cast<int>(std::round(
-                radius_m * 1.3f / cell)));
+                radius_m * 1.7f / cell)));
             const float floor_h = h - depth;
             for (int dz = -rc; dz <= rc; ++dz) {
                 for (int dx = -rc; dx <= rc; ++dx) {
@@ -312,8 +321,15 @@ void carve_cirques(Heightfield& hf, const Noise& noise) {
                     if (nx < 1 || nz < 1 || nx >= res - 1 || nz >= res - 1) {
                         continue;
                     }
+                    // Orilla IRREGULAR: el radio ondula por celda (λ ~70 m)
+                    // — sin esto la cubeta era un círculo perfecto con anillo
+                    // de morrena y el lago parecía un cráter.
+                    const float wob = 1.0f + 0.30f * noise.perlin(
+                        glm::vec3{hf.world_x(nx) / 1000.0f, 0.0f,
+                                  hf.world_z(nz) / 1000.0f} * 14.0f
+                        + glm::vec3{-55.6f, 0.0f, 21.9f});
                     const float r = std::sqrt(static_cast<float>(dx * dx + dz * dz))
-                                  * cell / radius_m;
+                                  * cell / (radius_m * wob);
                     float& cell_h = hf.at(nx, nz);
                     if (r <= 1.0f) {
                         cell_h = std::min(cell_h, floor_h + bowl * r * r);
