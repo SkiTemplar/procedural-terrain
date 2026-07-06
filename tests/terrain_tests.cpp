@@ -1,6 +1,7 @@
 #include "terrain/erosion.h"
 #include "terrain/generator.h"
 #include "terrain/heightfield.h"
+#include "terrain/hydrology.h"
 #include "terrain/lem.h"
 #include "terrain/noise.h"
 
@@ -404,6 +405,118 @@ TEST(Generator, LasMontanasAlcanzanElObjetivoAEscalaIsla) {
            cfg.mountain_height_m);
     EXPECT_GT(max_h, 0.75f * cfg.mountain_height_m);
     EXPECT_LT(max_h, 1.30f * cfg.mountain_height_m);
+}
+
+TEST(Hidrologia, UnLagoInteriorDesaguaConRioVisible) {
+    // Contrato Agua v2 (efluentes): un cuenco cerrado a media ladera de una
+    // isla cónica se llena (priority-flood) y su efluente debe salir como
+    // RÍO VISIBLE — caudal sobre el umbral y lámina pintada — desde el labio.
+    const auto cfg = test_config();
+    terrain::Heightfield hf(cfg.resolution, cfg.size_m);
+    const int res = hf.resolution();
+    for (int z = 0; z < res; ++z) {
+        for (int x = 0; x < res; ++x) {
+            const float wx = hf.world_x(x);
+            const float wz = hf.world_z(z);
+            const float r = std::sqrt(wx * wx + wz * wz);
+            float h = 90.0f - 0.075f * r; // cono isla (costa a r = 1.2 km)
+            const float dx = wx;
+            const float dz = wz + 400.0f; // cuenco centrado en (0, -400)
+            const float d2 = dx * dx + dz * dz;
+            constexpr float kBowlR = 250.0f;
+            if (d2 < kBowlR * kBowlR) {
+                h -= 30.0f * (1.0f - d2 / (kBowlR * kBowlR));
+            }
+            hf.at(x, z) = h;
+        }
+    }
+
+    const terrain::Noise noise(7);
+    const auto hy = terrain::compute_hydrology(hf, cfg, noise);
+    const float threshold = effective_river_threshold(cfg);
+
+    int lake_cells = 0;
+    bool effluent_at_lip = false;
+    for (int z = 1; z < res - 1; ++z) {
+        for (int x = 1; x < res - 1; ++x) {
+            const size_t i = static_cast<size_t>(z) * res + x;
+            lake_cells += hy.lake[i] ? 1 : 0;
+            if (hy.lake[i] || hy.flow[i] < threshold
+                || std::isnan(hy.water_level[i])) {
+                continue;
+            }
+            // ¿Este río toca la orilla del lago? Entonces es el efluente.
+            for (int dz = -1; dz <= 1 && !effluent_at_lip; ++dz) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (hy.lake[static_cast<size_t>(z + dz) * res + (x + dx)]) {
+                        effluent_at_lip = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    EXPECT_GT(lake_cells, 50) << "el cuenco no formó lago";
+    EXPECT_TRUE(effluent_at_lip)
+        << "el lago no desagua con un río visible en el labio";
+
+    // Y el agua del efluente llega hasta la costa (lámina pintada a cota baja).
+    bool water_reaches_coast = false;
+    for (size_t i = 0; i < hy.water_level.size() && !water_reaches_coast; ++i) {
+        water_reaches_coast = !std::isnan(hy.water_level[i]) && !hy.lake[i]
+                           && hy.flow[i] >= threshold
+                           && hy.water_level[i] < cfg.sea_level + 5.0f;
+    }
+    EXPECT_TRUE(water_reaches_coast);
+}
+
+TEST(Hidrologia, ElLechoDelRioNoSubeAguasAbajo) {
+    // Contrato Agua v2 (perfil monótono): todo cauce maduro tiene salida —
+    // algún vecino río/lago/mar con lecho igual o más bajo. Sin la pasada de
+    // monotonía, los bultos residuales embalsaban tramos enteros.
+    const auto cfg = test_config();
+    auto data = terrain::generate(cfg);
+    const int res = data.height.resolution();
+    const float threshold = effective_river_threshold(cfg);
+
+    int dammed = 0;
+    for (int z = 1; z < res - 1; ++z) {
+        for (int x = 1; x < res - 1; ++x) {
+            const size_t i = static_cast<size_t>(z) * res + x;
+            if (data.hydrology.flow[i] < 3.0f * threshold
+                || data.hydrology.lake[i]
+                || data.height.at(x, z) <= cfg.sea_level + 1.0f
+                || std::isnan(data.hydrology.water_level[i])) {
+                continue;
+            }
+            bool has_exit = false;
+            for (int dz = -1; dz <= 1 && !has_exit; ++dz) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dx == 0 && dz == 0) {
+                        continue;
+                    }
+                    const size_t ni = static_cast<size_t>(z + dz) * res + (x + dx);
+                    // Desembocar en lago o mar siempre es salida (la lámina
+                    // continúa aunque el lecho del lago quede más alto que el
+                    // cauce tallado en la boca). Entre ríos, el lecho vecino
+                    // debe ser igual o más bajo.
+                    if (data.hydrology.lake[ni]
+                        || data.height.at(x + dx, z + dz) <= cfg.sea_level) {
+                        has_exit = true;
+                        break;
+                    }
+                    if (data.hydrology.flow[ni] >= threshold
+                        && data.height.at(x + dx, z + dz)
+                               <= data.height.at(x, z) + 0.05f) {
+                        has_exit = true;
+                        break;
+                    }
+                }
+            }
+            dammed += has_exit ? 0 : 1;
+        }
+    }
+    EXPECT_EQ(dammed, 0) << dammed << " celdas de río sin salida aguas abajo";
 }
 
 TEST(Erosion, ModificaElTerrenoSinRomperlo) {

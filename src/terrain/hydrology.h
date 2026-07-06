@@ -15,6 +15,9 @@ struct Hydrology {
     std::vector<float> water_level;  // lagos y ríos; NaN donde no hay agua
     std::vector<float> flow;         // acumulación D8
     std::vector<std::uint8_t> lake;  // 1 = celda de lago (tras purga)
+    // 0 = agua tranquila; 1 = rápidos (espuma); 2 = cascada (pared + poza).
+    // Lo consume el render (scroll de espuma / ribbon vertical).
+    std::vector<std::uint8_t> whitewater;
 };
 
 // 0) Perturba las llanuras con ruido suave → el D8 serpentea (sinuosidad).
@@ -23,6 +26,8 @@ struct Hydrology {
 // 2) Acumula flujo D8 sobre la superficie rellenada; incisión stream-power
 //    dependiente de pendiente (cañones en montaña, no en llanura).
 // 3) Marca ríos donde el flujo supera el umbral y talla su cauce en hf.
+// 4) Agua v2 (riverscape.h): efluentes de lagos con caudal heredado, lecho
+//    monótono aguas abajo, cascadas (rellano + pared + poza) y rápidos.
 Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                             const Noise& noise);
 

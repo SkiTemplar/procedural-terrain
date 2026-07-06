@@ -1,5 +1,7 @@
 #include "terrain/hydrology.h"
 
+#include "terrain/riverscape.h"
+
 #include <glm/common.hpp>
 
 #include <algorithm>
@@ -406,6 +408,16 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
         }
     }
 
+    // ---- Agua v2: efluentes de lagos + perfil monótono ----
+    // Cada lago desagua por su saddle con caudal heredado (el efluente nace
+    // río hecho, no arroyo); después se eliminan las contrapendientes del
+    // lecho para que ningún cauce quede embalsado por bultos residuales.
+    out.whitewater.assign(filled.size(), 0);
+    std::vector<std::uint8_t> from_lake(filled.size(), 0);
+    connect_lake_effluents(hf, out, downstream, threshold, cfg.sea_level,
+                           from_lake);
+    enforce_monotone_beds(hf, out, order, downstream, threshold, cfg.sea_level);
+
     const std::vector<float> bed0(hf.data()); // lecho tras la incisión
 
     const auto is_river = [&](size_t i) {
@@ -416,29 +428,35 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     //    eso dejaba el agua flotando). Profundidad según caudal, y monótono
     //    decreciente aguas abajo.
     std::vector<float> level(filled.size(), std::numeric_limits<float>::infinity());
-    // Geometría hidráulica (Leopold & Maddock): el cauce crece como potencia
-    // del caudal, normalizado al caudal MÁXIMO del mapa. El log anterior
-    // saturaba a ~8× el umbral: cualquier arroyo de cabecera alcanzaba el
-    // cauce pleno a pocos cientos de metros de nacer. Con Q^0.45 solo el río
-    // principal cerca de la desembocadura abre la anchura máxima.
+    // Geometría hidráulica (Leopold & Maddock PP-252): anchura y profundidad
+    // crecen como potencias DISTINTAS del caudal — w ∝ Q^0.4, d ∝ Q^0.3 —
+    // normalizadas al caudal MÁXIMO del mapa. Solo el río principal cerca de
+    // la desembocadura abre el cauce pleno; los tributarios escalan solos.
     float max_flow = threshold;
     for (size_t i = 0; i < out.flow.size(); ++i) {
         if (is_river(i)) {
             max_flow = std::max(max_flow, out.flow[i]);
         }
     }
-    const auto intensity_of = [&](size_t i) {
-        return std::pow(glm::clamp(out.flow[i] / max_flow, 0.0f, 1.0f), 0.45f);
+    const auto width_of = [&](size_t i) {
+        return std::pow(glm::clamp(out.flow[i] / max_flow, 0.0f, 1.0f), 0.4f);
+    };
+    const auto depth_of = [&](size_t i) {
+        return std::pow(glm::clamp(out.flow[i] / max_flow, 0.0f, 1.0f), 0.3f);
     };
 
     // Los ríos nacen gradualmente: cauce y lámina crecen desde cero durante
     // el primer tramo (rampa hasta 3× el umbral — física: duplicar el área
-    // de drenaje mínima).
+    // de drenaje mínima). EXCEPCIÓN: el efluente de un lago nace río hecho —
+    // hereda el caudal de toda la cuenca embalsada.
     const auto birth_of = [&](size_t i) {
+        if (from_lake[i]) {
+            return 1.0f;
+        }
         return glm::clamp((out.flow[i] / threshold - 1.0f) / 2.0f, 0.0f, 1.0f);
     };
     const auto water_depth_of = [&](size_t i) {
-        return (0.35f + 1.1f * intensity_of(i)) * birth_of(i);
+        return (0.35f + 1.1f * depth_of(i)) * birth_of(i);
     };
 
     for (const size_t i : order) { // de arriba a abajo
@@ -482,7 +500,8 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
             if (out.lake[i]) {
                 continue;
             }
-            const float intensity = intensity_of(i);
+            const float width_f = width_of(i);
+            const float depth_f = depth_of(i);
             // El nacimiento escala TODO el cauce (profundidad y anchura), no
             // solo la lámina: sin esto el canal tallado aparecía de golpe.
             const float birth = birth_of(i);
@@ -500,10 +519,10 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
             const float narrow =
                 glm::clamp(1.0f / (1.0f + 6.0f * local_slope), 0.2f, 1.0f);
             const float depth =
-                cfg.river_max_depth_m * (0.15f + 0.85f * intensity) * birth;
+                cfg.river_max_depth_m * (0.15f + 0.85f * depth_f) * birth;
             const int radius = std::max(
                 1, static_cast<int>(
-                       std::round(max_radius * intensity * birth * narrow)));
+                       std::round(max_radius * width_f * birth * narrow)));
             const float surface = level[i];
             // El cauce corta su salida en los vertederos, pero SOLO hasta
             // ~6 m de garganta: sin límite, excavaba zanjas de decenas de
@@ -517,7 +536,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
             // Llanura aluvial: los ríos grandes abren un valle ancho y somero
             // SOLO en terreno llano (los valles gigantes se forman abajo, no
             // en la caída).
-            if (intensity > 0.35f && local_slope < 0.05f) {
+            if (width_f > 0.35f && local_slope < 0.05f) {
                 const int flood_radius = radius * 4;
                 for (int dz = -flood_radius; dz <= flood_radius; ++dz) {
                     for (int dx = -flood_radius; dx <= flood_radius; ++dx) {
@@ -586,18 +605,35 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
         }
     }
 
+    // ---- Agua v2: cascadas y rápidos ----
+    // Sobre el perfil z(s) de cada río: los knickpoints se colapsan en
+    // rellano + pared + plunge pool y los tramos de rápido reciben
+    // micro-escalones + flag whitewater. Después del tallado: la zona
+    // remodelada reasienta su propia lámina.
+    carve_cascades(hf, out, order, downstream, threshold, max_flow,
+                   max_radius, cfg.sea_level);
+    // El tallado y los micro-escalones pueden dejar contrapendientes de
+    // decimales en las costuras (frontera de zona de rápidos, confluencias):
+    // segunda pasada de monotonía, que solo talla.
+    enforce_monotone_beds(hf, out, order, downstream, threshold, cfg.sea_level);
+
     // 4) Tensión de superficie: la lámina no cae a MUROS verticales. En los
-    // vertederos de lago y knickpoints el nivel caía varios metros en una
-    // celda y el agua se dibujaba como una pared azul cruzando el río. Donde
-    // el nivel cae más de ~40° hacia la receptora, se reparte en una rampa
-    // de cascada a lo largo del flujo (procesando de cumbre a mar, las
-    // rampas largas se encadenan solas).
+    // vertederos de lago y knickpoints NO declarados el nivel caía varios
+    // metros en una celda y el agua se dibujaba como una pared azul cruzando
+    // el río. Donde el nivel cae más de ~40° hacia la receptora, se reparte
+    // en una rampa de cascada a lo largo del flujo (procesando de cumbre a
+    // mar, las rampas largas se encadenan solas). Las CASCADAS declaradas
+    // (whitewater == 2) quedan exentas: ahí la lámina cae en vertical con la
+    // pared, que para eso tiene poza debajo.
     {
         const float max_ws_slope = 0.85f; // tan de la lámina más empinada
         for (const size_t i : order) {
             const size_t down = downstream[i];
             if (down == kNone || out.lake[down]) {
                 continue; // el lago impone su propia lámina
+            }
+            if (out.whitewater[i] == 2 || out.whitewater[down] == 2) {
+                continue; // cascada declarada: caída vertical legítima
             }
             const float li = out.water_level[i];
             const float ld = out.water_level[down];

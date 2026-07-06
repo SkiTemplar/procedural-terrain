@@ -16,6 +16,7 @@ add_library(terrain_gen STATIC
         src/terrain/heightfield.cpp
         src/terrain/erosion.cpp
         src/terrain/hydrology.cpp
+        src/terrain/riverscape.cpp
         src/terrain/generator.cpp
         src/terrain/detail.cpp
         src/terrain/lem.cpp
