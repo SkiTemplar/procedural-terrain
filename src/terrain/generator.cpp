@@ -46,7 +46,12 @@ CoastSample coast_at(const Noise& noise, const TerrainConfig& cfg,
     const glm::vec3 pw = noise.warp(
         noise.warp(p_km, 1.8f, 0.12f), cfg.coast_warp_m / 1000.0f, kWarpFreq);
 
-    const float d = glm::length(glm::vec2{pw.x, pw.z}) / half_km;
+    // Lóbulos macro (λ ~11 km): penínsulas y bahías de escala kilométrica.
+    // El warp fino ya dibuja calas; sin esto la isla era un disco con flecos.
+    const float lobe =
+        noise.fbm(pw * 0.09f + glm::vec3{5.9f, 0.0f, -31.7f}, 2);
+    const float d = glm::length(glm::vec2{pw.x, pw.z}) / half_km
+                  + 0.22f * lobe;
     float continent = 1.0f - smoothstep(cfg.island_radius, 1.0f, d);
 
     const float climate_raw =
@@ -61,13 +66,18 @@ CoastSample coast_at(const Noise& noise, const TerrainConfig& cfg,
         * (0.5f + climate);
     continent = std::max(continent, satellite * 0.5f);
 
+    // El mar SIEMPRE rodea el mapa: los lóbulos no pueden empujar la tierra
+    // hasta el borde del dominio.
+    const float d_raw = glm::length(glm::vec2{p_km.x, p_km.z}) / half_km;
+    continent *= 1.0f - smoothstep(0.88f, 1.0f, d_raw);
+
     // Tramos de costa acantilada: ruido lento sobre el dominio warpeado (el
     // sector sigue la forma real de la costa), sesgado al clima frío. Donde
     // la máscara es cero la costa conserva su perfil suave de siempre.
     const float cliff_raw =
         noise.fbm(pw * 0.22f + glm::vec3{23.7f, 0.0f, 71.2f}, 2) * 0.5f + 0.5f;
     const float cliff =
-        smoothstep(0.52f, 0.68f, cliff_raw) * (1.0f - 0.70f * climate);
+        smoothstep(0.48f, 0.64f, cliff_raw) * (1.0f - 0.55f * climate);
 
     return {continent, climate, cliff};
 }
@@ -122,11 +132,21 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 // NÚCLEO SATURE ancho (macizos enteros a u≈1, no filos);
                 // la masa regional sigue poniendo altiplanos y decidiendo
                 // dónde culmina la cordillera.
+                // Tierras bajas: sectores enteros casi sin uplift (λ ~11 km)
+                // → el LEM deja llanuras y colinas de pradera en vez de
+                // flanco de montaña por toda la isla. El espinazo se respeta:
+                // la cordillera no pierde su núcleo, pierde sus faldas.
+                const float lowland = smoothstep(
+                    0.52f, 0.70f,
+                    noise.fbm(p_km * 0.09f + glm::vec3{-88.4f, 0.0f, 27.6f}, 2)
+                            * 0.5f + 0.5f)
+                    * (1.0f - 0.70f * spine);
                 uplift[static_cast<size_t>(z) * macro_res + x] =
                     std::pow(cs.continent, 1.5f)
                     * (0.15f + 0.85f * glm::clamp(spine * (0.75f + 0.45f * mass)
                                                       + 0.35f * mass,
-                                                  0.0f, 1.0f));
+                                                  0.0f, 1.0f))
+                    * (1.0f - 0.92f * lowland);
             }
         });
     }
@@ -267,15 +287,24 @@ void carve_cirques(Heightfield& hf, const Noise& noise) {
             }
             placed.push_back(pos);
 
-            // Cubeta: suelo hundido 3 m que sube parabólico hasta el borde,
-            // con labio de morrena (~1.7 m) que garantiza el embalse. La
-            // lámina resultante (~1.5 m) supera el umbral de purga de lagos.
-            const float radius_m = 22.0f + 18.0f
+            // Cubeta: suelo hundido que sube parabólico hasta el borde, con
+            // labio de morrena que garantiza el embalse (la lámina supera el
+            // umbral de purga de lagos). Dos tallas: ibones normales y, de
+            // vez en cuando, un circo GRANDE — lago alpino de 60-120 m.
+            float radius_m = 22.0f + 18.0f
                 * (0.5f + 0.5f * noise.perlin(g_km * 6.9f
                                               + glm::vec3{-21.2f, 0.0f, 44.8f}));
+            float depth = 3.0f;
+            if (noise.perlin(g_km * 3.3f + glm::vec3{12.5f, 0.0f, -6.2f})
+                > 0.50f) {
+                radius_m *= 2.8f;
+                depth = 6.5f;
+            }
+            const float bowl = depth * 0.47f; // coef. de la parábola
+            const float lip = depth * 0.57f;  // cresta de morrena
             const int rc = std::max(2, static_cast<int>(std::round(
                 radius_m * 1.3f / cell)));
-            const float floor_h = h - 3.0f;
+            const float floor_h = h - depth;
             for (int dz = -rc; dz <= rc; ++dz) {
                 for (int dx = -rc; dx <= rc; ++dx) {
                     const int nx = x + dx;
@@ -287,14 +316,14 @@ void carve_cirques(Heightfield& hf, const Noise& noise) {
                                   * cell / radius_m;
                     float& cell_h = hf.at(nx, nz);
                     if (r <= 1.0f) {
-                        cell_h = std::min(cell_h, floor_h + 1.4f * r * r);
+                        cell_h = std::min(cell_h, floor_h + bowl * r * r);
                     } else if (r <= 1.3f) {
-                        // Morrena: cresta a +1.7 m del suelo de la cubeta,
-                        // FUNDIDA con el terreno hacia fuera (nada de repisas
-                        // circulares con borde de acantilado).
+                        // Morrena: cresta FUNDIDA con el terreno hacia fuera
+                        // (nada de repisas circulares con borde de
+                        // acantilado).
                         const float t = (r - 1.0f) / 0.3f;
                         const float w = 1.0f - t * t;
-                        const float crest = floor_h + 1.7f;
+                        const float crest = floor_h + lip;
                         if (cell_h < crest) {
                             cell_h += (crest - cell_h) * w;
                         }
@@ -357,7 +386,11 @@ void sharpen_crags(Heightfield& hf, const Noise& noise) {
             const float dip = 30.0f
                 * noise.perlin(p_km * 0.25f + glm::vec3{33.1f, 0.0f, -78.2f})
                 + 15.0f
-                * noise.perlin(p_km * 0.9f + glm::vec3{-9.4f, 0.0f, 47.6f});
+                * noise.perlin(p_km * 0.9f + glm::vec3{-9.4f, 0.0f, 47.6f})
+                // Componente media: rompe los anillos concéntricos que las
+                // capas dibujaban alrededor de las cumbres cónicas.
+                + 9.0f
+                * noise.perlin(p_km * 2.4f + glm::vec3{72.3f, 0.0f, 14.8f});
             const float hh = base[i] + dip;
             const float band = std::floor(hh / spacing);
             const float t = hh / spacing - band;
@@ -365,7 +398,7 @@ void sharpen_crags(Heightfield& hf, const Noise& noise) {
             // estrato. Desplazamiento acotado a ~spacing/2 — no crea picos.
             const float shelf = smoothstep(0.38f, 0.62f, t);
             const float target = (band + shelf) * spacing - dip;
-            hf.data()[i] = glm::mix(base[i], target, 0.42f * w);
+            hf.data()[i] = glm::mix(base[i], target, 0.38f * w);
         }
     });
 }
