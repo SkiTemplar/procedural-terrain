@@ -360,6 +360,13 @@ void sharpen_crags(Heightfield& hf, const Noise& noise) {
     const float inv_cell = 1.0f / hf.cell_size();
     const std::vector<float> base(hf.data());
     const auto rows = row_indices(res);
+    // Los estratos NO pintan la alta montaña: allí la nieve remarca cada
+    // banco (saltos oscuros, bancos blancos) y el patrón periódico domina
+    // toda la cumbre. Se desvanecen hacia arriba y quedan para los riscos
+    // de media ladera y los acantilados costeros.
+    const float max_h = *std::max_element(base.begin(), base.end());
+    const float fade_lo = 0.55f * max_h;
+    const float fade_hi = 0.75f * max_h;
 
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
         if (z < 1 || z >= res - 1) {
@@ -375,7 +382,8 @@ void sharpen_crags(Heightfield& hf, const Noise& noise) {
                 * 0.5f * inv_cell;
             // Solo pendiente de roca: arranca a ~35° y es plena a ~48°. El
             // peso suave evita costuras con el terreno que queda intacto.
-            const float sw = smoothstep(0.70f, 1.10f, slope);
+            const float sw = smoothstep(0.70f, 1.10f, slope)
+                           * (1.0f - smoothstep(fade_lo, fade_hi, base[i]));
             if (sw < 0.02f) {
                 continue;
             }
@@ -385,7 +393,7 @@ void sharpen_crags(Heightfield& hf, const Noise& noise) {
             // y frentes concretos), no en manta sobre toda la montaña — en
             // manta la vista aérea era un moiré de bancales artificial.
             const float outcrop = smoothstep(
-                0.50f, 0.70f,
+                0.58f, 0.76f,
                 noise.fbm(p_km * 0.9f + glm::vec3{27.9f, 0.0f, -52.1f}, 2)
                         * 0.5f + 0.5f);
             const float w = sw * outcrop;
