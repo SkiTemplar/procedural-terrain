@@ -34,6 +34,7 @@ std::vector<int> row_indices(int res) {
 struct CoastSample {
     float continent;
     float climate;
+    float cliff; // 0-1: tramo de costa acantilada (sesgo al sector frío)
 };
 
 // Continentalidad + clima en un punto (compartido entre el uplift macro y la
@@ -60,7 +61,15 @@ CoastSample coast_at(const Noise& noise, const TerrainConfig& cfg,
         * (0.5f + climate);
     continent = std::max(continent, satellite * 0.5f);
 
-    return {continent, climate};
+    // Tramos de costa acantilada: ruido lento sobre el dominio warpeado (el
+    // sector sigue la forma real de la costa), sesgado al clima frío. Donde
+    // la máscara es cero la costa conserva su perfil suave de siempre.
+    const float cliff_raw =
+        noise.fbm(pw * 0.22f + glm::vec3{23.7f, 0.0f, 71.2f}, 2) * 0.5f + 0.5f;
+    const float cliff =
+        smoothstep(0.52f, 0.68f, cliff_raw) * (1.0f - 0.70f * climate);
+
+    return {continent, climate, cliff};
 }
 
 // Pipeline INVERTIDO (Cordonnier 2016 / FastScape): la forma macro sale de un
@@ -142,7 +151,25 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 static_cast<float>(z) * to_macro);
 
             float h = cfg.sea_level + macro;
-            h -= (1.0f - cs.continent) * cfg.sea_depth;
+            // Caída al fondo marino. En costa suave es el degradado de
+            // siempre; en tramo acantilado TODA la caída se concentra en una
+            // franja estrecha de continentalidad: la meseta conserva su cota
+            // hasta la misma línea de costa y cae a pico al mar (tipo
+            // Escocia). Los ríos que alcanzan el borde saltan en cascada.
+            const float smooth_drop = 1.0f - cs.continent;
+            const float cliff_drop =
+                1.0f - smoothstep(0.04f, 0.09f, cs.continent);
+            h -= glm::mix(smooth_drop, cliff_drop, cs.cliff) * cfg.sea_depth;
+            // Meseta del acantilado (moor): el LEM deja la costa casi a cota
+            // cero, así que sin este levantamiento la pared moría bajo el
+            // agua y la meseta llana se clasificaba como arena. Sube en la
+            // misma franja estrecha que la caída (frente visible de 40-70 m)
+            // y se funde con el interior muy gradualmente.
+            const float moor = 35.0f + 30.0f
+                * (noise.fbm(p_km * 0.5f + glm::vec3{-41.2f, 0.0f, 18.7f}, 2)
+                       * 0.5f + 0.5f);
+            h += cs.cliff * moor * smoothstep(0.045f, 0.10f, cs.continent)
+               * (1.0f - smoothstep(0.35f, 0.75f, cs.continent));
             // Colinillas suaves de pradera (el LEM deja las zonas de poco
             // uplift casi planas; esto les da su ondulación).
             h += cs.continent
@@ -276,6 +303,67 @@ void carve_cirques(Heightfield& hf, const Noise& noise) {
             }
         }
     }
+}
+
+// Paredones estratificados: en laderas ya muy empinadas la altura se remapea
+// hacia bancos casi horizontales separados por saltos verticales (estratos).
+// Crea paredes rocosas con cornisas donde el LEM ya puso pendiente — cumbres,
+// gargantas y caras de acantilado — sin tocar valles ni praderas. Se aplica
+// DESPUÉS de la erosión térmica para que el talus no desmoche los saltos.
+void sharpen_crags(Heightfield& hf, const Noise& noise) {
+    const int res = hf.resolution();
+    const float inv_cell = 1.0f / hf.cell_size();
+    const std::vector<float> base(hf.data());
+    const auto rows = row_indices(res);
+
+    std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
+        if (z < 1 || z >= res - 1) {
+            return;
+        }
+        for (int x = 1; x < res - 1; ++x) {
+            const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
+                           + static_cast<size_t>(x);
+            const float slope = std::max(
+                std::abs(base[i + 1] - base[i - 1]),
+                std::abs(base[i + static_cast<size_t>(res)]
+                         - base[i - static_cast<size_t>(res)]))
+                * 0.5f * inv_cell;
+            // Solo pendiente de roca: arranca a ~35° y es plena a ~48°. El
+            // peso suave evita costuras con el terreno que queda intacto.
+            const float sw = smoothstep(0.70f, 1.10f, slope);
+            if (sw < 0.02f) {
+                continue;
+            }
+            const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f,
+                                 hf.world_z(z) / 1000.0f};
+            // Máscara de afloramiento: los estratos salen en RODALES (crestas
+            // y frentes concretos), no en manta sobre toda la montaña — en
+            // manta la vista aérea era un moiré de bancales artificial.
+            const float outcrop = smoothstep(
+                0.38f, 0.58f,
+                noise.fbm(p_km * 0.9f + glm::vec3{27.9f, 0.0f, -52.1f}, 2)
+                        * 0.5f + 0.5f);
+            const float w = sw * outcrop;
+            if (w < 0.02f) {
+                continue;
+            }
+            // Espesor de estrato variable y buzamiento lento: las cornisas
+            // no son curvas de nivel perfectas.
+            const float spacing = 50.0f
+                * (1.0f + 0.3f * noise.perlin(p_km * 0.4f
+                                              + glm::vec3{61.7f, 0.0f, -24.3f}));
+            const float dip = 18.0f
+                * noise.perlin(p_km * 0.9f + glm::vec3{-9.4f, 0.0f, 47.6f});
+            const float hh = base[i] + dip;
+            const float band = std::floor(hh / spacing);
+            const float t = hh / spacing - band;
+            // Gain: aplasta el banco y concentra el salto en el centro del
+            // estrato. Desplazamiento acotado a ~spacing/2 — no crea picos.
+            const float shelf = smoothstep(0.38f, 0.62f, t);
+            const float target = (band + shelf) * spacing - dip;
+            hf.data()[i] = glm::mix(base[i], target, 0.55f * w);
+        }
+    });
 }
 
 // Playas: la franja baja junto al mar se comprime SOLO donde la costa ya es
@@ -495,6 +583,7 @@ TerrainData generate(const TerrainConfig& cfg,
     thermal_erode(data.height, cfg.thermal_iterations, cfg.talus_slope);
     smooth_peaks(data.height, 2, 1.2f);
     carve_cirques(data.height, noise);
+    sharpen_crags(data.height, noise);
     report("costa");
     shape_coast(data, cfg);
     report("hidrologia");

@@ -13,6 +13,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -27,6 +28,16 @@
 namespace {
 
 constexpr glm::vec3 kSkyColor{0.53f, 0.71f, 0.92f};
+
+// Pose inicial de cámara por CLI: permite al lazo de verificación visual
+// (capturas automatizadas) encuadrar costas o ríos concretos sin volar.
+struct CameraPose {
+    float x;
+    float z;
+    float yaw;
+    float pitch;
+    float alt = 180.0f; // metros sobre el terreno en (x, z)
+};
 
 // En heap y no-movible: ChunkedTerrain y DetailSampler guardan punteros a data.
 // Recibe la TerrainData YA generada (el generate corre en un hilo de trabajo);
@@ -61,7 +72,8 @@ void set_common_uniforms(const render::Shader& shader, const render::Camera& cam
     shader.set_float("u_fog_density", state.fog_density);
 }
 
-void run(std::optional<std::uint32_t> seed_override) {
+void run(std::optional<std::uint32_t> seed_override,
+         std::optional<CameraPose> pose_override) {
     // Declarados ANTES que window a propósito: al cerrar durante una
     // generación, el destructor del future bloquea hasta que el worker
     // termina — con este orden la ventana (GL) muere al instante y el
@@ -155,7 +167,15 @@ void run(std::optional<std::uint32_t> seed_override) {
             bake_phase.store(nullptr);
             state.last_generation_seconds = std::chrono::duration<float>(
                 std::chrono::steady_clock::now() - bake_start).count();
-            if (first_world) {
+            if (first_world && pose_override) {
+                const CameraPose& p = *pose_override;
+                const float ground = std::max(
+                    world->data.height.sample(p.x, p.z),
+                    world->data.config.sea_level);
+                camera.position = {p.x, ground + p.alt, p.z};
+                camera.yaw = p.yaw;
+                camera.pitch = p.pitch;
+            } else if (first_world) {
                 // Spawn: volando sobre la costa sur mirando al centro de la isla.
                 camera.position = {0.0f, 350.0f, world->data.config.size_m * 0.45f};
                 camera.yaw = -90.0f;
@@ -218,19 +238,33 @@ void run(std::optional<std::uint32_t> seed_override) {
 
 } // namespace
 
-// Uso: ProceduralTerrain [seed] — sin argumento usa la seed del config.
+// Uso: ProceduralTerrain [seed [x z yaw pitch [alt]]] — sin argumentos usa la
+// seed del config y el spawn estándar; la pose opcional sirve al lazo de
+// verificación visual por capturas (alt = metros sobre el terreno en x,z).
 int main(int argc, char** argv) {
     std::optional<std::uint32_t> seed;
-    if (argc > 1) {
-        try {
+    std::optional<CameraPose> pose;
+    try {
+        if (argc > 1) {
             seed = static_cast<std::uint32_t>(std::stoul(argv[1]));
-        } catch (const std::exception&) {
-            std::cerr << "Seed invalida: " << argv[1] << '\n';
-            return 1;
         }
+        if (argc > 5) {
+            CameraPose p;
+            p.x = std::stof(argv[2]);
+            p.z = std::stof(argv[3]);
+            p.yaw = std::stof(argv[4]);
+            p.pitch = std::stof(argv[5]);
+            if (argc > 6) {
+                p.alt = std::stof(argv[6]);
+            }
+            pose = p;
+        }
+    } catch (const std::exception&) {
+        std::cerr << "Uso: ProceduralTerrain [seed [x z yaw pitch [alt]]]\n";
+        return 1;
     }
     try {
-        run(seed);
+        run(seed, pose);
     } catch (const std::exception& e) {
         std::cerr << "Error fatal: " << e.what() << '\n';
         return 1;

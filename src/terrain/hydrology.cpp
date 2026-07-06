@@ -301,10 +301,19 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     //    eso dejaba el agua flotando). Profundidad según caudal, y monótono
     //    decreciente aguas abajo.
     std::vector<float> level(filled.size(), std::numeric_limits<float>::infinity());
-    // Contraste de caudal marcado: el río principal es claramente más ancho
-    // y hondo que sus tributarios (jerarquía visible).
+    // Geometría hidráulica (Leopold & Maddock): el cauce crece como potencia
+    // del caudal, normalizado al caudal MÁXIMO del mapa. El log anterior
+    // saturaba a ~8× el umbral: cualquier arroyo de cabecera alcanzaba el
+    // cauce pleno a pocos cientos de metros de nacer. Con Q^0.45 solo el río
+    // principal cerca de la desembocadura abre la anchura máxima.
+    float max_flow = threshold;
+    for (size_t i = 0; i < out.flow.size(); ++i) {
+        if (is_river(i)) {
+            max_flow = std::max(max_flow, out.flow[i]);
+        }
+    }
     const auto intensity_of = [&](size_t i) {
-        return std::min(std::log(out.flow[i] / threshold + 1.0f) / 2.2f, 1.0f);
+        return std::pow(glm::clamp(out.flow[i] / max_flow, 0.0f, 1.0f), 0.45f);
     };
 
     // Los ríos nacen gradualmente: cauce y lámina crecen desde cero durante
