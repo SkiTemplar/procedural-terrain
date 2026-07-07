@@ -67,6 +67,13 @@ struct TerrainConfig {
     float snow_line_m = 950.0f;
     float rock_slope = 0.85f; // pendiente (tan) a partir de la cual es roca
     float beach_band_m = 12.0f; // la arena cubre la mayor parte de la zona plana
+
+    // Costa expuesta (Agua v2 paso 8): rosa de vientos del oleaje REI/fetch.
+    // wind_dir_deg = DE dónde sopla el dominante (meteorológico); wind_focus
+    // 0 = mar isótropo, 1 = todo el oleaje viene del viento dominante.
+    float wind_dir_deg = 315.0f;
+    float wind_focus = 0.6f;
+    float shore_width_scale = 1.0f; // escala global de anchura de orillas
 };
 
 } // namespace terrain

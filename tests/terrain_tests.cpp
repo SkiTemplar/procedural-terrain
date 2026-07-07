@@ -519,6 +519,80 @@ TEST(Hidrologia, ElLechoDelRioNoSubeAguasAbajo) {
     EXPECT_EQ(dammed, 0) << dammed << " celdas de río sin salida aguas abajo";
 }
 
+TEST(Costa, EnergiaDeOleajeAcotadaYSoloLitoral) {
+    // Contrato Agua v2 (paso 8): la energía REI/fetch está en [0,1] y solo
+    // vive en la banda litoral — toda celda con energía debe tener mar a
+    // pocas celdas de distancia.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const int res = data.height.resolution();
+    ASSERT_EQ(data.wave_energy.size(), data.height.data().size());
+
+    constexpr int kMaxShoreDist = 8; // banda máxima holgada en el mapa de test
+    for (int z = 0; z < res; ++z) {
+        for (int x = 0; x < res; ++x) {
+            const size_t i = static_cast<size_t>(z) * res + x;
+            const float e = data.wave_energy[i];
+            ASSERT_GE(e, 0.0f);
+            ASSERT_LE(e, 1.0f);
+            if (e <= 0.0f || data.height.at(x, z) <= cfg.sea_level) {
+                continue;
+            }
+            bool sea_nearby = false;
+            for (int dz = -kMaxShoreDist; dz <= kMaxShoreDist && !sea_nearby; ++dz) {
+                for (int dx = -kMaxShoreDist; dx <= kMaxShoreDist; ++dx) {
+                    const int nx = x + dx;
+                    const int nz = z + dz;
+                    if (nx < 0 || nz < 0 || nx >= res || nz >= res) {
+                        continue;
+                    }
+                    if (data.height.at(nx, nz) <= cfg.sea_level) {
+                        sea_nearby = true;
+                        break;
+                    }
+                }
+            }
+            EXPECT_TRUE(sea_nearby)
+                << "energia de oleaje tierra adentro en (" << x << ", " << z << ")";
+        }
+    }
+}
+
+TEST(Costa, VariedadDeOrillas) {
+    // Criterio §7-A del plan maestro: la costa ya no es una banda de arena
+    // uniforme — en la banda litoral emergen al menos dos regímenes de orilla
+    // distintos (arena disipativa, grava expuesta, marisma o roca abrigada).
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const int res = data.height.resolution();
+
+    int sand = 0;
+    int gravel = 0;
+    int marsh = 0;
+    int shore_rock = 0;
+    for (int z = 0; z < res; ++z) {
+        for (int x = 0; x < res; ++x) {
+            const size_t i = static_cast<size_t>(z) * res + x;
+            if (data.wave_energy[i] <= 0.0f
+                || data.height.at(x, z) <= cfg.sea_level) {
+                continue;
+            }
+            switch (data.material[i]) {
+                case terrain::Material::Sand: ++sand; break;
+                case terrain::Material::Gravel: ++gravel; break;
+                case terrain::Material::Marsh: ++marsh; break;
+                case terrain::Material::Rock: ++shore_rock; break;
+                default: break;
+            }
+        }
+    }
+    printf("  orillas: arena=%d grava=%d marisma=%d roca=%d\n",
+           sand, gravel, marsh, shore_rock);
+    EXPECT_GT(sand, 0) << "ninguna playa de arena en toda la costa";
+    const int variety = (sand > 0) + (gravel > 0) + (marsh > 0) + (shore_rock > 0);
+    EXPECT_GE(variety, 2) << "la costa sigue siendo monotipo";
+}
+
 TEST(Erosion, ModificaElTerrenoSinRomperlo) {
     terrain::TerrainConfig cfg = test_config();
     terrain::Heightfield hf(cfg.resolution, cfg.size_m);

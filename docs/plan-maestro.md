@@ -209,7 +209,9 @@ El render no se testea con píxeles: se mira. Flujo probado:
 
 **Precondición:** build y `ctest` verdes tal cual está el repo. Verificar antes de tocar nada.
 
-### A1 — Variedad de playa por energía de oleaje (paso 8) — riesgo MEDIO
+### A1 — Variedad de playa por energía de oleaje (paso 8) — ✅ HECHO (2026-07-07)
+
+Implementado en `src/terrain/coast.{h,cpp}` (REI/fetch 16 rayos + rosa de vientos en convención brújula + aporte fluvial por desembocaduras + blur de contorno + banda litoral BFS). Materiales nuevos `Gravel` y `Marsh`; clasificación de 4 regímenes en `classify_materials`; sliders viento/focalización/anchura; campo `wave_energy` en `TerrainData` (para el minimapa de C2). Verificado: 22/22 tests (2 nuevos de costa), dump por octantes (E media 0.57 barlovento NO vs 0.15 sotavento), captura 3D de costa sur con disipativa+marisma. Herramienta nueva `--dump-costa` (BMP de materiales y oleaje sin ventana) para el lazo de verificación. Nota: cazado y corregido desbordamiento de `counts[8]` en main.cpp al crecer el enum (RTC stack corruption).
 
 Detalle algorítmico completo en `docs/investigacion-agua-v2.md` §8 (REI/fetch). Resumen de integración:
 

@@ -19,7 +19,13 @@ enum class Material : std::uint8_t {
     Snow,
     RiverBed,
     LakeBed,
+    Gravel, // orilla expuesta al oleaje con pendiente: playa de grava/cantos
+    Marsh,  // orilla abrigada con aporte fluvial: marisma
 };
+
+// Nº de valores del enum — para histogramas indexados por material.
+inline constexpr std::size_t kMaterialCount =
+    static_cast<std::size_t>(Material::Marsh) + 1;
 
 struct TerrainData {
     Heightfield height{2, 1.0f};
@@ -27,6 +33,7 @@ struct TerrainData {
     std::vector<Material> material;      // por muestra del heightfield
     std::vector<float> forest_density;   // [0,1] gradiente de bosque
     std::vector<float> climate;          // [0,1] 0=frío (Escocia) 1=cálido (Caribe)
+    std::vector<float> wave_energy;      // [0,1] REI/fetch en la banda litoral
     TerrainConfig config;
 };
 

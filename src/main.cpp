@@ -18,12 +18,14 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -117,19 +119,28 @@ void run(std::optional<std::uint32_t> seed_override,
 
             // Informe numérico: permite juzgar el carácter del mundo sin volar.
             float max_h = -1e9f;
-            size_t counts[8] = {};
+            size_t counts[terrain::kMaterialCount] = {};
             for (size_t i = 0; i < data.material.size(); ++i) {
                 max_h = std::max(max_h, data.height.data()[i]);
                 counts[static_cast<size_t>(data.material[i])]++;
             }
             const float total = static_cast<float>(data.material.size());
+            const auto pct = [&](terrain::Material m) {
+                return static_cast<int>(
+                    100.0f * counts[static_cast<size_t>(m)] / total);
+            };
             std::cout << "Terreno generado en " << secs
                       << " s | alt max " << static_cast<int>(max_h) << " m | mar "
-                      << static_cast<int>(100.0f * counts[0] / total) << "% hierba "
-                      << static_cast<int>(100.0f * counts[2] / total) << "% bosque "
-                      << static_cast<int>(100.0f * counts[3] / total) << "% roca "
-                      << static_cast<int>(100.0f * counts[4] / total) << "% nieve "
-                      << static_cast<int>(100.0f * counts[5] / total) << "%"
+                      << pct(terrain::Material::Seabed) << "% hierba "
+                      << pct(terrain::Material::Grass) << "% bosque "
+                      << pct(terrain::Material::Forest) << "% roca "
+                      << pct(terrain::Material::Rock) << "% nieve "
+                      << pct(terrain::Material::Snow) << "% | orillas: arena "
+                      << counts[static_cast<size_t>(terrain::Material::Sand)]
+                      << " grava "
+                      << counts[static_cast<size_t>(terrain::Material::Gravel)]
+                      << " marisma "
+                      << counts[static_cast<size_t>(terrain::Material::Marsh)]
                       << std::endl; // flush: legible aunque stdout vaya a fichero
             return data;
         });
@@ -238,10 +249,95 @@ void run(std::optional<std::uint32_t> seed_override,
 
 } // namespace
 
+// Escritor BMP 24-bit sin dependencias — solo para los dumps de verificación.
+void write_bmp(const std::string& path, int w, int h,
+               const std::vector<glm::u8vec3>& rgb) {
+    const int row_bytes = (w * 3 + 3) & ~3;
+    const std::uint32_t data_size = static_cast<std::uint32_t>(row_bytes) * h;
+    const std::uint32_t file_size = 54 + data_size;
+    std::vector<std::uint8_t> out(file_size, 0);
+    const auto put32 = [&](size_t at, std::uint32_t v) {
+        out[at] = v & 0xFF; out[at + 1] = (v >> 8) & 0xFF;
+        out[at + 2] = (v >> 16) & 0xFF; out[at + 3] = (v >> 24) & 0xFF;
+    };
+    out[0] = 'B'; out[1] = 'M';
+    put32(2, file_size); put32(10, 54); put32(14, 40);
+    put32(18, static_cast<std::uint32_t>(w));
+    put32(22, static_cast<std::uint32_t>(h));
+    out[26] = 1; out[28] = 24;
+    put32(34, data_size);
+    for (int y = 0; y < h; ++y) {
+        // BMP guarda la fila inferior primero: volteamos para que la imagen
+        // conserve z creciendo hacia abajo (misma orientación que el array).
+        const size_t src_row = static_cast<size_t>(h - 1 - y) * w;
+        const size_t dst = 54 + static_cast<size_t>(y) * row_bytes;
+        for (int x = 0; x < w; ++x) {
+            const auto& c = rgb[src_row + x];
+            out[dst + static_cast<size_t>(x) * 3] = c.b;
+            out[dst + static_cast<size_t>(x) * 3 + 1] = c.g;
+            out[dst + static_cast<size_t>(x) * 3 + 2] = c.r;
+        }
+    }
+    std::ofstream f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(out.data()),
+            static_cast<std::streamsize>(out.size()));
+}
+
+// Dump de verificación de costa (criterio §7-A del plan): mapa de materiales
+// con lámina de agua y mapa de energía de oleaje, sin abrir ventana.
+int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
+    terrain::TerrainConfig cfg;
+    if (seed) {
+        cfg.seed = *seed;
+    }
+    const auto data = terrain::generate(cfg, [](const char* phase) {
+        std::cout << "  " << phase << std::endl;
+    });
+    const int res = data.height.resolution();
+    const size_t n = data.material.size();
+
+    std::vector<glm::u8vec3> img(n);
+    const auto to8 = [](const glm::vec3& c) {
+        return glm::u8vec3(glm::clamp(c, 0.0f, 1.0f) * 255.0f);
+    };
+    for (size_t i = 0; i < n; ++i) {
+        glm::vec3 c = terrain::material_color(data.material[i]);
+        const float wl = data.hydrology.water_level[i];
+        if (!std::isnan(wl) && wl > data.height.data()[i]) {
+            c = glm::mix(c, glm::vec3{0.15f, 0.35f, 0.75f}, 0.65f);
+        }
+        if (data.height.data()[i] <= cfg.sea_level) {
+            c = {0.10f, 0.20f, 0.45f};
+        }
+        img[i] = to8(c);
+    }
+    write_bmp(prefix + "-materiales.bmp", res, res, img);
+
+    for (size_t i = 0; i < n; ++i) {
+        const float e = data.wave_energy[i];
+        img[i] = data.height.data()[i] <= cfg.sea_level
+                     ? glm::u8vec3{20, 30, 80}
+                     : to8(glm::vec3{e, e, e});
+    }
+    write_bmp(prefix + "-oleaje.bmp", res, res, img);
+    std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "
+              << prefix << "-oleaje.bmp" << std::endl;
+    return 0;
+}
+
 // Uso: ProceduralTerrain [seed [x z yaw pitch [alt]]] — sin argumentos usa la
 // seed del config y el spawn estándar; la pose opcional sirve al lazo de
 // verificación visual por capturas (alt = metros sobre el terreno en x,z).
+// Modo dump: ProceduralTerrain --dump-costa <prefijo> [seed] genera el mundo
+// sin ventana y escribe los mapas de materiales y oleaje como BMP.
 int main(int argc, char** argv) {
+    if (argc > 2 && std::string(argv[1]) == "--dump-costa") {
+        std::optional<std::uint32_t> dump_seed;
+        if (argc > 3) {
+            dump_seed = static_cast<std::uint32_t>(std::stoul(argv[3]));
+        }
+        return dump_costa(argv[2], dump_seed);
+    }
     std::optional<std::uint32_t> seed;
     std::optional<CameraPose> pose;
     try {

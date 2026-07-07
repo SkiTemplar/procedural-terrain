@@ -20,6 +20,8 @@ float DetailSampler::material_roughness(Material m) {
         case Material::Snow: return 0.35f;
         case Material::RiverBed: return 0.2f;
         case Material::LakeBed: return 0.15f;
+        case Material::Gravel: return 0.45f; // cantos: más rugosa que la arena
+        case Material::Marsh: return 0.06f;  // llano húmedo, casi plano
     }
     return 1.0f;
 }

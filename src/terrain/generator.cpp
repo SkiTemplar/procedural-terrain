@@ -1,5 +1,6 @@
 #include "terrain/generator.h"
 
+#include "terrain/coast.h"
 #include "terrain/erosion.h"
 #include "terrain/lem.h"
 #include "terrain/noise.h"
@@ -373,7 +374,8 @@ void shape_coast(TerrainData& data, const TerrainConfig& cfg) {
 // la altitud (borde irregular), la pendiente (las paredes no acumulan), la
 // orientación (las umbrías conservan nieve más abajo) y parches de ruido.
 // La vegetación pierde altura por pisos: bosque → pradera alpina → roca.
-void classify_materials(TerrainData& data, const Noise& noise) {
+void classify_materials(TerrainData& data, const Noise& noise,
+                        const CoastExposure& coast) {
     const auto& cfg = data.config;
     const auto& hf = data.height;
     const int res = hf.resolution();
@@ -441,6 +443,43 @@ void classify_materials(TerrainData& data, const Noise& noise) {
 
             const float wl = data.hydrology.water_level[i];
 
+            // Tipo de orilla por energía de oleaje (Agua v2 paso 8). La banda
+            // de arena uniforme se sustituye por 4 regímenes físicos:
+            //   E alta + pendiente → grava/cantos (costa expuesta batida)
+            //   E alta + llano     → playa disipativa (ancha con aporte)
+            //   E baja  + aporte   → marisma (sedimento fino sin resaca)
+            //   E baja  sin aporte → roca lamida (nada deposita arena)
+            Material shore_m = Material::Grass;
+            bool is_shore = false;
+            if (coast.shore_band[i] && h > cfg.sea_level) {
+                const float e = coast.wave_energy[i];
+                const float supply = coast.river_supply[i];
+                const float rel = h - cfg.sea_level;
+                // Anchura f(E, aporte, clima): la disipativa crece con la
+                // energía y el sedimento; el clima cálido conserva los
+                // playones caribeños del comportamiento anterior.
+                const float width_m =
+                    (4.0f + (cfg.beach_band_m - 2.0f) * data.climate[i])
+                    * cfg.shore_width_scale
+                    * (0.45f + 0.90f * e + 0.50f * supply);
+                if (rel < width_m && slope < 0.35f) {
+                    is_shore = true;
+                    if (e > 0.45f) {
+                        shore_m = slope > 0.18f ? Material::Gravel
+                                                : Material::Sand;
+                    } else if (supply > 0.30f && slope < 0.12f && rel < 2.5f) {
+                        shore_m = Material::Marsh;
+                    } else if (supply > 0.30f) {
+                        shore_m = Material::Sand;
+                    } else if (rel < 3.5f) {
+                        shore_m = Material::Rock;
+                    } else {
+                        is_shore = false; // banda alta abrigada: sigue el
+                                          // clasificador general
+                    }
+                }
+            }
+
             Material m = Material::Grass;
             if (h <= cfg.sea_level) {
                 m = Material::Seabed;
@@ -448,12 +487,8 @@ void classify_materials(TerrainData& data, const Noise& noise) {
                 // Sumergido bajo lago o río: lecho, nunca hierba/bosque.
                 m = data.hydrology.flow[i] >= threshold_flow ? Material::RiverBed
                                                              : Material::LakeBed;
-            } else if (h < cfg.sea_level + 4.0f
-                           + (cfg.beach_band_m - 2.0f) * data.climate[i]
-                       && slope < 0.35f) {
-                // La banda de arena crece con el clima: playones caribeños
-                // en el sector cálido, orillas mínimas en el frío.
-                m = Material::Sand;
+            } else if (is_shore) {
+                m = shore_m;
             } else if (riparian[i] && h < 60.0f && slope < 0.35f) {
                 // Orilla de lago/río de tierras bajas: franja de arena/limo.
                 // Sin ella el agua cortaba la hierba a ras y los lagos de
@@ -551,8 +586,11 @@ TerrainData generate(const TerrainConfig& cfg,
     shape_coast(data, cfg);
     report("hidrologia");
     data.hydrology = compute_hydrology(data.height, cfg, noise);
+    report("oleaje");
+    CoastExposure coast = compute_coast_exposure(data.height, data.hydrology, cfg);
     report("materiales");
-    classify_materials(data, noise);
+    classify_materials(data, noise, coast);
+    data.wave_energy = std::move(coast.wave_energy);
 
     return data;
 }
