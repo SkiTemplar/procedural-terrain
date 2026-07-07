@@ -35,13 +35,13 @@
 | Pendiente media ref / pred | 31.30° / 29.30° |
 | RMSE aspecto (slope > 5°) | 28.01° |
 
-**Hidrología** (área ≥ 1 km², densidad relativa de red 0.86):
+**Hidrología** (área ≥ 1 km², densidad relativa de red 0.87; re-baselinado 2026-07-07 con WhiteboxTools a **1 hilo** — el multihilo resolvía empates de flujo en orden no determinista y el F1 bailaba en el 3er decimal):
 
 | Tolerancia | Precisión | Recall | **F1** |
 |---|---|---|---|
-| 10 m | 0.558 | 0.493 | **0.524** |
-| 30 m | 0.840 | 0.785 | **0.812** |
-| 60 m | 0.902 | 0.871 | **0.886** |
+| 10 m | 0.555 | 0.497 | **0.524** |
+| 30 m | 0.835 | 0.789 | **0.811** |
+| 60 m | 0.895 | 0.868 | **0.882** |
 
 **Strahler** (celdas por orden):
 

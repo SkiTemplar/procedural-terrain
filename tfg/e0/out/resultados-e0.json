@@ -22,32 +22,32 @@
     "aspect_umbral_slope_deg": 5.0
   },
   "hidrologia": {
-    "celdas_red_ref": 38320,
+    "celdas_red_ref": 38031,
     "celdas_red_pred": 33114,
-    "densidad_relativa": 0.8641440501043841,
+    "densidad_relativa": 0.8707107359785439,
     "tolerancias": {
       "10 m": {
-        "precision": 0.5571,
-        "recall": 0.4957,
-        "F1": 0.5246
+        "precision": 0.5548,
+        "recall": 0.4965,
+        "F1": 0.524
       },
       "30 m": {
-        "precision": 0.8396,
-        "recall": 0.79,
-        "F1": 0.814
+        "precision": 0.8347,
+        "recall": 0.7894,
+        "F1": 0.8114
       },
       "60 m": {
-        "precision": 0.9015,
-        "recall": 0.8715,
-        "F1": 0.8862
+        "precision": 0.8954,
+        "recall": 0.8683,
+        "F1": 0.8816
       }
     },
     "umbral_area_km2": 1.0,
     "strahler_ref": {
-      "orden_1": 17897,
-      "orden_2": 12538,
-      "orden_3": 4001,
-      "orden_4": 3884
+      "orden_1": 17985,
+      "orden_2": 12403,
+      "orden_3": 3755,
+      "orden_4": 3888
     },
     "strahler_pred": {
       "orden_1": 14748,
@@ -56,5 +56,5 @@
       "orden_4": 1
     }
   },
-  "duracion_s": 38.1
+  "duracion_s": 41.3
 }

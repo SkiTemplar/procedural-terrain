@@ -382,8 +382,9 @@ Super-resolución de DEMs reales de 30 m (Copernicus GLO-30) a ~2 m usando el **
 | Informe de viabilidad | ✅ `docs/investigacion-amplificacion-dem.md` (es la propuesta para el tutor) |
 | Lectura crítica de Schott et al. 2024 (SIGGRAPH, el competidor) | ✅ §3.1 del informe; PDF local en `tfg/papers/` (no versionado); su código: `github.com/H-Schott/MultiScaleErosion` |
 | **E0 — instrumentación + números de referencia** | ✅ `tfg/e0/` (uv + rasterio + WhiteboxTools, corre en ~40 s); resultados en `tfg/e0/resultados-e0.md` |
-| Tutor académico | ❌ **PENDIENTE — es el siguiente paso y bloquea la formalización** |
-| E1 en adelante | ❌ pendientes (plan en §7 del informe) |
+| **T1a/T1b — la idea central VALIDADA en sintético** | ✅ (2026-07-07) `tfg/amplify/` + `tfg/t1b/resultados-t1b.md`: F1@10m 0.6038 > bicúbica 0.5985 sin coste de elevación |
+| Tutor académico | ❌ **PENDIENTE — es el siguiente paso y bloquea la formalización** (ahora con resultados propios en mano, no solo la idea) |
+| T1c, E1 completo en adelante | ❌ pendientes (plan en §7 del informe y C.4.1) |
 
 **Números a batir (E0, Benasque/Posets, GLO-30 bicúbica vs MDT02):** RMSE 8.39 m · NMAD 3.16 m · pendiente −2.0° sistemático · **F1 de red de drenaje 0.52 @ 10 m** (0.81 @ 30 m) · colapso del orden 4 de Strahler. El hueco a explotar es la tolerancia fina.
 
@@ -439,9 +440,9 @@ Salida:  Z2  (DEM 2 m amplificado)
 
 | Subfase | Contenido | Criterio de salida |
 |---|---|---|
-| T1a | Refactor de `tfg/e0/` a librería reutilizable (`tfg/valida/`): métricas + red D8 llamables desde cualquier experimento | E0 re-ejecuta con los mismos números |
-| T1b | LEM fino con burning (pasos 2, 3, 5): primero SIN detalle (K constante) — solo comprobar que la red queda anclada | F1@10m de red > bicúbica aunque la elevación empeore |
-| T1c | Detalle emergente + anclaje LF (pasos 4, 6, 7) | RMSE/NMAD ≤ bicúbica Y F1@10m > bicúbica |
+| T1a | ✅ (2026-07-07) Refactor a `tfg/valida/` + **fix de reproducibilidad**: WhiteboxTools a 1 hilo (el multihilo hacía bailar el F1 en el 3er decimal) | E0 re-ejecuta idéntico dos veces ✓ |
+| T1b | ✅ (2026-07-07, 6 intentos — `tfg/t1b/resultados-t1b.md`) LEM numpy (pointer doubling + niveles, sin numba) + red con **valley snapping densificado** como Dirichlet + U invertido sin normalizar + solo evolucionan canales (A₀ Flint 22 500 m²) | **F1@10m 0.6038 > 0.5985 bicúbica, con RMSE intacto (2.04 vs 2.01)** ✓ |
+| T1c | Detalle emergente + anclaje LF (pasos 4, 6, 7) — el punto de partida ya NO empeora elevación, así que el listón es mejorar ambas cosas | RMSE/NMAD ≤ bicúbica Y F1@10m > bicúbica |
 | T1d | E1 sintético completo + tabla comparativa | Tabla método vs bicúbica en las ~12 métricas |
 
 **Kill-criteria (honestidad ante todo):** si tras ~2 semanas de iteración T1b no consigue F1@10m > 0.52 (la bicúbica) en el caso sintético, la constraint no está funcionando: parar, diagnosticar con dumps (¿la red quemada se desancla en el LEM? ¿el umbral de área difiere entre escalas?) y solo después replantear el método. Si T1c no logra detalle sin empeorar NMAD, el fallback es degradar el LEM a generador del residuo de alta frecuencia (menos ambicioso pero publicable igualmente por los ejes 2-3).

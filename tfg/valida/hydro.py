@@ -23,12 +23,17 @@ def _read_mask(path: Path) -> np.ndarray:
     return (band != nodata) & (band > 0)
 
 
-def extract_network(dem_path: Path, out_dir: Path, prefix: str, cell: float) -> dict:
+def extract_network(dem_path: Path, out_dir: Path, prefix: str, cell: float,
+                    threshold_km2: float = DRAINAGE_AREA_KM2) -> dict:
     """Corre el pipeline D8 de Whitebox sobre un DEM. Devuelve rutas de salida."""
     import whitebox
 
     wbt = whitebox.WhiteboxTools()
     wbt.verbose = False
+    # Un solo hilo: multihilo resuelve empates de flujo en orden no
+    # determinista y el F1 de red bailaba en el 3er decimal entre ejecuciones
+    # idénticas. La reproducibilidad manda sobre los segundos que cuesta.
+    wbt.set_max_procs(1)
     wbt.set_working_dir(str(out_dir.resolve()))
 
     dem = str(dem_path.resolve())
@@ -38,7 +43,7 @@ def extract_network(dem_path: Path, out_dir: Path, prefix: str, cell: float) -> 
     streams = f"{prefix}_streams.tif"
     strahler = f"{prefix}_strahler.tif"
 
-    threshold_cells = DRAINAGE_AREA_KM2 * 1e6 / (cell * cell)
+    threshold_cells = threshold_km2 * 1e6 / (cell * cell)
     if wbt.fill_depressions(dem, filled, fix_flats=True) != 0:
         raise RuntimeError(f"fill_depressions fallo para {prefix}")
     if wbt.d8_pointer(filled, pointer) != 0:
@@ -53,6 +58,9 @@ def extract_network(dem_path: Path, out_dir: Path, prefix: str, cell: float) -> 
     return {
         "streams": out_dir / streams,
         "strahler": out_dir / strahler,
+        "pointer": out_dir / pointer,
+        "facc": out_dir / accum,
+        "filled": out_dir / filled,
         "umbral_celdas": threshold_cells,
     }
 

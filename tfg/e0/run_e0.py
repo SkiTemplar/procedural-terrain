@@ -5,6 +5,7 @@ Salidas: e0/out/resultados-e0.json + e0/out/verificacion-visual.png
 """
 
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -17,9 +18,11 @@ import rasterio
 from matplotlib.colors import LightSource
 from scipy.ndimage import binary_dilation
 
-from hydro import compare_networks, extract_network, strahler_histogram
-from metrics import derivative_metrics, elevation_metrics
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from prepare import MDT02, PRED_BICUBIC, build_bicubic_prediction, load_pair
+from valida.hydro import compare_networks, extract_network, strahler_histogram
+from valida.metrics import derivative_metrics, elevation_metrics
 
 OUT_DIR = Path("e0/out")
 
