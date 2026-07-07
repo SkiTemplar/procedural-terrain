@@ -5,7 +5,30 @@
 > **Estado:** ACTIVO
 > **Propósito:** que cualquier persona o agente (Sonnet, Opus, humano) pueda continuar el proyecto **sin contexto previo de conversación**. Todo lo necesario está aquí o enlazado desde aquí.
 
-> **Actualización 2026-07-07 — Track TFG decidido:** el trabajo del año / candidato a TFG es la **amplificación de DEMs reales con constraints hidrológicas** (pipeline estilo Aechelon: DEM real → LEM como prior físico → render en tiempo real). Informe de viabilidad, estado del arte, datasets y plan de experimentos en `docs/investigacion-amplificacion-dem.md`. Consecuencias para este plan: las Fases A–C siguen intactas (son el motor que el TFG reutiliza) y se cierran antes de abrir el track; el track TFG irá en rama propia tras `v1.0-isla`; la Fase 2 gana la opción de ser "la Tierra real caminable" (decisión en D0).
+> **Actualización 2026-07-07 — Track TFG decidido:** el trabajo del año / candidato a TFG es la **amplificación de DEMs reales con constraints hidrológicas** (pipeline estilo Aechelon: DEM real → LEM como prior físico → render en tiempo real). Informe de viabilidad, estado del arte, datasets y plan de experimentos en `docs/investigacion-amplificacion-dem.md`. Consecuencias para este plan: las Fases A–C siguen intactas (son el motor que el TFG reutiliza) y se cierran antes de abrir el track; el track TFG irá en rama propia tras `v1.0-isla`; la Fase 2 gana la opción de ser "la Tierra real caminable" (decisión en D0). **El detalle ejecutable del track TFG está en el Apéndice C.**
+
+---
+
+## 0. CÓMO RETOMAR ESTE PROYECTO SIN CONTEXTO (léeme primero)
+
+Si estás leyendo esto sin acceso a las conversaciones previas (otro modelo, otra sesión, otro humano), este es el orden de arranque:
+
+1. **Lee este plan entero.** Es el artefacto canónico: estado, fases, criterios y manual de operaciones. Ante conflicto entre este plan y el README, **gana este plan**.
+2. **Documentos de soporte, en este orden:**
+   - `docs/superpowers/specs/2026-07-02-procedural-terrain-design.md` — el diseño aprobado del juego/motor.
+   - `docs/investigacion-agua-v2.md` — algoritmos y fuentes de los 9 pasos de agua (quedan los pasos 8 ✅hecho y 9 ❌pendiente).
+   - `docs/investigacion-amplificacion-dem.md` — el informe del TFG (encuadre, estado del arte, gap vs Schott 2024, datasets, métricas, experimentos E0-E6).
+   - `tfg/e0/resultados-e0.md` — números de referencia ya medidos del experimento E0.
+   - `docs/investigacion-lem.md` — trasfondo del LEM si tocas `terrain/lem`.
+3. **Estado a 2026-07-07:** Fase A del motor a medias (**A1 hecho, A2 oxbows pendiente** — es el siguiente paso del motor); track TFG con E0 hecho y pendiente de tutor (Apéndice C).
+4. **Comandos esenciales (desde la raíz del repo, en PowerShell):**
+   - Compilar + tests: `tools\build.ps1 -Test` (recarga vcvars64 siempre; ver A.1).
+   - Ejecutar: `cmake-build-debug-opengl\ProceduralTerrain.exe [seed [x z yaw pitch [alt]]]` (pose de cámara para capturas; ver A.3).
+   - Dump de verificación sin ventana: `ProceduralTerrain.exe --dump-costa <prefijo> [seed]` → BMPs de materiales y oleaje.
+   - Captura de pantalla: `tools\capture.ps1 -Out foto.png`.
+   - Experimentos TFG: `cd tfg; uv run python e0/run_e0.py` (proyecto uv autocontenido).
+5. **Reglas de oro que NO se negocian:** "no fakear nada" (A.5), determinismo por seed (los tests lo protegen), tests verdes antes de commit, verificación visual de todo cambio de render/terreno (A.3), commits pequeños `tipo: descripción` en minúsculas.
+6. **Objetivo estratégico del autor:** portfolio de Ingeniero de Gráficos orientado a **Aechelon Technology** (generación de imagen en tiempo real para simuladores, bases de datos geo-específicas; adquirida por Shield AI). Al priorizar trabajo, pesa más lo que demuestra ese perfil (TFG, geo-específico, whole-earth, rendimiento) que el pulido de juego.
 
 ---
 
@@ -51,8 +74,10 @@ El proyecto tiene el diseño aprobado (`docs/superpowers/specs/2026-07-02-proced
 |---|---|---|
 | Núcleo | `core/window`, `core/input`, `core/frame_clock` | ✅ Hito 1 completo |
 | Render | `render/shader`, `mesh`, `instanced_mesh`, `camera`, `terrain_shaders.h` | ✅ con niebla, sol, flat shading |
-| Terreno | `terrain/noise`, `heightfield`, `lem`, `erosion`, `hydrology`, `riverscape`, `generator`, `terrain_config`, `detail`, `mesher`, `chunked_terrain` | ✅ mundo 10×10 km, heightfield 4096² (~2.4 m/celda), LEM O(n) Braun-Willett + uplift anisótropo, erosión de gotas, priority-flood + D8, clima regional. **LOD por chunks ya existe** |
-| Agua v2 | `riverscape.*` principalmente | ✅ pasos 1–7 de 9 (efluentes de lagos, Leopold & Maddock, lecho monótono, cascadas y rápidos, confluencias, deltas, islotes fluviales). ❌ pasos 8–9 pendientes |
+| Terreno | `terrain/noise`, `heightfield`, `lem`, `erosion`, `hydrology`, `riverscape`, `coast`, `generator`, `terrain_config`, `detail`, `mesher`, `chunked_terrain` | ✅ mundo 10×10 km, heightfield 4096² (~2.4 m/celda), LEM O(n) Braun-Willett + uplift anisótropo, erosión de gotas, priority-flood + D8, clima regional. **LOD por chunks ya existe**. 10 materiales (con `Gravel`/`Marsh`), `wave_energy` en `TerrainData` |
+| Agua v2 | `riverscape.*` + `coast.*` | ✅ pasos 1–8 de 9 (efluentes de lagos, Leopold & Maddock, lecho monótono, cascadas y rápidos, confluencias, deltas, islotes fluviales, **playas por energía de oleaje**). ❌ paso 9 (oxbows) pendiente |
+| Herramientas | `tools/build.ps1`, `tools/capture.ps1`, `tools/wave_stats.py`, `tools/material_stats.py`, modo `--dump-costa` del exe | ✅ lazo de build/verificación reproducible sin IDE (ver A.1/A.3) |
+| TFG | `tfg/` (proyecto uv: e0/, papers/) | ✅ E0 hecho con números de referencia; ver Apéndice C |
 | Vegetación | `veg/models` (pino, frondoso, roca, mata, arbusto, tronco caído), `veg/veg_renderer` | ✅ instanciado, culling por celdas de 512 m, colocación determinista pisando el suelo. Pendiente: auditoría de densidades/variedad por bioma |
 | Player | `player/controller` | ✅ andar/volar completo (F alterna, colisión de suelo) |
 | UI | `ui/debug_ui` | ✅ sliders en vivo + regenerar. ❌ sin presets JSON, ❌ sin minimapas de campos |
@@ -72,7 +97,7 @@ Ordenadas por dependencia y riesgo. **El detalle ejecutable de cada fase está e
 
 | # | Fase | Contenido | Riesgo | ETA (sesiones) |
 |---|---|---|---|---|
-| A | Agua v2 — cierre | A1 playas por energía de oleaje (paso 8) · A2 oxbows (paso 9) | A2 **ALTO** (muta la traza en planta, puede romper el D8) | 2–3 |
+| A | Agua v2 — cierre | ~~A1 playas por energía de oleaje~~ ✅ (2026-07-07) · A2 oxbows (paso 9) **← SIGUIENTE** | A2 **ALTO** (muta la traza en planta, puede romper el D8) | 1–2 restantes |
 | B | Vegetación — auditoría | Densidades/variedad por bioma, uso real de los 6 modelos, transiciones | BAJO | 1 |
 | C | Hito 6 — pulido | C1 presets JSON · C2 minimapas de campos · C3 rendimiento >60 fps · C4 pulido visual | MEDIO (C3) | 3–4 |
 | D | Fase 2 — planeta | D0 spec propio → D1 cube-sphere+LOD → D2 campos 3D → D3 relieve por parches → D4 hidrología → D5 player esférico → D6 atmósfera | **MUY ALTO** (D1/D3/D4) | 15–25 |
@@ -88,7 +113,7 @@ Reglas de tránsito entre fases:
 
 **Fase A:**
 - [ ] `ctest --test-dir cmake-build-debug-opengl --output-on-failure` verde, incluyendo test nuevo: tras estampar oxbows/barras, todo cauce D8 sigue alcanzando mar o lago (sin sumideros nuevos).
-- [ ] Captura de costa: se distinguen ≥3 tipos de orilla (playa disipativa ancha, grava/acantilado expuesto, marisma/roca abrigada) correlacionados con el mapa de energía de oleaje (visible en minimapa o dump).
+- [x] Captura de costa: se distinguen ≥3 tipos de orilla (playa disipativa ancha, grava/acantilado expuesto, marisma/roca abrigada) correlacionados con el mapa de energía de oleaje (visible en minimapa o dump). **Cumplido 2026-07-07**: dump por octantes (E 0.57 barlovento NO vs 0.15 sotavento), 4 regímenes presentes (arena 112k / grava 18k / marisma 71k celdas) y captura 3D de costa sur con disipativa+marisma.
 - [ ] Captura de tramo llano: ≥1 oxbow (lago en herradura) con tapones de sedimento, y el río activo sigue fluyendo al mar.
 
 **Fase B:**
@@ -160,19 +185,15 @@ Todo lo operativo que no está en el README y que hace falta para trabajar en es
 - Requiere MSVC Build Tools 2022, vcpkg en `C:/vcpkg`, Ninja (está en `C:\vcpkg\downloads\tools`, añadirlo al PATH si no se usa CLion).
 - `vcvars64` necesita `vswhere` en el PATH.
 - **Usar PowerShell**, no `cmd /c` desde Git Bash (la conversión MSYS de `/c` lo rompe).
+- **El entorno de vcvars64 NO persiste entre invocaciones de shell** (cada llamada de un agente es una shell nueva). Usar siempre el wrapper, que lo recarga:
 
 ```powershell
-# consola con vcvars64 cargado
-cmake --preset Debug-OpenGL
-cmake --build cmake-build-debug-opengl
-cmake-build-debug-opengl\ProceduralTerrain.exe
-
-# Release (para medir rendimiento SIEMPRE en Release)
-cmake --preset Release-OpenGL
-cmake --build cmake-build-release-opengl
+tools\build.ps1 -Test            # Debug + ctest
+tools\build.ps1 -Target release  # Release (para medir rendimiento SIEMPRE en Release)
 ```
 
-- **Matar el exe antes de recompilar** (el linker falla si el binario está en uso).
+- Configurar la primera vez (si no existen los directorios de build): consola con vcvars64 cargado → `cmake --preset Debug-OpenGL` / `cmake --preset Release-OpenGL`.
+- **Matar el exe antes de recompilar** (el linker falla si el binario está en uso): `taskkill /IM ProceduralTerrain.exe /F`.
 
 ## A.2 Tests
 
@@ -185,11 +206,18 @@ Invariantes que protegen: misma seed ⇒ mismo hash de heightmap; tras priority-
 
 ## A.3 Verificación visual (obligatoria para todo cambio de render/terreno)
 
-El render no se testea con píxeles: se mira. Flujo probado:
-1. Lanzar el exe (en Debug, la generación 4096² tarda **~150 s**; esperar a que la ventana muestre el mundo).
-2. Capturar pantalla, p. ej. con .NET desde PowerShell (`System.Drawing`, `Graphics.CopyFromScreen`) a una PNG del scratchpad.
-3. Abrir/inspeccionar la PNG y comparar contra el criterio de aceptación de la sub-tarea (§7 / Apéndice B).
-4. Iterar. Presupuestar 3–5 ciclos por rasgo visual nuevo.
+El render no se testea con píxeles: se mira. Dos vías complementarias, ambas probadas:
+
+**Vía rápida — dump sin ventana (ideal para materiales/campos):**
+1. `cmake-build-debug-opengl\ProceduralTerrain.exe --dump-costa <prefijo> [seed]` → escribe `<prefijo>-materiales.bmp` y `<prefijo>-oleaje.bmp` a 4096² (~150 s en Debug, sin abrir ventana).
+2. Recortar zonas a resolución nativa (System.Drawing) o reducir a ~1400² para vista general.
+3. Análisis numérico si hace falta: `tools\wave_stats.py <png-oleaje>` (energía media por octante de brújula — así se cazó el bug de convención de viento) y `tools\material_stats.py <bmp-materiales>` (histograma exacto por color de paleta). Correr con el uv de `tfg/` (`cd tfg; uv run python ..\tools\wave_stats.py <ruta-absoluta>`).
+
+**Vía completa — captura 3D in-game:**
+1. Lanzar el exe con pose de cámara: `ProceduralTerrain.exe <seed> <x> <z> <yaw> <pitch> [alt]` — coordenadas de mundo en metros (mundo ≈ (grid − res/2) × 2.44 a 4096²; el centro del mapa es (0,0)). **Convención de yaw: 0 = +x (este del mapa), 90 = +z (sur, abajo en los dumps); pitch en grados, negativo mira hacia abajo; alt = metros sobre el terreno.**
+2. Esperar la generación (**~150 s** en Debug a 4096²) y capturar: `tools\capture.ps1 -Out foto.png`.
+3. Comparar contra el criterio de aceptación de la sub-tarea (§7 / Apéndice B). Iterar: presupuestar 3–5 ciclos por rasgo visual nuevo.
+4. Al terminar: `taskkill /IM ProceduralTerrain.exe /F` antes de recompilar.
 
 ## A.4 Git
 
@@ -236,6 +264,7 @@ Detalle en `docs/investigacion-agua-v2.md` §9. Referencia C++: `aparis69/Meande
 
 - Commits: `feat: migracion de meandros howard-knutson` · `feat: oxbows con cutoff, tapones y point-bars`.
 - **Límite duro: 2 intentos.** Si no sale, descartar, documentar aquí y cerrar Agua v2 en 8/9.
+- Verificación: `--dump-costa` antes/después para comparar la traza en planta (los oxbows deben verse como lagos en herradura junto al cauce activo), test nuevo de §7-A (todo cauce D8 sigue alcanzando mar o lago) y captura 3D con pose CLI sobre un tramo llano (A.3).
 
 ## B.2 · FASE B — Auditoría de vegetación (cierre real del Hito 5)
 
@@ -333,6 +362,53 @@ Decisiones que el spec debe cerrar (mínimo):
 2. README: estado real (tabla §4 de este plan como base), controles, build, 3+ capturas buenas, GIF corto si es fácil.
 3. Presets de demo incluidos en `presets/`.
 4. Tag: `v1.0-isla` (tras C) / `v2.0-planeta` (tras D).
+
+---
+---
+
+# APÉNDICE C — Track TFG: amplificación de DEMs reales con constraints hidrológicas
+
+> Decidido el 2026-07-07. **Documento técnico canónico: `docs/investigacion-amplificacion-dem.md`** (encuadre, estado del arte verificado, gap frente a Schott et al. 2024, datasets, métricas, riesgos). Este apéndice es el resumen operativo para retomar el track sin contexto.
+
+## C.1 Qué es (una frase)
+
+Super-resolución de DEMs reales de 30 m (Copernicus GLO-30) a ~2 m usando el **LEM stream-power de este motor como prior físico**, con la **red de drenaje real impuesta como restricción dura** (stream burning) y **validación hidrológica cuantitativa** contra LiDAR (PNOA MDT02) — el pipeline completo de Aechelon en miniatura: datos reales → base de datos geo-específica → render en tiempo real.
+
+## C.2 Estado (2026-07-07)
+
+| Hito | Estado |
+|---|---|
+| Decisión de idea (entre 10 candidatas) | ✅ #1 elegida; perfil objetivo Ingeniero de Gráficos → Aechelon |
+| Informe de viabilidad | ✅ `docs/investigacion-amplificacion-dem.md` (es la propuesta para el tutor) |
+| Lectura crítica de Schott et al. 2024 (SIGGRAPH, el competidor) | ✅ §3.1 del informe; PDF local en `tfg/papers/` (no versionado); su código: `github.com/H-Schott/MultiScaleErosion` |
+| **E0 — instrumentación + números de referencia** | ✅ `tfg/e0/` (uv + rasterio + WhiteboxTools, corre en ~40 s); resultados en `tfg/e0/resultados-e0.md` |
+| Tutor académico | ❌ **PENDIENTE — es el siguiente paso y bloquea la formalización** |
+| E1 en adelante | ❌ pendientes (plan en §7 del informe) |
+
+**Números a batir (E0, Benasque/Posets, GLO-30 bicúbica vs MDT02):** RMSE 8.39 m · NMAD 3.16 m · pendiente −2.0° sistemático · **F1 de red de drenaje 0.52 @ 10 m** (0.81 @ 30 m) · colapso del orden 4 de Strahler. El hueco a explotar es la tolerancia fina.
+
+## C.3 Ejes de novedad (defensa frente a "esto ya existe")
+
+1. LEM geomorfológico **calibrado sobre datos reales** (Braun-Willett implícito; uplift/erodibilidad estimados del DEM), no aproximación gráfica con parámetros estéticos.
+2. **Constraint dura de la red observada** (Schott ancla crestas — el complementario; nadie ancla la red).
+3. **Validación cuantitativa contra ground truth** (Schott solo mide una métrica interna; la familia DL solo RMSE). Incluye E1b: primera evaluación de Schott 2024 contra terreno real.
+4. **Escala por tiles con drenaje coherente entre fronteras** (limitación declarada de Schott: 8192² máx en una GPU) + integración en motor caminable.
+
+## C.4 Orden de trabajo del track (cada punto con su criterio en el informe §7)
+
+1. **T0 — Tutor**: llevar el informe a un tutor de gráficos/GIS. Sin esto el TFG no es formal. No bloquea seguir con T1 como proyecto personal.
+2. **T1 — Método v0 (prototipo)**: amplificador en Python dentro de `tfg/` (itera rápido; el port a C++ del motor llega después). Esqueleto: uplift de equilibrio local U ≈ K·Aᵐ·Sⁿ desde el DEM grueso → LEM en malla fina con erodibilidad modulada → anclaje de baja frecuencia (downsample(salida) ≈ entrada) → red real quemada como condición (adoptar el multi-scale breaching de Schott para que la trinchera no sea un cañón de 1 celda) → validación D8 con el pipeline E0.
+3. **T2 — E1/E2** (sintético + hidrológico): el resultado central. Batir a la bicúbica en F1@10m sin empeorar elevación.
+4. **T3 — E1b** (Schott como baseline con su código público) y **E3** (real GLO-30 vs MDT02).
+5. **T4/T5 — E4 ablaciones + E5 más zonas.**
+6. **T6 — E6 render**: importar la celda amplificada al motor (herramienta `tools/dem_prep` CLI con GDAL, fuera del motor) y volarla a >60 fps. La demo Aechelon.
+7. **T7 — Memoria y defensa.**
+
+## C.5 Operativa del track
+
+- Proyecto Python: `cd tfg` → `uv sync` → `uv run python e0/run_e0.py`. Deps: rasterio, numpy, scipy, whitebox, matplotlib. Datos en `tfg/e0/data/` (gitignored); cómo re-descargarlos (URLs y flujo CNIG con secuenciales) está en `tfg/e0/resultados-e0.md` §Reproducir.
+- El tile GLO-30 usado es la edición AWS 2022 (anterior al relleno de alta resolución 2023 en Pirineos — sin contaminación). Ojo al gap DSM/DTM (los globales miden copas; PNOA mide suelo): tratado en el informe §4.1.
+- Ritmo recomendado: el track TFG se abre en serio **tras cerrar la Fase C** del motor (`v1.0-isla`), en rama `tfg-amplificacion`. E0 ya demostró que la instrumentación no depende del motor, así que T0-T2 pueden avanzar en paralelo si conviene.
 
 ---
 
