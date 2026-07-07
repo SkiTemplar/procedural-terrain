@@ -160,7 +160,7 @@ Esbozo del núcleo (paso 3): estimar un campo de uplift de equilibrio local desd
 ## 10. Próximos pasos
 
 1. **Validar el encuadre con un tutor potencial** (departamento de gráficos/GIS) llevando este informe — el TFG necesita tutor y este documento es la propuesta.
-2. E0: descargar una celda GLO-30 + MDT02 del Pirineo, montar el pipeline de validación (pysheds/WhiteboxTools) y sacar los números de referencia de la bicúbica. Bajo riesgo, valida toda la instrumentación.
+2. ~~E0: montar el pipeline de validación y sacar los números de referencia de la bicúbica.~~ **HECHO (2026-07-07)** — pipeline en `tfg/e0/` (uv + rasterio + WhiteboxTools, corre en ~40 s), resultados en `tfg/e0/resultados-e0.md`. Números a batir (Benasque/Posets, GLO-30 bicúbica vs MDT02): RMSE 8.39 m, NMAD 3.16 m, pendiente −2.0° de aplanado sistemático, **F1 de red de drenaje 0.52 @ 10 m** (0.81 @ 30 m) y colapso del orden 4 de Strahler. El hueco del TFG está en la tolerancia fina, tal y como se hipotetizaba.
 3. Leer a fondo Schott et al. 2024 (el paper completo, no el abstract) — es la referencia a diferenciar sí o sí.
 4. Mientras tanto: cerrar Fases A-C del plan maestro (el motor que el TFG necesita).
 
