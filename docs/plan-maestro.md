@@ -5,6 +5,8 @@
 > **Estado:** ACTIVO
 > **Propósito:** que cualquier persona o agente (Sonnet, Opus, humano) pueda continuar el proyecto **sin contexto previo de conversación**. Todo lo necesario está aquí o enlazado desde aquí.
 
+> **Actualización 2026-07-07 — Track TFG decidido:** el trabajo del año / candidato a TFG es la **amplificación de DEMs reales con constraints hidrológicas** (pipeline estilo Aechelon: DEM real → LEM como prior físico → render en tiempo real). Informe de viabilidad, estado del arte, datasets y plan de experimentos en `docs/investigacion-amplificacion-dem.md`. Consecuencias para este plan: las Fases A–C siguen intactas (son el motor que el TFG reutiliza) y se cierran antes de abrir el track; el track TFG irá en rama propia tras `v1.0-isla`; la Fase 2 gana la opción de ser "la Tierra real caminable" (decisión en D0).
+
 ---
 
 ## 1. PROBLEM
