@@ -397,18 +397,77 @@ Super-resolución de DEMs reales de 30 m (Copernicus GLO-30) a ~2 m usando el **
 ## C.4 Orden de trabajo del track (cada punto con su criterio en el informe §7)
 
 1. **T0 — Tutor**: llevar el informe a un tutor de gráficos/GIS. Sin esto el TFG no es formal. No bloquea seguir con T1 como proyecto personal.
-2. **T1 — Método v0 (prototipo)**: amplificador en Python dentro de `tfg/` (itera rápido; el port a C++ del motor llega después). Esqueleto: uplift de equilibrio local U ≈ K·Aᵐ·Sⁿ desde el DEM grueso → LEM en malla fina con erodibilidad modulada → anclaje de baja frecuencia (downsample(salida) ≈ entrada) → red real quemada como condición (adoptar el multi-scale breaching de Schott para que la trinchera no sea un cañón de 1 celda) → validación D8 con el pipeline E0.
+2. **T1 — Método v0 (prototipo)**: el corazón técnico. Detalle completo en C.4.1.
 3. **T2 — E1/E2** (sintético + hidrológico): el resultado central. Batir a la bicúbica en F1@10m sin empeorar elevación.
 4. **T3 — E1b** (Schott como baseline con su código público) y **E3** (real GLO-30 vs MDT02).
 5. **T4/T5 — E4 ablaciones + E5 más zonas.**
 6. **T6 — E6 render**: importar la celda amplificada al motor (herramienta `tools/dem_prep` CLI con GDAL, fuera del motor) y volarla a >60 fps. La demo Aechelon.
 7. **T7 — Memoria y defensa.**
 
+### C.4.1 T1 — Diseño técnico del amplificador v0
+
+Prototipo en Python dentro de `tfg/` (itera en minutos; el port a C++ del motor llega en T6, solo si v0 valida). Reutiliza el pipeline E0 tal cual como instrumentación.
+
+**Algoritmo v0 (cada paso es una pieza medible y ablacionable en E4):**
+
+```
+Entrada: Z30 (DEM 30 m recortado, p.ej. GLO-30 o MDT02 degradado)
+Salida:  Z2  (DEM 2 m amplificado)
+
+1. BASE       Z2 := bicubic(Z30)                     # el baseline E0 es el punto de partida
+2. RED REF    R  := red D8 de Z30 (umbral 1 km²),    # la red observada = constraint
+              rasterizada en la malla 2 m (1 celda)
+3. UPLIFT     U(p) := K·A(p)^m · S(p)^n              # SPL invertida: equilibrio local
+              con A, S del DEM grueso remuestreados;  # (m/n ≈ 0.45; U normalizado)
+4. ERODIB.    K(p) := K0 · (1 + ruido multiescala)   # el detalle EMERGE del proceso
+                                                      # (filosofía A.5: nada estampado)
+5. LEM FINO   N iteraciones Braun-Willett implícito  # numpy: orden topológico por
+              sobre Z2 con U y K(p);                  # receptores; N pequeño (decenas)
+              la red R va QUEMADA: sus celdas se      # stream burning como condición,
+              fijan/deprimen ε como condición de     # no como zanja estética
+              contorno interna; borde del tile = BC
+6. SUAVIZADO  breaching multi-escala sobre la        # idea adoptada de Schott 2024:
+   DE ZANJA   trinchera de R (radios decrecientes)   # sin cañones de 1 celda
+7. ANCLAJE    Z2 += blur_σ(upsample(Z30) − Z2)       # re-anclaje de baja frecuencia
+   LF         con σ ≈ 30-60 m                         # (retargeting difusivo): la
+                                                      # macro-forma es EXACTAMENTE la real
+8. VALIDAR    pipeline E0 completo (elevación +      # mismas métricas, mismos umbrales
+              derivados + F1 de red + Strahler)
+```
+
+**Subfases con criterio de salida:**
+
+| Subfase | Contenido | Criterio de salida |
+|---|---|---|
+| T1a | Refactor de `tfg/e0/` a librería reutilizable (`tfg/valida/`): métricas + red D8 llamables desde cualquier experimento | E0 re-ejecuta con los mismos números |
+| T1b | LEM fino con burning (pasos 2, 3, 5): primero SIN detalle (K constante) — solo comprobar que la red queda anclada | F1@10m de red > bicúbica aunque la elevación empeore |
+| T1c | Detalle emergente + anclaje LF (pasos 4, 6, 7) | RMSE/NMAD ≤ bicúbica Y F1@10m > bicúbica |
+| T1d | E1 sintético completo + tabla comparativa | Tabla método vs bicúbica en las ~12 métricas |
+
+**Kill-criteria (honestidad ante todo):** si tras ~2 semanas de iteración T1b no consigue F1@10m > 0.52 (la bicúbica) en el caso sintético, la constraint no está funcionando: parar, diagnosticar con dumps (¿la red quemada se desancla en el LEM? ¿el umbral de área difiere entre escalas?) y solo después replantear el método. Si T1c no logra detalle sin empeorar NMAD, el fallback es degradar el LEM a generador del residuo de alta frecuencia (menos ambicioso pero publicable igualmente por los ejes 2-3).
+
+**Decisión de librería LEM en Python:** primero intentar implementación propia numpy (el algoritmo Braun-Willett ya está entendido e implementado en C++ en `terrain/lem.cpp` — portarlo es 1 sesión y da control total sobre el burning); `fastscapelib` como referencia de contraste, no como dependencia.
+
 ## C.5 Operativa del track
 
 - Proyecto Python: `cd tfg` → `uv sync` → `uv run python e0/run_e0.py`. Deps: rasterio, numpy, scipy, whitebox, matplotlib. Datos en `tfg/e0/data/` (gitignored); cómo re-descargarlos (URLs y flujo CNIG con secuenciales) está en `tfg/e0/resultados-e0.md` §Reproducir.
 - El tile GLO-30 usado es la edición AWS 2022 (anterior al relleno de alta resolución 2023 en Pirineos — sin contaminación). Ojo al gap DSM/DTM (los globales miden copas; PNOA mide suelo): tratado en el informe §4.1.
 - Ritmo recomendado: el track TFG se abre en serio **tras cerrar la Fase C** del motor (`v1.0-isla`), en rama `tfg-amplificacion`. E0 ya demostró que la instrumentación no depende del motor, así que T0-T2 pueden avanzar en paralelo si conviene.
+
+## C.6 Calendario orientativo integrado (motor + TFG, curso 2026-27)
+
+El mayor riesgo del año no es el motor (A2 tiene fallback documentado): es que **la idea central del TFG no funcione**. Fail-fast global ⇒ T1 se valida ANTES de invertir el otoño en él.
+
+| Cuándo | Motor | TFG |
+|---|---|---|
+| Jul 2026 | A2 oxbows → Fase A cerrada | **T1 v0 (validar la idea YA)** + T1d |
+| Ago 2026 | Fases B + C → tag `v1.0-isla` (+ E release isla si apetece) | E1b (Schott baseline) |
+| Sept 2026 | — (arranque de curso) | **T0 tutor con informe + números de T1/E1b en mano** (propuesta mucho más fuerte que solo la idea) |
+| Oct-Nov 2026 | Fase D0 (spec planeta) en paralelo si hay hueco | E3 real + E4 ablaciones |
+| Dic 2026-Feb 2027 | Fase D1-D3 según carga del TFG | E5 zonas + T6 render demo (port C++) |
+| Mar-Jun 2027 | Fase D continúa o pausa | **T7 memoria + defensa** |
+
+Regla del calendario: ante conflicto de tiempo, **gana el TFG** (es lo que tiene fecha de entrega y lo que abre la puerta de Aechelon); el planeta (Fase D) es el colchón flexible.
 
 ---
 
