@@ -2,3 +2,4 @@
 __pycache__/
 e0/data/
 e0/out/*.tif
+papers/

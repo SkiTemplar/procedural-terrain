@@ -38,7 +38,7 @@ Esbozo del núcleo (paso 3): estimar un campo de uplift de equilibrio local desd
 |---|---|---|
 | Guérin, Digne, Galin, Peytavie (EG 2016) — *Sparse representation of terrains* | Amplificación por diccionario de landforms | Sin física ni hidrología |
 | Cordonnier et al. (EG 2016) — *Terrain Generation from Tectonic Uplift and Fluvial Erosion* | Uplift + stream-power → redes dendríticas emergentes | Genera desde cero, no amplifica DEM real |
-| **Schott, Galin, Guérin, Paris, Peytavie (SIGGRAPH 2024) — *Terrain Amplification using Multi-scale Erosion*** | **EL COMPETIDOR MÁS CERCANO**: amplifica LR→HR "hidrológicamente consistente" con aproximaciones de erosión termal + stream-power + hillslope multi-escala | Aproximación gráfica de erosión (no un LEM geomorfológico); sin constraint dura de reproducir la red del DEM real; validación visual, no cuantitativa; offline |
+| **Schott, Galin, Guérin, Paris, Peytavie (SIGGRAPH 2024) — *Terrain Amplification using Multi-scale Erosion*** | **EL COMPETIDOR MÁS CERCANO** (leído completo, ver §3.1): amplifica LR→HR "hidrológicamente consistente" con stream-power acotado + termal + deposición, multi-escala, GPU interactivo | Stream-power "fantasma" sin uplift con parámetros estéticos (no LEM calibrado); sin constraint de la red real (su anclaje es el complementario: crestas); validación solo interna (volumen de breaching), **nunca contra ground truth real**; límite 8192² en una GPU |
 | Schott et al. (TOG 2023) — *Interactive Erosion Simulation* | Authoring en dominio de uplift, stream-power interactivo | Authoring, no amplificación condicionada a DEM real |
 | Argudo, Andújar, Chica (Vis. Comput. 2017) — *Coherent multi-layer landscape synthesis* | Síntesis multicapa por ejemplares reales | Patch-based, sin física |
 | Guérin et al. (EG 2022) — *Gradient Terrain Authoring* | Dominio del gradiente + Poisson, GPU tiempo real | Sin LEM ni hidrología |
@@ -65,12 +65,30 @@ Esbozo del núcleo (paso 3): estimar un campo de uplift de equilibrio local desd
 
 **No se puede reclamar** "amplificación de terreno hidrológicamente consistente" a secas: **Schott et al. 2024 (SIGGRAPH) ya usa esa frase casi literal**. La línea Cordonnier→Schott (LIRIS/Adobe) es dueña de ese titular.
 
-**La combinación que NO existe publicada** (y que es este TFG):
+### 3.1 Schott et al. 2024 en detalle (paper completo leído el 2026-07-07; PDF en `tfg/papers/`)
 
-1. **LEM geomorfológico real** (Braun-Willett O(n), el de FastScape) como prior — no una aproximación gráfica de erosión.
-2. **Constraint dura de la red de drenaje observada**: la red del DEM real se impone (stream burning en las condiciones del LEM); en Schott la consistencia es emergente/libre, no anclada a datos reales.
-3. **Validación hidrológica cuantitativa** contra ground truth LiDAR (IoU de red, Strahler/Horton, hipsometría) — toda la familia DL mide solo RMSE; esto solo ya es contribución metodológica.
-4. **Render en tiempo real** del pipeline completo en motor propio (los trabajos geomorfológicos son offline; los de CG tiempo real no llevan LEM).
+**Qué hace exactamente.** Pipeline multi-escala `T_m = A_{m-1}∘…∘A_0(T_0)` donde cada paso `A_k` = upsample bicúbico ×2/×4 → erosión fluvial → estabilización termal → deposición de sedimentos, desde 128-256² hasta 8192² (×32). La erosión fluvial es stream-power **sin uplift** (`u=0`, solo talla), explícita e iterativa, con dos modificaciones de diseño: *clamping* `ẽ = min(sⁿ, sⁿmax)·min(aᵐ, aᵐmax)` para evitar incisiones puntiagudas, y erodibilidad variable `k(p) = k(1−ρ(p))` con mapa de dureza ρ (ruido fractal + edición del artista) para romper la auto-similitud. Routing de flujo **multi-dirección** (Holmgren, exponente p=1.3) con **una sola iteración de actualización del drenaje por iteración de erosión** (aproximación GPU heredada de Schott 2023). Parámetros estéticos, no calibrados: n=2, m=0.8 (m/n=0.4 cuando la geomorfología usa ~0.5), k=5·10⁻⁴, miles de iteraciones por escala. Dos post-procesos clave: **retargeting por difusión** (detecta crestas/picos como celdas con drenaje `a < a₀=2`, calcula el error de cota respecto al input y lo difunde con ~500 iteraciones de Laplaciano para restaurar picos sin dañar la erosión) y **multi-scale breaching** (variante de Barnes 2014: breaching parcial suavizado con radios decrecientes `r_{k+1}=0.5·r_k`, paso final r=1 → garantiza drenaje completo sin cañones de 1 celda). GPU compute (GLSL): 5-11 ms por iteración a 4096²; retargeting+breaching en CPU, segundos. Código público: `github.com/H-Schott/MultiScaleErosion` (C++/GLSL).
+
+**Correcciones a lo que asumíamos:** (1) NO es offline — la amplificación es interactiva en GPU; nuestra ventaja no puede venderse como "tiempo real vs offline". (2) SÍ amplifican DEMs reales de baja resolución (Figura 15 del paper, un terreno real de 128²) — pero sin anclarse a la red real y sin comparar contra datos reales de alta resolución.
+
+**Lo que confirma el paper (los huecos, ahora verificados):**
+- **Su "consistencia hidrológica" es interna, no fiel a datos**: significa "el agua drena sin pozos" (breaching lo garantiza tallando donde haga falta), no "los ríos están donde están los ríos reales". Nada impide que la red amplificada se mueva de valle.
+- **Su anclaje a datos es el complementario exacto del nuestro**: el retargeting preserva la cota de **crestas y picos** del input; nadie ancla la **geometría de la red de drenaje** a la observada. Nuestra constraint dura sigue libre.
+- **Su validación cuantitativa es una sola métrica interna**: volumen medio de breaching b̄ (material que hay que quitar para que drene libre, Tabla 3 del paper), comparada contra StyleGAN/procedural/sparse — **nunca contra un DEM real de alta resolución**. Ni error de elevación, ni posición de la red, ni Strahler. Nuestro E0 ya mide más que el paper.
+- **Su limitación declarada es nuestra Fase 2**: dicen textualmente que pasar de 8192² exige descomponer en parches con "propagación del drenaje entre fronteras" como reto abierto — exactamente el problema de tiling que nuestro motor de chunks + el TFG por celdas debe resolver.
+
+**Lo que conviene REUTILIZAR de Schott 2024 en el TFG:**
+1. **Multi-scale breaching** — nuestra constraint por stream burning talla trincheras de 1 celda (el artefacto exacto que su breaching multi-escala elimina); adoptar su suavizado de radios decrecientes sobre la trinchera quemada la hace geomorfológicamente plausible.
+2. **Retargeting por difusión** — sirve tal cual para nuestro anclaje de baja frecuencia (fidelidad al DEM grueso) y para imponer cotas de la red real (constraints con δ de datos + difusión).
+3. **La métrica b̄** — añadirla a la suite E0 (barata y permite comparar números con el paper).
+4. **Su código como baseline E1b** — correr MultiScaleErosion sobre nuestro GLO-30 y evaluarlo con nuestro pipeline E0 contra el MDT02: sería **la primera evaluación cuantitativa de Schott 2024 contra terreno real**, y mediría exactamente cuánto pierde la amplificación sin anclaje a datos (hipótesis: F1@10m de la red no mejora sobre bicúbica aunque el terreno "parezca" real).
+
+**La combinación que NO existe publicada** (y que es este TFG; ejes afinados tras leer el paper completo, §3.1):
+
+1. **LEM geomorfológico calibrado sobre datos reales** (Braun-Willett O(n) implícito, uplift/erodibilidad estimados desde el DEM observado) — en Schott la erosión es stream-power sin uplift con parámetros estéticos (m/n=0.4, k de diseño), sin calibración a datos.
+2. **Constraint dura de la red de drenaje observada**: la red del DEM real se impone (stream burning en las condiciones del LEM); en Schott la consistencia es interna (drena, pero no necesariamente por donde drenan los ríos reales) y su anclaje a datos es el complementario del nuestro (crestas, no red).
+3. **Validación cuantitativa contra ground truth real** (elevación + derivados + IoU de red, Strahler/Horton, hipsometría, y también su b̄): Schott solo reporta una métrica interna (volumen de breaching) y nunca compara con un DEM real de alta resolución; la familia DL mide solo RMSE. Esto solo ya es contribución metodológica — incluida la primera evaluación de Schott 2024 contra datos reales (experimento E1b).
+4. **Escala por celdas/tiles con drenaje coherente entre fronteras e integración en motor caminable**: la limitación declarada de Schott (8192² máximo en una GPU, "propagación del drenaje entre parches" como reto abierto) es exactamente lo que el pipeline por chunks del motor + el TFG por celdas debe resolver.
 
 **Título de trabajo (encuadre corregido):** *"Super-resolución de DEMs reales mediante un modelo de evolución del paisaje como prior físico, con la red de drenaje observada como restricción dura y validación hidrológica cuantitativa"*.
 
@@ -116,6 +134,7 @@ Esbozo del núcleo (paso 3): estimar un campo de uplift de equilibrio local desd
 - Distancia media/Hausdorff entre cauces extraídos y de referencia.
 - **Strahler/Horton**: nº de cauces por orden, razón de bifurcación, longitudes por orden.
 - **Curva e integral hipsométrica** por cuenca (fácil de calcular, muy interpretable en defensa).
+- **Volumen medio de breaching b̄** (Schott et al. 2024, §6.5): material a retirar para que el terreno drene libre, dividido por el área. Métrica interna barata que permite comparar números directamente con el paper competidor.
 
 **Geomorfológicas (perceptuales):** agreement de clasificación de **geomorphons** (Jasiewicz & Stepinski 2013; `r.geomorphon` de GRASS) — matriz de confusión / kappa entre landforms del amplificado y del real.
 
@@ -131,6 +150,7 @@ Esbozo del núcleo (paso 3): estimar un campo de uplift de equilibrio local desd
 |---|---|---|
 | E0 | Reproducir pipeline de validación sobre datos crudos (GLO-30 vs MDT02, bicúbica) | ¿Funciona la instrumentación? Números de referencia |
 | E1 | Sintético: MDT02→30 m→amplificar vs MDT02 | ¿El LEM-prior mejora a bicúbica y a un neural en elevación/derivados? |
+| E1b | **Schott 2024 como baseline**: correr `MultiScaleErosion` (código público) sobre GLO-30 y evaluarlo con el pipeline E0 | Primera evaluación cuantitativa de Schott contra terreno real; hipótesis: sin anclaje a datos, su F1@10m de red no mejora a la bicúbica aunque el relieve "parezca" real |
 | E2 | Hidrológico: métricas de red en E1 | ¿La constraint dura produce redes medibles mejor que la consistencia libre? (el resultado central del TFG) |
 | E3 | Real: GLO-30→amplificar vs MDT02 | ¿Sobrevive el método al gap DSM/DTM y de sensor? |
 | E4 | Ablación: sin constraint de red / sin anclaje de baja frecuencia / solo ruido | ¿Qué aporta cada pieza? (defensa ante tribunal) |
@@ -161,7 +181,7 @@ Esbozo del núcleo (paso 3): estimar un campo de uplift de equilibrio local desd
 
 1. **Validar el encuadre con un tutor potencial** (departamento de gráficos/GIS) llevando este informe — el TFG necesita tutor y este documento es la propuesta.
 2. ~~E0: montar el pipeline de validación y sacar los números de referencia de la bicúbica.~~ **HECHO (2026-07-07)** — pipeline en `tfg/e0/` (uv + rasterio + WhiteboxTools, corre en ~40 s), resultados en `tfg/e0/resultados-e0.md`. Números a batir (Benasque/Posets, GLO-30 bicúbica vs MDT02): RMSE 8.39 m, NMAD 3.16 m, pendiente −2.0° de aplanado sistemático, **F1 de red de drenaje 0.52 @ 10 m** (0.81 @ 30 m) y colapso del orden 4 de Strahler. El hueco del TFG está en la tolerancia fina, tal y como se hipotetizaba.
-3. Leer a fondo Schott et al. 2024 (el paper completo, no el abstract) — es la referencia a diferenciar sí o sí.
+3. ~~Leer a fondo Schott et al. 2024.~~ **HECHO (2026-07-07)** — análisis detallado en §3.1, ejes de novedad afinados, PDF de autor en `tfg/papers/`. Salidas accionables: adoptar su multi-scale breaching y su retargeting por difusión como componentes del método propio; añadir su métrica b̄ a la suite; nuevo experimento E1b (su código público como baseline evaluado contra ground truth real, cosa que el paper nunca hace).
 4. Mientras tanto: cerrar Fases A-C del plan maestro (el motor que el TFG necesita).
 
 ## 11. Fuentes principales
