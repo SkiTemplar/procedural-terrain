@@ -455,13 +455,13 @@ void classify_materials(TerrainData& data, const Noise& noise,
                 const float e = coast.wave_energy[i];
                 const float supply = coast.river_supply[i];
                 const float rel = h - cfg.sea_level;
-                // Anchura f(E, aporte, clima): la disipativa crece con la
-                // energía y el sedimento; el clima cálido conserva los
-                // playones caribeños del comportamiento anterior.
+                // Anchura f(E, aporte, clima): NUNCA por debajo de la banda
+                // original (factor >= 1) — el primer intento (0.45+...)
+                // encogía las playas abrigadas a la mitad y rompía el look.
                 const float width_m =
                     (4.0f + (cfg.beach_band_m - 2.0f) * data.climate[i])
                     * cfg.shore_width_scale
-                    * (0.45f + 0.90f * e + 0.50f * supply);
+                    * (1.0f + 0.90f * e + 0.50f * supply);
                 if (rel < width_m && slope < 0.35f) {
                     is_shore = true;
                     if (e > 0.45f) {
@@ -474,8 +474,19 @@ void classify_materials(TerrainData& data, const Noise& noise,
                     } else if (rel < 3.5f) {
                         shore_m = Material::Rock;
                     } else {
-                        is_shore = false; // banda alta abrigada: sigue el
-                                          // clasificador general
+                        // Trasplaya abrigada: arena continua. Dejarla caer al
+                        // clasificador general metía HIERBA en mitad de la
+                        // playa (regresión visual del primer intento).
+                        shore_m = Material::Sand;
+                    }
+                    // Ribera de río o lago dentro de la banda litoral: nunca
+                    // grava/roca — el cauce conserva su orilla de arena (la
+                    // marisma de desembocadura sí es deseada). Sin esto los
+                    // últimos metros de los ríos quedaban flanqueados de
+                    // bloques grises.
+                    if (riparian[i] && (shore_m == Material::Gravel
+                                        || shore_m == Material::Rock)) {
+                        shore_m = Material::Sand;
                     }
                 }
             }

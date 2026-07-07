@@ -593,6 +593,81 @@ TEST(Costa, VariedadDeOrillas) {
     EXPECT_GE(variety, 2) << "la costa sigue siendo monotipo";
 }
 
+TEST(Costa, RiberasDeRioSinGravaNiRoca) {
+    // Regresión A1: la franja de grava/roca de la costa expuesta se comía la
+    // ribera de los últimos metros de los ríos (bloques grises flanqueando el
+    // agua en las desembocaduras). Las riberas fluviales dentro de la banda
+    // litoral conservan arena (o marisma) — nunca grava/roca en pendiente
+    // suave.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const int res = data.height.resolution();
+
+    int offenders = 0;
+    for (int z = 1; z < res - 1; ++z) {
+        for (int x = 1; x < res - 1; ++x) {
+            const size_t i = static_cast<size_t>(z) * res + x;
+            if (data.wave_energy[i] <= 0.0f) {
+                continue;
+            }
+            const auto m = data.material[i];
+            if (m != terrain::Material::Gravel && m != terrain::Material::Rock) {
+                continue;
+            }
+            const glm::vec3 n = data.height.normal_at(x, z);
+            const float slope =
+                std::sqrt(std::max(0.0f, 1.0f - n.y * n.y)) / std::max(n.y, 1e-3f);
+            if (slope > 0.8f) {
+                continue; // acantilado legítimo del clasificador general
+            }
+            for (int dz = -1; dz <= 1; ++dz) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const size_t ni = static_cast<size_t>(z + dz) * res + (x + dx);
+                    if (!std::isnan(data.hydrology.water_level[ni])) {
+                        ++offenders;
+                        dz = 2;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    EXPECT_EQ(offenders, 0) << offenders
+                            << " celdas de grava/roca pegadas a agua dulce";
+}
+
+TEST(Costa, SinHierbaAPieDeAgua) {
+    // Regresión A1: la trasplaya abrigada caía al clasificador general y
+    // aparecía HIERBA en mitad de la playa. A pie de agua (rel < 3.9 m,
+    // pendiente suave, banda litoral) nunca hay hierba ni bosque.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const int res = data.height.resolution();
+
+    int green = 0;
+    for (int z = 0; z < res; ++z) {
+        for (int x = 0; x < res; ++x) {
+            const size_t i = static_cast<size_t>(z) * res + x;
+            const float h = data.height.at(x, z);
+            if (data.wave_energy[i] <= 0.0f || h <= cfg.sea_level
+                || h >= cfg.sea_level + 3.9f) {
+                continue;
+            }
+            const glm::vec3 n = data.height.normal_at(x, z);
+            const float slope =
+                std::sqrt(std::max(0.0f, 1.0f - n.y * n.y)) / std::max(n.y, 1e-3f);
+            if (slope >= 0.35f) {
+                continue;
+            }
+            const auto m = data.material[i];
+            if (m == terrain::Material::Grass || m == terrain::Material::Forest) {
+                ++green;
+            }
+        }
+    }
+    EXPECT_EQ(green, 0) << green << " celdas verdes a pie de agua";
+}
+
 TEST(Erosion, ModificaElTerrenoSinRomperlo) {
     terrain::TerrainConfig cfg = test_config();
     terrain::Heightfield hf(cfg.resolution, cfg.size_m);
