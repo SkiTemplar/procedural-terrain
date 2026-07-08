@@ -320,6 +320,111 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
                      : to8(glm::vec3{e, e, e});
     }
     write_bmp(prefix + "-oleaje.bmp", res, res, img);
+
+    // Informe de sanidad N0 (criterios §7-N0 del plan): números que deben ser
+    // ~0. Con coordenadas de mundo del peor caso para verificar con la cámara.
+    {
+        const auto& hfd = data.height.data();
+        const auto& wl = data.hydrology.water_level;
+        const auto& lake = data.hydrology.lake;
+        const auto at = [&](int x, int z) {
+            return static_cast<size_t>(z) * static_cast<size_t>(res)
+                 + static_cast<size_t>(x);
+        };
+
+        // (a) Agua flotante: celdas de río (no lago, no poza de cascada) con
+        // lámina >3.5 m sobre el terreno — un cauce normal lleva 0.25-1.2 m
+        // + tope de rampa de 2 m; las pozas (whitewater=2) llegan a 3.3 m
+        // por diseño y quedan exentas.
+        int floating = 0;
+        float worst_d = 0.0f;
+        int fx = -1, fz = -1;
+        // (b) Hierba dentro de la banda litoral (proxy de banda: energía de
+        // oleaje > 0, que solo existe en el litoral).
+        int grass_beach = 0;
+        int gx = -1, gz = -1;
+        // (c) Dithering de orilla: celda de material de orilla sin NINGUNA
+        // vecina 4-conexa del mismo material dentro de la banda.
+        int isolated = 0;
+        const auto is_shore_mat = [](terrain::Material m) {
+            return m == terrain::Material::Sand || m == terrain::Material::Gravel
+                || m == terrain::Material::Marsh || m == terrain::Material::Rock;
+        };
+
+        for (int z = 1; z < res - 1; ++z) {
+            for (int x = 1; x < res - 1; ++x) {
+                const size_t i = at(x, z);
+                if (!std::isnan(wl[i]) && !lake[i]
+                    && data.hydrology.whitewater[i] != 2) {
+                    const float d = wl[i] - hfd[i];
+                    if (d > 3.5f) {
+                        ++floating;
+                        if (d > worst_d) {
+                            worst_d = d;
+                            fx = x;
+                            fz = z;
+                        }
+                    }
+                }
+                const bool in_band = data.wave_energy[i] > 0.005f
+                                  && hfd[i] > cfg.sea_level;
+                if (!in_band) {
+                    continue;
+                }
+                const terrain::Material m = data.material[i];
+                // A pie de agua (rel < 3.9 m) y SIN filtro de pendiente: es
+                // exactamente el agujero del feedback (verde entre la arena).
+                if ((m == terrain::Material::Grass
+                     || m == terrain::Material::Forest)
+                    && hfd[i] - cfg.sea_level < 3.9f) {
+                    ++grass_beach;
+                    if (gx < 0) {
+                        gx = x;
+                        gz = z;
+                    }
+                }
+                if (is_shore_mat(m)) {
+                    int same = 0;
+                    int band_n = 0;
+                    const int dx4[4] = {-1, 1, 0, 0};
+                    const int dz4[4] = {0, 0, -1, 1};
+                    for (int k = 0; k < 4; ++k) {
+                        const size_t ni = at(x + dx4[k], z + dz4[k]);
+                        if (data.wave_energy[ni] > 0.005f
+                            && hfd[ni] > cfg.sea_level
+                            && is_shore_mat(data.material[ni])) {
+                            ++band_n;
+                            if (data.material[ni] == m) {
+                                ++same;
+                            }
+                        }
+                    }
+                    if (band_n >= 2 && same == 0) {
+                        ++isolated;
+                    }
+                }
+            }
+        }
+
+        std::cout << "--- sanidad N0 ---" << std::endl;
+        std::cout << "agua flotante (rio, lamina>3m): " << floating
+                  << " celdas; peor caso " << worst_d << " m";
+        if (fx >= 0) {
+            std::cout << " en mundo (" << data.height.world_x(fx) << ", "
+                      << data.height.world_z(fz) << ")";
+        }
+        std::cout << std::endl;
+        std::cout << "hierba/bosque en banda litoral: " << grass_beach
+                  << " celdas";
+        if (gx >= 0) {
+            std::cout << "; primera en mundo (" << data.height.world_x(gx)
+                      << ", " << data.height.world_z(gz) << ")";
+        }
+        std::cout << std::endl;
+        std::cout << "orilla aislada (dithering 4-conexo): " << isolated
+                  << " celdas" << std::endl;
+    }
+
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "
               << prefix << "-oleaje.bmp" << std::endl;
     return 0;
