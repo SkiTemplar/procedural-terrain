@@ -132,9 +132,13 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 const bool pine = hash01(static_cast<std::uint32_t>(x),
                                          static_cast<std::uint32_t>(z), salt + 6)
                                 < conifer_bias;
-                const float scale = 0.75f + 0.7f * scale_r;
+                // Distribución de EDAD (feedback 2026-07-08 "distintos tamaños"):
+                // curva cuadrática → muchos árboles jóvenes pequeños y pocos
+                // maduros grandes (0.5–2.0×), como un bosque real, en vez del
+                // rango estrecho y uniforme anterior.
+                const float scale = 0.5f + 1.5f * scale_r * scale_r;
                 // Base bien hundida: en pendiente los troncos no quedan al aire.
-                render::Instance inst{{wx, wy - 0.35f, wz, scale},
+                render::Instance inst{{wx, wy - 0.35f * scale, wz, scale},
                                       {tint, tint, tint, yaw}};
                 (pine ? cell.pines : cell.broadleafs).push_back(inst);
             } else if (roll < tree_p + rock_p) {
