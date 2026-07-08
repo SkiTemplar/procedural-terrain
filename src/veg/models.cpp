@@ -169,6 +169,31 @@ ModelData make_tuft() {
     return out;
 }
 
+ModelData make_grass() {
+    // Mata de césped para el campo cercano (veg/grass_field): abanico de
+    // briznas finas y altas. Triángulo por brizna (barato: se dibujan miles),
+    // color más claro en la punta para dar volumen con el flat shading.
+    ModelData out;
+    const glm::vec3 base_col{0.28f, 0.48f, 0.18f};
+    const glm::vec3 tip_col{0.48f, 0.66f, 0.28f};
+    constexpr int kBlades = 9;
+    for (int i = 0; i < kBlades; ++i) {
+        const float a = glm::two_pi<float>() * hash01(201u + static_cast<std::uint32_t>(i));
+        const float lean = 0.05f + 0.13f * hash01(211u + static_cast<std::uint32_t>(i));
+        const float height = 0.26f + 0.22f * hash01(223u + static_cast<std::uint32_t>(i));
+        const float w = 0.03f; // media anchura de la brizna en la base
+        const float ca = std::cos(a);
+        const float sa = std::sin(a);
+        // Perpendicular a la dirección de la brizna, en el plano del suelo.
+        const auto b = static_cast<std::uint32_t>(out.vertices.size());
+        out.vertices.push_back({{-sa * w, 0.0f, ca * w}, base_col});
+        out.vertices.push_back({{sa * w, 0.0f, -ca * w}, base_col});
+        out.vertices.push_back({{lean * ca, height, lean * sa}, tip_col});
+        out.indices.insert(out.indices.end(), {b, b + 1, b + 2});
+    }
+    return out;
+}
+
 ModelData make_bush() {
     ModelData out;
     add_deformed_icosphere(out, 0.7f, 0.45f, 0.75f, 0.5f, kLeafColor * 0.9f, 143u);

@@ -396,7 +396,10 @@ void classify_materials(TerrainData& data, const Noise& noise,
     const float max_h =
         *std::max_element(hf.data().begin(), hf.data().end());
     const float snow_line = std::min(cfg.snow_line_m, 0.60f * max_h);
-    const float treeline_base = snow_line - 240.0f;
+    // Treeline subida (feedback 2026-07-08, "más árboles en la montaña"): el
+    // bosque llega hasta ~150 m por debajo de la nieve, antes 240 — trepa por
+    // las laderas altas en vez de cortarse a media montaña.
+    const float treeline_base = snow_line - 150.0f;
 
     // Máscara de ribera: agua interior dilatada ~4 celdas. Los ríos y lagos
     // concentran humedad → bosque de galería a su alrededor.
@@ -558,8 +561,10 @@ void classify_materials(TerrainData& data, const Noise& noise,
                         p_km * 0.45f + glm::vec3{14.3f, 0.0f, -7.2f}, 3, 2.0f, 0.48f);
                     const float forest_n =
                         (0.65f * f_bulk + 0.35f * f_edge) * 0.5f + 0.5f;
+                    // Umbral base más bajo (0.40): bosque más denso y con
+                    // menos claros; sigue abriendo praderas donde la señal cae.
                     float forest_threshold =
-                        0.44f + 0.48f * smoothstep(treeline - 350.0f, treeline, h);
+                        0.40f + 0.48f * smoothstep(treeline - 350.0f, treeline, h);
                     if (riparian[i]) {
                         forest_threshold -= 0.20f;
                     }

@@ -73,17 +73,20 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             float bush_p = 0.0f;
             float boulder_p = 0.0f;
             float log_p = 0.0f;
+            // Rocas sueltas (rock/boulder) ELIMINADAS (feedback 2026-07-08:
+            // "quitar los peñascos, no parecen realistas"). La roca real
+            // queda como material del terreno (acantilados, canchales); ya no
+            // se salpican modelos de pedrusco por la hierba ni la montaña.
+            // Árboles: densidad muy subida (feedback: "muchísimos más árboles
+            // en la montaña"); la treeline extendida en el generador los sube
+            // en cota.
             switch (m) {
                 case terrain::Material::Forest:
-                    tree_p = 0.080f; rock_p = 0.0012f; tuft_p = 0.085f;
-                    bush_p = 0.012f; boulder_p = 0.00035f; log_p = 0.0025f;
+                    tree_p = 0.155f; tuft_p = 0.085f;
+                    bush_p = 0.012f; log_p = 0.0030f;
                     break;
                 case terrain::Material::Grass:
-                    tree_p = 0.0040f; rock_p = 0.0020f; tuft_p = 0.200f;
-                    bush_p = 0.010f; boulder_p = 0.00045f;
-                    break;
-                case terrain::Material::Rock:
-                    rock_p = 0.010f; boulder_p = 0.0008f;
+                    tree_p = 0.011f; tuft_p = 0.200f; bush_p = 0.010f;
                     break;
                 case terrain::Material::Sand:
                     tuft_p = 0.008f; // hierba rala de duna

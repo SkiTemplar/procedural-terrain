@@ -9,6 +9,7 @@
 #include "terrain/generator.h"
 #include "terrain/mesher.h"
 #include "ui/debug_ui.h"
+#include "veg/grass_field.h"
 #include "veg/veg_renderer.h"
 
 #include <GLFW/glfw3.h>
@@ -51,6 +52,7 @@ struct World {
     std::optional<render::Mesh> water;
     render::Mesh sea;
     veg::VegRenderer vegetation;
+    veg::GrassField grass;
 
     explicit World(terrain::TerrainData&& ready)
         : data(std::move(ready)),
@@ -58,7 +60,8 @@ struct World {
           ground(data, sampler),
           water(terrain::build_water_mesh(data)),
           sea(terrain::build_sea_plane(data.config.size_m, data.config.sea_level)),
-          vegetation(data, sampler) {}
+          vegetation(data, sampler),
+          grass(data, sampler) {}
 
     World(const World&) = delete;
     World& operator=(const World&) = delete;
@@ -226,6 +229,9 @@ void run(std::optional<std::uint32_t> seed_override,
             set_common_uniforms(veg_shader, camera, window.aspect(), state);
             veg_shader.set_float("u_smooth_blend", 0.0f);
             world->vegetation.draw(camera.position, state.veg_draw_distance);
+            // Césped denso del LOD cercano: se repuebla alrededor de la cámara.
+            world->grass.update(camera.position);
+            world->grass.draw();
 
             // Agua después del terreno, con blending.
             glEnable(GL_BLEND);

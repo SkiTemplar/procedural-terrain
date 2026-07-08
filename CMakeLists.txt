@@ -37,6 +37,7 @@ add_executable(ProceduralTerrain
         src/terrain/chunked_terrain.cpp
         src/veg/models.cpp
         src/veg/veg_renderer.cpp
+        src/veg/grass_field.cpp
         src/player/controller.cpp
         src/ui/debug_ui.cpp
 )
