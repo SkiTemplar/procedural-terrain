@@ -95,6 +95,7 @@ void run(std::optional<std::uint32_t> seed_override,
     player::Controller controller;
     render::Shader terrain_shader(render::kTerrainVert, render::kTerrainFrag);
     render::Shader veg_shader(render::kVegVert, render::kTerrainFrag);
+    render::Shader grass_shader(render::kGrassVert, render::kGrassFrag);
     render::Shader water_shader(render::kWaterVert, render::kWaterFrag);
 
     ui::DebugUi debug_ui(window.handle());
@@ -229,7 +230,15 @@ void run(std::optional<std::uint32_t> seed_override,
             set_common_uniforms(veg_shader, camera, window.aspect(), state);
             veg_shader.set_float("u_smooth_blend", 0.0f);
             world->vegetation.draw(camera.position, state.veg_draw_distance);
-            // Césped denso del LOD cercano: se repuebla alrededor de la cámara.
+
+            // Césped del LOD cercano: shader propio con viento + desvanecido
+            // por distancia (encoge la altura entre 70 y 104 m → sin pop al
+            // repoblar el disco alrededor de la cámara).
+            grass_shader.use();
+            set_common_uniforms(grass_shader, camera, window.aspect(), state);
+            grass_shader.set_float("u_time", clock.total);
+            grass_shader.set_float("u_grass_fade_start", 70.0f);
+            grass_shader.set_float("u_grass_fade_end", 104.0f);
             world->grass.update(camera.position);
             world->grass.draw();
 
@@ -429,6 +438,46 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
         std::cout << std::endl;
         std::cout << "orilla aislada (dithering 4-conexo): " << isolated
                   << " celdas" << std::endl;
+
+        // Picos del RELIEVE BASE (feedback 2026-07-08): celda que sobresale
+        // >3 m por encima de sus 8 vecinas — punta artificial de un vértice.
+        // Si es ~0, los picos que ve el jugador vienen del detalle de la malla
+        // cercana (detail_amplitude), no del heightfield.
+        int base_spikes = 0;
+        float worst_spike = 0.0f;
+        int sx = -1, sz = -1;
+        for (int z = 1; z < res - 1; ++z) {
+            for (int x = 1; x < res - 1; ++x) {
+                const float h = hfd[at(x, z)];
+                if (h <= cfg.sea_level) {
+                    continue;
+                }
+                float maxn = -1e9f;
+                for (int dz = -1; dz <= 1; ++dz) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        if (dx || dz) {
+                            maxn = std::max(maxn, hfd[at(x + dx, z + dz)]);
+                        }
+                    }
+                }
+                const float over = h - maxn;
+                if (over > 3.0f) {
+                    ++base_spikes;
+                    if (over > worst_spike) {
+                        worst_spike = over;
+                        sx = x;
+                        sz = z;
+                    }
+                }
+            }
+        }
+        std::cout << "picos de relieve base (>3m sobre vecinas): " << base_spikes
+                  << " celdas; peor " << worst_spike << " m";
+        if (sx >= 0) {
+            std::cout << " en mundo (" << data.height.world_x(sx) << ", "
+                      << data.height.world_z(sz) << ")";
+        }
+        std::cout << std::endl;
     }
 
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "

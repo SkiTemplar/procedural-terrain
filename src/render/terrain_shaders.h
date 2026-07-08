@@ -130,6 +130,79 @@ void main() {
 }
 )glsl";
 
+// Césped (veg/grass_field): planos de brizna con VIENTO y desvanecido por
+// distancia. El fade lo hace el shader cada frame (encoge la altura con la
+// lejanía) — así no hay "pop" cuando el campo se reconstruye al moverse: las
+// briznas del borde ya están a altura cero. a_pos.y (0 raíz → ~1 punta) manda
+// cuánto se dobla con el viento y cuánto encoge.
+constexpr const char* kGrassVert = R"glsl(
+#version 460 core
+layout (location = 0) in vec3 a_pos;
+layout (location = 1) in vec3 a_color;
+layout (location = 2) in vec4 i_pos_scale; // xyz raíz en mundo, w altura (m)
+layout (location = 3) in vec4 i_tint_yaw;  // rgb tinte, w giro (rad)
+
+uniform mat4 u_view;
+uniform mat4 u_proj;
+uniform vec3 u_camera_pos;
+uniform float u_time;
+uniform float u_grass_fade_start; // m: empieza a encoger
+uniform float u_grass_fade_end;   // m: altura cero (fin del césped)
+
+out vec3 v_world_pos;
+flat out vec3 v_color;
+
+void main() {
+    float c = cos(i_tint_yaw.w);
+    float s = sin(i_tint_yaw.w);
+    vec3 local = a_pos * i_pos_scale.w;           // escala a la altura de zona
+    local = vec3(c * local.x - s * local.z, local.y, s * local.x + c * local.z);
+    vec3 root = i_pos_scale.xyz;
+
+    float up = clamp(a_pos.y, 0.0, 1.0);          // factor raíz→punta
+    float dist = length(root.xz - u_camera_pos.xz);
+    float fade = clamp((u_grass_fade_end - dist)
+                       / max(u_grass_fade_end - u_grass_fade_start, 1.0), 0.0, 1.0);
+
+    // Viento: ola que recorre el campo (fase por posición) + racha lenta. La
+    // punta se dobla en cuadrático (la raíz no se mueve).
+    vec2 wind_dir = vec2(0.80, 0.60);
+    float wave = sin(u_time * 1.7 + root.x * 0.16 + root.z * 0.13);
+    float gust = 0.5 + 0.5 * sin(u_time * 0.45 + root.x * 0.02 - root.z * 0.015);
+    float bend = (0.14 + 0.16 * gust) * up * up * i_pos_scale.w
+               * (0.55 + 0.45 * wave);
+    vec3 wind = vec3(wind_dir.x, 0.0, wind_dir.y) * bend;
+
+    // El fade encoge la brizna (altura y desplazamiento) hasta cero: sin pop.
+    vec3 world = root + (local + wind) * fade;
+    v_world_pos = world;
+    v_color = a_color;
+    gl_Position = u_proj * u_view * vec4(world, 1.0);
+}
+)glsl";
+
+constexpr const char* kGrassFrag = R"glsl(
+#version 460 core
+in vec3 v_world_pos;
+flat in vec3 v_color;
+
+uniform vec3 u_sun_dir;
+uniform vec3 u_camera_pos;
+uniform vec3 u_sky_color;
+uniform float u_fog_density;
+
+out vec4 frag_color;
+
+void main() {
+    vec3 normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
+    float diffuse = max(abs(dot(normal, u_sun_dir)), 0.0); // hoja fina: 2 caras
+    vec3 lit = v_color * (0.55 + 0.60 * diffuse);
+    float dist = length(v_world_pos - u_camera_pos);
+    float fog = 1.0 - exp(-u_fog_density * dist);
+    frag_color = vec4(mix(lit, u_sky_color, fog), 1.0);
+}
+)glsl";
+
 // Agua: olas suaves por vértice, semitransparente, con la misma niebla.
 constexpr const char* kWaterVert = R"glsl(
 #version 460 core

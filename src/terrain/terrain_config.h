@@ -59,8 +59,11 @@ struct TerrainConfig {
     float fluvial_strength = 0.5f;
     int fluvial_iterations = 1;
 
-    // Detalle geométrico fino (solo malla cercana + suelo al caminar)
-    float detail_amplitude_m = 1.0f;
+    // Detalle geométrico fino (solo malla cercana + suelo al caminar). Bajado
+    // 1.0 -> 0.55 (feedback 2026-07-08: "picos de vértice no realistas en la
+    // superficie"): a plena amplitud, en roca (rough 1.5) el término fino/grano
+    // levantaba puntas de casi 2 m sobre celdas de 0.3 m del LOD cercano.
+    float detail_amplitude_m = 0.55f;
 
     // Clasificación. La nieve sigue a las cumbres nuevas (~1.2-1.4 km):
     // con 480 m la mitad de la cordillera quedaba blanca.

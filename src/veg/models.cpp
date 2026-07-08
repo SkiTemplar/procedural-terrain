@@ -170,26 +170,41 @@ ModelData make_tuft() {
 }
 
 ModelData make_grass() {
-    // Mata de césped para el campo cercano (veg/grass_field): abanico de
-    // briznas finas y altas. Triángulo por brizna (barato: se dibujan miles),
-    // color más claro en la punta para dar volumen con el flat shading.
+    // Mata de césped para el campo cercano (veg/grass_field). Altura de modelo
+    // ~1.0 (la instancia la escala a la altura real en metros según la zona).
+    // Cada brizna es un plano cónico (raíz ancha → punta), curvado: da la
+    // "hoja" plana que pedía el feedback (planos, no palotes) y el shader de
+    // hierba la mece con el viento usando a_pos.y como factor raíz→punta.
     ModelData out;
-    const glm::vec3 base_col{0.28f, 0.48f, 0.18f};
-    const glm::vec3 tip_col{0.48f, 0.66f, 0.28f};
-    constexpr int kBlades = 9;
+    const glm::vec3 root_col{0.22f, 0.40f, 0.15f};
+    const glm::vec3 mid_col{0.34f, 0.52f, 0.20f};
+    const glm::vec3 tip_col{0.54f, 0.70f, 0.32f};
+    constexpr int kBlades = 6;
     for (int i = 0; i < kBlades; ++i) {
-        const float a = glm::two_pi<float>() * hash01(201u + static_cast<std::uint32_t>(i));
-        const float lean = 0.05f + 0.13f * hash01(211u + static_cast<std::uint32_t>(i));
-        const float height = 0.26f + 0.22f * hash01(223u + static_cast<std::uint32_t>(i));
-        const float w = 0.03f; // media anchura de la brizna en la base
+        const std::uint32_t s = 201u + static_cast<std::uint32_t>(i);
+        const float a = glm::two_pi<float>() * hash01(s);
+        const float lean = 0.14f + 0.22f * hash01(s + 47u); // curvatura al inclinarse
+        const float h = 0.85f + 0.30f * hash01(s + 91u);    // altura relativa
+        const float w = 0.030f;                              // media anchura en la raíz
         const float ca = std::cos(a);
         const float sa = std::sin(a);
-        // Perpendicular a la dirección de la brizna, en el plano del suelo.
+        const float px = -sa; // perpendicular (ancho de la hoja)
+        const float pz = ca;
+
         const auto b = static_cast<std::uint32_t>(out.vertices.size());
-        out.vertices.push_back({{-sa * w, 0.0f, ca * w}, base_col});
-        out.vertices.push_back({{sa * w, 0.0f, -ca * w}, base_col});
-        out.vertices.push_back({{lean * ca, height, lean * sa}, tip_col});
-        out.indices.insert(out.indices.end(), {b, b + 1, b + 2});
+        // Raíz (ancha), medio (curvado, media anchura), punta.
+        out.vertices.push_back({{px * w, 0.0f, pz * w}, root_col});
+        out.vertices.push_back({{-px * w, 0.0f, -pz * w}, root_col});
+        const float mw = w * 0.55f;
+        const float mx = ca * lean * 0.5f;
+        const float mz = sa * lean * 0.5f;
+        out.vertices.push_back({{px * mw + mx, h * 0.55f, pz * mw + mz}, mid_col});
+        out.vertices.push_back({{-px * mw + mx, h * 0.55f, -pz * mw + mz}, mid_col});
+        out.vertices.push_back({{ca * lean, h, sa * lean}, tip_col});
+        // Quad raíz→medio + triángulo medio→punta.
+        out.indices.insert(out.indices.end(),
+                           {b, b + 1, b + 3, b, b + 3, b + 2,
+                            b + 2, b + 3, b + 4});
     }
     return out;
 }
