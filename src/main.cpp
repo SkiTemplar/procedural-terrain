@@ -478,6 +478,51 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
                       << data.height.world_z(sz) << ")";
         }
         std::cout << std::endl;
+
+        // Agua PERCHADA / río elevado (feedback 2026-07-08): celda de agua sin
+        // NINGUNA vecina de terreno por encima de su lámina en un radio → flota
+        // sin orillas. Mide contención (distinto del pico por celda, que mide
+        // altura sobre el propio lecho). Es la métrica del "río elevado".
+        constexpr int kR = 4;
+        int uncontained = 0;
+        float worst_perch = 0.0f;
+        int px = -1, pz = -1;
+        for (int z = kR; z < res - kR; ++z) {
+            for (int x = kR; x < res - kR; ++x) {
+                const float w = wl[at(x, z)];
+                if (std::isnan(w)) {
+                    continue;
+                }
+                bool has_bank = false;
+                float local_min = 1e9f;
+                for (int dz = -kR; dz <= kR && !has_bank; ++dz) {
+                    for (int dx = -kR; dx <= kR; ++dx) {
+                        const float th = hfd[at(x + dx, z + dz)];
+                        local_min = std::min(local_min, th);
+                        if (th >= w - 0.1f) {
+                            has_bank = true;
+                            break;
+                        }
+                    }
+                }
+                if (!has_bank) {
+                    ++uncontained;
+                    const float perch = w - local_min;
+                    if (perch > worst_perch) {
+                        worst_perch = perch;
+                        px = x;
+                        pz = z;
+                    }
+                }
+            }
+        }
+        std::cout << "agua perchada sin orillas (r=4): " << uncontained
+                  << " celdas; peor " << worst_perch << " m";
+        if (px >= 0) {
+            std::cout << " en mundo (" << data.height.world_x(px) << ", "
+                      << data.height.world_z(pz) << ")";
+        }
+        std::cout << std::endl;
     }
 
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "

@@ -14,7 +14,7 @@ namespace {
 // dibujan a altura ~0 y reconstruir el campo al moverse no produce "pop".
 constexpr float kRadius = 108.0f;      // m: alcance de generación
 constexpr float kRebuildMove = 24.0f;  // m: reconstruir al desplazarse esto
-constexpr int kPerCell = 12;           // matas por celda de pradera (~2.4 m)
+constexpr int kPerCell = 9;            // grass cards por celda (~2.4 m): solapan
 
 float hash01(std::uint32_t x, std::uint32_t z, std::uint32_t salt) {
     std::uint32_t h = x * 374761393u + z * 668265263u + salt * 2246822519u;
@@ -86,16 +86,20 @@ void GrassField::rebuild(const glm::vec3& camera_pos) {
             const glm::vec3 nrm = hf.normal_at(x, z);
             const float slope = std::sqrt(std::max(0.0f, 1.0f - nrm.y * nrm.y))
                               / std::max(nrm.y, 1e-3f);
-            float base_h = 0.12f + 0.50f * std::min(slope / 0.55f, 1.0f);
+            // Altura de zona ACOTADA (la anterior se disparaba en ladera+ribera
+            // y salían cards enormes): corta en llano (~0.14 m), alta en ladera
+            // (~0.42 m), ribera algo más; techo 0.5 m.
+            float base_h = 0.14f + 0.28f * std::min(slope / 0.6f, 1.0f);
             const bool riparian = near_water(x, z);
             if (riparian) {
-                base_h += 0.22f; // pasto húmedo de ribera, más alto
+                base_h += 0.10f; // pasto húmedo de ribera, algo más alto
             }
             // Bajo bosque denso hay menos hierba y más corta (sombra).
             const float density = (m == terrain::Material::Forest) ? 0.45f : 1.0f;
             if (m == terrain::Material::Forest) {
                 base_h *= 0.7f;
             }
+            base_h = std::min(base_h, 0.5f);
             const int n = std::max(1, static_cast<int>(kPerCell * density));
             for (int k = 0; k < n; ++k) {
                 const auto ku = static_cast<std::uint32_t>(k);

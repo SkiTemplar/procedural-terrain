@@ -137,8 +137,8 @@ void main() {
 // cuánto se dobla con el viento y cuánto encoge.
 constexpr const char* kGrassVert = R"glsl(
 #version 460 core
-layout (location = 0) in vec3 a_pos;
-layout (location = 1) in vec3 a_color;
+layout (location = 0) in vec3 a_pos;   // esquina del card (x ancho, y 0..1, z)
+layout (location = 1) in vec3 a_uv;    // color del vértice = (u, v, 0): UV del card
 layout (location = 2) in vec4 i_pos_scale; // xyz raíz en mundo, w altura (m)
 layout (location = 3) in vec4 i_tint_yaw;  // rgb tinte, w giro (rad)
 
@@ -150,33 +150,37 @@ uniform float u_grass_fade_start; // m: empieza a encoger
 uniform float u_grass_fade_end;   // m: altura cero (fin del césped)
 
 out vec3 v_world_pos;
-flat out vec3 v_color;
+out vec2 v_uv;
+flat out vec3 v_tint;
 
 void main() {
     float c = cos(i_tint_yaw.w);
     float s = sin(i_tint_yaw.w);
-    vec3 local = a_pos * i_pos_scale.w;           // escala a la altura de zona
-    local = vec3(c * local.x - s * local.z, local.y, s * local.x + c * local.z);
     vec3 root = i_pos_scale.xyz;
 
-    float up = clamp(a_pos.y, 0.0, 1.0);          // factor raíz→punta
+    // Solo la ALTURA escala por zona; el ancho del card queda fijo (~0.5 m).
+    vec3 local = vec3(a_pos.x, a_pos.y * i_pos_scale.w, a_pos.z);
+    local = vec3(c * local.x - s * local.z, local.y, s * local.x + c * local.z);
+
+    float up = clamp(a_pos.y, 0.0, 1.0);
     float dist = length(root.xz - u_camera_pos.xz);
     float fade = clamp((u_grass_fade_end - dist)
                        / max(u_grass_fade_end - u_grass_fade_start, 1.0), 0.0, 1.0);
 
-    // Viento: ola que recorre el campo (fase por posición) + racha lenta. La
-    // punta se dobla en cuadrático (la raíz no se mueve).
+    // Viento: ola por el campo + racha lenta; la punta se dobla en cuadrático.
     vec2 wind_dir = vec2(0.80, 0.60);
     float wave = sin(u_time * 1.7 + root.x * 0.16 + root.z * 0.13);
     float gust = 0.5 + 0.5 * sin(u_time * 0.45 + root.x * 0.02 - root.z * 0.015);
-    float bend = (0.14 + 0.16 * gust) * up * up * i_pos_scale.w
+    float bend = (0.12 + 0.14 * gust) * up * up * i_pos_scale.w
                * (0.55 + 0.45 * wave);
     vec3 wind = vec3(wind_dir.x, 0.0, wind_dir.y) * bend;
 
-    // El fade encoge la brizna (altura y desplazamiento) hasta cero: sin pop.
+    // El fade encoge el card hasta cero con la distancia: sin "pop" al
+    // reconstruir el disco (el borde ya está a tamaño ~0).
     vec3 world = root + (local + wind) * fade;
     v_world_pos = world;
-    v_color = a_color;
+    v_uv = a_uv.xy;
+    v_tint = i_tint_yaw.rgb;
     gl_Position = u_proj * u_view * vec4(world, 1.0);
 }
 )glsl";
@@ -184,7 +188,8 @@ void main() {
 constexpr const char* kGrassFrag = R"glsl(
 #version 460 core
 in vec3 v_world_pos;
-flat in vec3 v_color;
+in vec2 v_uv;
+flat in vec3 v_tint;
 
 uniform vec3 u_sun_dir;
 uniform vec3 u_camera_pos;
@@ -193,10 +198,35 @@ uniform float u_fog_density;
 
 out vec4 frag_color;
 
+float hash(float n) { return fract(sin(n) * 43758.5453); }
+
 void main() {
+    // Briznas procedurales dentro del card: u se reparte en columnas; cada
+    // columna es una brizna que afina hacia arriba y tiene su propia altura.
+    // Fuera de la brizna se DESCARTA el fragmento → césped denso sin geometría.
+    const float cols = 7.0;
+    float x = v_uv.x * cols;
+    float cell = floor(x);
+    float fx = fract(x);
+    float r = hash(cell + 3.17);
+    float center = 0.5 + (r - 0.5) * 0.5;
+    // Brizna FINA con hueco entre columnas: media anchura ~0.13 en la raíz
+    // afina a ~0.02 en la punta (antes 0.32 llenaba el card entero -> se veía
+    // como una tarjeta sólida, no como hierba).
+    float half_w = 0.13 * (1.0 - v_uv.y * 0.85) + 0.02;
+    float top = 0.5 + 0.5 * hash(cell + 9.1);       // altura de cada brizna
+    if (abs(fx - center) > half_w || v_uv.y > top) {
+        discard;
+    }
+
+    vec3 root_c = vec3(0.19, 0.34, 0.13);
+    vec3 tip_c = vec3(0.42, 0.58, 0.26);
+    vec3 col = mix(root_c, tip_c,
+                   clamp(v_uv.y / max(top, 0.05), 0.0, 1.0)) * v_tint;
+
     vec3 normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
     float diffuse = max(abs(dot(normal, u_sun_dir)), 0.0); // hoja fina: 2 caras
-    vec3 lit = v_color * (0.55 + 0.60 * diffuse);
+    vec3 lit = col * (0.50 + 0.55 * diffuse);
     float dist = length(v_world_pos - u_camera_pos);
     float fog = 1.0 - exp(-u_fog_density * dist);
     frag_color = vec4(mix(lit, u_sky_color, fog), 1.0);

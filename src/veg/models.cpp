@@ -170,41 +170,32 @@ ModelData make_tuft() {
 }
 
 ModelData make_grass() {
-    // Mata de césped para el campo cercano (veg/grass_field). Altura de modelo
-    // ~1.0 (la instancia la escala a la altura real en metros según la zona).
-    // Cada brizna es un plano cónico (raíz ancha → punta), curvado: da la
-    // "hoja" plana que pedía el feedback (planos, no palotes) y el shader de
-    // hierba la mece con el viento usando a_pos.y como factor raíz→punta.
+    // Grass CARD para el campo cercano (veg/grass_field): 3 quads verticales
+    // cruzados (0/60/120°). El shader kGrassFrag dibuja MUCHAS briznas dentro
+    // de cada quad de forma procedural y descarta el hueco (alpha) — densidad
+    // de césped real con ~6 triángulos por mata (≈10× menos que las briznas
+    // 3D). El color del vértice porta la UV (u,v) que el fragment usa para las
+    // briznas; la altura de modelo es 1.0 (la instancia escala a metros por
+    // zona) y el ancho fijo ~0.5 m.
     ModelData out;
-    const glm::vec3 root_col{0.22f, 0.40f, 0.15f};
-    const glm::vec3 mid_col{0.34f, 0.52f, 0.20f};
-    const glm::vec3 tip_col{0.54f, 0.70f, 0.32f};
-    constexpr int kBlades = 6;
-    for (int i = 0; i < kBlades; ++i) {
-        const std::uint32_t s = 201u + static_cast<std::uint32_t>(i);
-        const float a = glm::two_pi<float>() * hash01(s);
-        const float lean = 0.14f + 0.22f * hash01(s + 47u); // curvatura al inclinarse
-        const float h = 0.85f + 0.30f * hash01(s + 91u);    // altura relativa
-        const float w = 0.030f;                              // media anchura en la raíz
-        const float ca = std::cos(a);
-        const float sa = std::sin(a);
-        const float px = -sa; // perpendicular (ancho de la hoja)
-        const float pz = ca;
-
+    constexpr int kQuads = 3;
+    constexpr float kHalfWidth = 0.25f;
+    for (int q = 0; q < kQuads; ++q) {
+        const float a = glm::pi<float>() * static_cast<float>(q)
+                      / static_cast<float>(kQuads);
+        const glm::vec3 right{std::cos(a), 0.0f, std::sin(a)};
         const auto b = static_cast<std::uint32_t>(out.vertices.size());
-        // Raíz (ancha), medio (curvado, media anchura), punta.
-        out.vertices.push_back({{px * w, 0.0f, pz * w}, root_col});
-        out.vertices.push_back({{-px * w, 0.0f, -pz * w}, root_col});
-        const float mw = w * 0.55f;
-        const float mx = ca * lean * 0.5f;
-        const float mz = sa * lean * 0.5f;
-        out.vertices.push_back({{px * mw + mx, h * 0.55f, pz * mw + mz}, mid_col});
-        out.vertices.push_back({{-px * mw + mx, h * 0.55f, -pz * mw + mz}, mid_col});
-        out.vertices.push_back({{ca * lean, h, sa * lean}, tip_col});
-        // Quad raíz→medio + triángulo medio→punta.
+        const auto vert = [&](float u, float v) {
+            const glm::vec3 p = right * ((u - 0.5f) * 2.0f * kHalfWidth)
+                              + glm::vec3{0.0f, v, 0.0f};
+            out.vertices.push_back({p, {u, v, 0.0f}}); // color = UV del card
+        };
+        vert(0.0f, 0.0f);
+        vert(1.0f, 0.0f);
+        vert(1.0f, 1.0f);
+        vert(0.0f, 1.0f);
         out.indices.insert(out.indices.end(),
-                           {b, b + 1, b + 3, b, b + 3, b + 2,
-                            b + 2, b + 3, b + 4});
+                           {b, b + 1, b + 2, b, b + 2, b + 3});
     }
     return out;
 }

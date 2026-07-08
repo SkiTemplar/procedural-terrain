@@ -478,7 +478,11 @@ void classify_materials(TerrainData& data, const Noise& noise,
                     } else if (e > 0.45f) {
                         shore_m = slope > 0.18f ? Material::Gravel
                                                 : Material::Sand;
-                    } else if (supply > 0.30f && slope < 0.12f && rel < 2.5f) {
+                    } else if (e < 0.22f && supply > 0.55f && slope < 0.10f
+                               && rel < 2.0f) {
+                        // Marisma SOLO en estuarios muy abrigados y con mucho
+                        // aporte (feedback 2026-07-08: salía demasiado verde en
+                        // la orilla). El resto de orilla baja pasa a arena.
                         shore_m = Material::Marsh;
                     } else if (supply > 0.30f) {
                         shore_m = Material::Sand;
