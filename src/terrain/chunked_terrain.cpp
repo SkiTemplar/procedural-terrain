@@ -52,8 +52,26 @@ glm::vec2 vertex_jitter(int gx, int gz, float step) {
 // Tinte de suelo COHERENTE (~3.3 m): el hash por nodo con color flat pintaba
 // cada triángulo de un brillo aleatorio distinto — el "tablero de colores
 // cuadrados" del feedback. El value noise da manchas continuas entre celdas.
+// Variación tonal DENTRO de cada material (feedback 2026-07-08 "color blocky"):
+// dos escalas — grano fino (~3 m) + manchas medias (~22 m) — para que el color
+// no sea plano por celda. Rango ampliado respecto al 0.94±0.06 anterior.
 float ground_tint(float wx, float wz) {
-    return 0.94f + 0.12f * value_noise(wx * 0.30f, wz * 0.30f);
+    const float fine = value_noise(wx * 0.30f, wz * 0.30f);
+    const float coarse = value_noise(wx * 0.045f + 5.0f, wz * 0.045f - 9.0f);
+    return 0.87f + 0.14f * fine + 0.10f * coarse;
+}
+
+// Domain warp del muestreo de material (feedback 2026-07-08 "colores en
+// cuadrado"): desplaza la posición donde se lee el material unos metros según
+// un ruido suave → los bordes hierba↔roca↔arena SERPENTEAN en vez de seguir la
+// rejilla de celdas, sin mezclar colores (cada material queda nítido). Solo
+// afecta al COLOR del render; la altura, la física y la vegetación usan la
+// posición real.
+glm::vec2 material_warp(float wx, float wz) {
+    const float k = 5.0f; // amplitud del serpenteo (m)
+    const float nx = value_noise(wx * 0.05f + 13.0f, wz * 0.05f - 4.0f) - 0.5f;
+    const float nz = value_noise(wx * 0.05f - 8.0f, wz * 0.05f + 21.0f) - 0.5f;
+    return {nx * 2.0f * k, nz * 2.0f * k};
 }
 
 // Parches de pradera seca (~150-400 m): rompen el verde uniforme con calvas
@@ -302,15 +320,20 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                     vertex_jitter(chunk.x0 * sub + i, chunk.z0 * sub + j, step);
                 const float wx = wx0 + static_cast<float>(i) * step + jit.x;
                 const float wz = wz0 + static_cast<float>(j) * step + jit.y;
-                const Material m = sampler_->material_near(wx, wz);
                 const float wy = sampler_->height(wx, wz);
+                // El COLOR se muestrea en una posición warpeada (bordes que
+                // serpentean, no cuadros); la altura/normal usan la real.
+                const glm::vec2 mw = material_warp(wx, wz);
+                const float cx = wx + mw.x;
+                const float cz = wz + mw.y;
+                const Material m = sampler_->material_near(cx, cz);
                 float tint = ground_tint(wx, wz);
                 if (m == Material::Rock) {
                     tint *= rock_banding(wy);
                 }
                 const glm::vec3 color =
-                    ground_color(m, sampler_->forest_density_near(wx, wz),
-                                 sampler_->climate_near(wx, wz), wy, wx, wz);
+                    ground_color(m, sampler_->forest_density_near(cx, cz),
+                                 sampler_->climate_near(cx, cz), wy, cx, cz);
                 return render::Vertex{{wx, wy, wz}, color * tint,
                                       sampler_->normal_near(wx, wz)};
             });
