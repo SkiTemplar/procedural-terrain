@@ -7,7 +7,7 @@ namespace terrain {
 // Parámetros del pipeline de generación. Pocos y con significado físico;
 // todos tuneables desde el panel de ImGui.
 struct TerrainConfig {
-    std::uint32_t seed = 31416;
+    std::uint32_t seed = 20260709; // reinicio de semilla (feedback 2026-07-08)
 
     // Dominio: 10×10 km con celda ~2,4 m (generación ~2 min en Debug,
     // asíncrona: la ventana abre al instante con overlay de progreso).

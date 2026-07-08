@@ -60,11 +60,14 @@ float vnoise(vec2 p) {
 }
 
 void main() {
-    // Facetado puro de cerca; a media distancia la normal y el color mezclan
-    // hacia la versión suave — sin shimmer ni "pixelado" de triángulos
-    // subpíxel (blended normals / soft flat shading).
+    // Suavizado de sombreado del SUELO (HP-6, feedback 2026-07-08): las
+    // facetas subdivididas (~0.3-0.6 m) daban un sombreado a cuadros/pixelado
+    // al caminar ("divisiones en el suelo"). La normal y el color mezclan a la
+    // versión suave ya en el campo cercano: plano solo en los ~4 m inmediatos
+    // (mantiene textura al pie), totalmente suave a 40 m. El low-poly persiste
+    // en la SILUETA facetada; el sombreado deja de leerse como rejilla.
     float dist_cam = length(v_world_pos - u_camera_pos);
-    float smooth_k = u_smooth_blend * clamp((dist_cam - 150.0) / 300.0, 0.0, 1.0);
+    float smooth_k = u_smooth_blend * clamp((dist_cam - 4.0) / 36.0, 0.0, 1.0);
 
     vec3 n_flat = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
     vec3 n_soft = normalize(v_normal_smooth + vec3(1e-5));

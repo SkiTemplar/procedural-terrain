@@ -677,23 +677,59 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
         }
     }
 
-    // 4.5) Invariante final de lámina: fuera de lagos y de pozas/cortinas
-    // declaradas (whitewater=2), ningún cauce lleva más de max_sheet de agua
-    // sobre su propio lecho. Los escritores de riverscape (pisos de cascada,
-    // pozas, deltas) operan con puertas de cota distintas y en las COSTURAS
-    // entre pasadas podían dejar la lámina de un piso alto sobre el lecho ya
-    // rebanado del piso bajo (las "torres de agua" del feedback 2026-07-08).
-    // En vez de perseguir cada costura, se ancla la lámina al lecho — el
-    // cauce de diseño lleva 0.25-1.2 m; 3.5 deja margen a pozas no marcadas.
+    // 4.5) Suavizado de la lámina de río: promedia cada celda de agua NO-lago
+    // con sus vecinas de agua (3 pasadas). La superficie de río venía dentada
+    // celda a celda (los distintos escritores de riverscape dejaban escalones
+    // que se renderizaban como "picos de vértice hacia arriba" — feedback
+    // 2026-07-08). Los lagos ya son planos por construcción y se conservan
+    // intactos; el promediado de una secuencia monótona (río descendente) la
+    // preserva y solo lima los escalones/picos.
+    {
+        std::vector<float> smooth = out.water_level;
+        for (int pass = 0; pass < 3; ++pass) {
+            for (int z = 1; z < res - 1; ++z) {
+                for (int x = 1; x < res - 1; ++x) {
+                    const size_t i = idx(x, z);
+                    if (std::isnan(out.water_level[i]) || out.lake[i]) {
+                        continue;
+                    }
+                    float sum = out.water_level[i];
+                    int cnt = 1;
+                    for (int n = 0; n < 8; ++n) {
+                        const size_t ni = idx(x + kDx[n], z + kDz[n]);
+                        if (!std::isnan(out.water_level[ni])) {
+                            // Los lagos anclan (peso alto): la orilla del río
+                            // se funde a la cota del lago sin escalón.
+                            const int w = out.lake[ni] ? 3 : 1;
+                            sum += static_cast<float>(w) * out.water_level[ni];
+                            cnt += w;
+                        }
+                    }
+                    smooth[i] = sum / static_cast<float>(cnt);
+                }
+            }
+            for (size_t i = 0; i < out.water_level.size(); ++i) {
+                if (!std::isnan(out.water_level[i]) && !out.lake[i]) {
+                    out.water_level[i] = smooth[i];
+                }
+            }
+        }
+    }
+
+    // Invariante final de lámina: fuera de lagos, ningún cauce lleva más de
+    // max_sheet de agua sobre su propio lecho ni menos de un mínimo (para que
+    // no se hunda bajo el terreno tras el suavizado y deje huecos). Cierra la
+    // clase entera de "torres de agua" sin perseguir cada costura de pasada.
     {
         const float max_sheet = 3.5f;
+        const float min_sheet = 0.12f;
         for (size_t i = 0; i < out.water_level.size(); ++i) {
-            if (std::isnan(out.water_level[i]) || out.lake[i]
-                || out.whitewater[i] == 2) {
+            if (std::isnan(out.water_level[i]) || out.lake[i]) {
                 continue;
             }
-            out.water_level[i] =
-                std::min(out.water_level[i], hf.data()[i] + max_sheet);
+            out.water_level[i] = std::clamp(out.water_level[i],
+                                            hf.data()[i] + min_sheet,
+                                            hf.data()[i] + max_sheet);
         }
     }
 

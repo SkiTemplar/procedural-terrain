@@ -38,6 +38,24 @@ float value_noise(float x, float z) {
     return glm::mix(glm::mix(a, b, tx), glm::mix(c, d, tx), tz);
 }
 
+// Jitter determinista de vértice (HP-6 fase 1, feedback 2026-07-08): desplaza
+// cada nodo de la rejilla en XZ una fracción del paso, en función SOLO de su
+// índice global de nodo — chunks vecinos del mismo nivel comparten nodos de
+// borde y por tanto el mismo jitter (sin grietas; entre niveles ya hay
+// faldón). Rompe la retícula de cuadrados alineados sin abandonar el low-poly.
+glm::vec2 vertex_jitter(int gx, int gz, float step) {
+    const float k = 0.30f * step;
+    return {(hash01(gx * 3 + 7331, gz * 5 - 911) - 0.5f) * 2.0f * k,
+            (hash01(gx * 7 - 4177, gz * 11 + 263) - 0.5f) * 2.0f * k};
+}
+
+// Tinte de suelo COHERENTE (~3.3 m): el hash por nodo con color flat pintaba
+// cada triángulo de un brillo aleatorio distinto — el "tablero de colores
+// cuadrados" del feedback. El value noise da manchas continuas entre celdas.
+float ground_tint(float wx, float wz) {
+    return 0.94f + 0.12f * value_noise(wx * 0.30f, wz * 0.30f);
+}
+
 // Parches de pradera seca (~150-400 m): rompen el verde uniforme con calvas
 // pardas de hierba agostada. Umbral alto: manchas definidas, no un degradado.
 float dry_patch(float wx, float wz) {
@@ -104,7 +122,13 @@ render::Mesh build_grid_mesh(int w, int h, GetVertex&& get_vertex) {
             const auto tr = node(i + 1, j);
             const auto bl = node(i, j + 1);
             const auto br = node(i + 1, j + 1);
-            indices.insert(indices.end(), {tl, bl, tr, tr, bl, br});
+            // Diagonal alternada por paridad: con la misma diagonal en todos
+            // los quads el suelo se lee como retícula (HP-6 "cuadraditos").
+            if (((i + j) & 1) == 0) {
+                indices.insert(indices.end(), {tl, bl, tr, tr, bl, br});
+            } else {
+                indices.insert(indices.end(), {tl, bl, br, tl, br, tr});
+            }
         }
     }
 
@@ -163,9 +187,13 @@ ChunkedTerrain::ChunkedTerrain(const TerrainData& data, const DetailSampler& sam
                     y_max = std::max(y_max, h);
                 }
             }
-            chunk.aabb_min = {hf.world_x(chunk.x0), y_min - kSkirtDepth - 2.0f,
-                              hf.world_z(chunk.z0)};
-            chunk.aabb_max = {hf.world_x(x1), y_max + 3.0f, hf.world_z(z1)};
+            // Margen XZ de 1 m: el jitter de vértice puede sacar un nodo de
+            // borde fuera de la caja exacta del chunk.
+            chunk.aabb_min = {hf.world_x(chunk.x0) - 1.0f,
+                              y_min - kSkirtDepth - 2.0f,
+                              hf.world_z(chunk.z0) - 1.0f};
+            chunk.aabb_max = {hf.world_x(x1) + 1.0f, y_max + 3.0f,
+                              hf.world_z(z1) + 1.0f};
         }
     }
     // Arranque: todo en el nivel más basto (rápido); update() irá refinando.
@@ -270,12 +298,13 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
             const float wx0 = hf.world_x(chunk.x0);
             const float wz0 = hf.world_z(chunk.z0);
             return build_grid_mesh(w, h, [&](int i, int j) {
-                const float wx = wx0 + static_cast<float>(i) * step;
-                const float wz = wz0 + static_cast<float>(j) * step;
+                const glm::vec2 jit =
+                    vertex_jitter(chunk.x0 * sub + i, chunk.z0 * sub + j, step);
+                const float wx = wx0 + static_cast<float>(i) * step + jit.x;
+                const float wz = wz0 + static_cast<float>(j) * step + jit.y;
                 const Material m = sampler_->material_near(wx, wz);
                 const float wy = sampler_->height(wx, wz);
-                float tint =
-                    0.94f + 0.12f * hash01(chunk.x0 * sub + i, chunk.z0 * sub + j);
+                float tint = ground_tint(wx, wz);
                 if (m == Material::Rock) {
                     tint *= rock_banding(wy);
                 }
@@ -293,17 +322,28 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
             const int sx = std::min(chunk.x0 + i * stride, res - 1);
             const int sz = std::min(chunk.z0 + j * stride, res - 1);
             const Material m = material_at(sx, sz);
-            const float wy = hf.at(sx, sz);
-            float tint = 0.94f + 0.12f * hash01(sx, sz);
+            float wx = hf.world_x(sx);
+            float wz = hf.world_z(sz);
+            float wy = hf.at(sx, sz);
+            if (stride == 1) {
+                // Nivel medio (celda nativa): mismo jitter anti-retícula que
+                // los niveles finos. Los lejanos (stride 4/8) se quedan en
+                // rejilla: allí manda el blend a suave del shader.
+                const glm::vec2 jit = vertex_jitter(sx, sz, hf.cell_size());
+                wx += jit.x;
+                wz += jit.y;
+                wy = hf.sample(wx, wz);
+            }
+            float tint = ground_tint(wx, wz);
             if (m == Material::Rock) {
                 tint *= rock_banding(wy);
             }
             const size_t si = static_cast<size_t>(sz) * static_cast<size_t>(res)
                             + static_cast<size_t>(sx);
             return render::Vertex{
-                {hf.world_x(sx), wy, hf.world_z(sz)},
+                {wx, wy, wz},
                 ground_color(m, data_->forest_density[si], data_->climate[si], wy,
-                             hf.world_x(sx), hf.world_z(sz))
+                             wx, wz)
                     * tint,
                 hf.normal_at(sx, sz)};
         });
