@@ -214,4 +214,33 @@ void smooth_peaks(Heightfield& hf, int passes, float slope_threshold) {
     }
 }
 
+void clamp_spikes(Heightfield& hf, float max_over) {
+    // Recorta picos de UN vértice (feedback 2026-07-08 "vértices extra"): una
+    // celda que sobresale > max_over por encima de TODAS sus 8 vecinas es un
+    // artefacto (del LEM / sharpen_crags / depósito de gotas), no relieve real.
+    // Se baja al nivel de la vecina más alta + max_over. No toca crestas ni
+    // paredes legítimas (esas tienen alguna vecina alta).
+    const int res = hf.resolution();
+    const std::vector<float> src(hf.data());
+    const auto at = [res](const std::vector<float>& d, int x, int z) -> float {
+        return d[static_cast<size_t>(z) * static_cast<size_t>(res)
+                 + static_cast<size_t>(x)];
+    };
+    for (int z = 1; z < res - 1; ++z) {
+        for (int x = 1; x < res - 1; ++x) {
+            float maxn = -1e9f;
+            for (int dz = -1; dz <= 1; ++dz) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dx || dz) {
+                        maxn = std::max(maxn, at(src, x + dx, z + dz));
+                    }
+                }
+            }
+            if (at(src, x, z) > maxn + max_over) {
+                hf.at(x, z) = maxn + max_over;
+            }
+        }
+    }
+}
+
 } // namespace terrain

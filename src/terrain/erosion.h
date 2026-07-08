@@ -22,4 +22,9 @@ void thermal_erode(Heightfield& hf, int iterations, float talus_slope);
 // resto del relieve.
 void smooth_peaks(Heightfield& hf, int passes, float slope_threshold);
 
+// Recorta picos de UN vértice: baja toda celda que sobresalga más de max_over
+// sobre TODAS sus 8 vecinas. Elimina las agujas artificiales que quedan tras
+// el LEM/sharpen sin tocar crestas ni paredes reales.
+void clamp_spikes(Heightfield& hf, float max_over);
+
 } // namespace terrain

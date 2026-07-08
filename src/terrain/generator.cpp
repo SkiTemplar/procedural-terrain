@@ -687,6 +687,9 @@ TerrainData generate(const TerrainConfig& cfg,
     thermal_erode(data.height, cfg.thermal_iterations, cfg.talus_slope);
     smooth_peaks(data.height, 2, 1.2f);
     sharpen_crags(data.height, noise);
+    // Recorta las agujas de un vértice que dejan el LEM/sharpen (feedback
+    // 2026-07-08 "vértices extra"): >6 m sobre TODAS las vecinas = artefacto.
+    clamp_spikes(data.height, 6.0f);
     report("costa");
     shape_coast(data, cfg);
     report("hidrologia");

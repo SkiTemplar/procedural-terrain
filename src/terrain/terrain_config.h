@@ -50,8 +50,11 @@ struct TerrainConfig {
     // Subido 1200 -> 2000 (feedback 2026-07-08): menos riachuelos y que nazcan
     // más abajo (con más cuenca acumulada), no un río brotando en la cima.
     float river_flow_threshold = 2000.0f;
-    float river_max_depth_m = 5.0f;
-    float river_max_width_m = 20.0f; // los caudales grandes se notan de verdad
+    float river_max_depth_m = 5.5f;
+    // Subido 20 -> 30 (feedback 2026-07-08 "ríos grandes"): con menos
+    // tributarios (umbral alto), el río principal cerca de la desembocadura
+    // abre un cauce ancho y se lee como un río de verdad.
+    float river_max_width_m = 30.0f;
 
     // Erosión fluvial (stream power law, Braun & Willett 2013): talla el
     // perfil longitudinal de la red de drenaje → valles en V y cañones donde

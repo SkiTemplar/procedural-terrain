@@ -344,10 +344,12 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
         return build_grid_mesh(w, h, [&](int i, int j) {
             const int sx = std::min(chunk.x0 + i * stride, res - 1);
             const int sz = std::min(chunk.z0 + j * stride, res - 1);
-            const Material m = material_at(sx, sz);
+            Material m = material_at(sx, sz);
             float wx = hf.world_x(sx);
             float wz = hf.world_z(sz);
             float wy = hf.at(sx, sz);
+            float cx = wx;
+            float cz = wz;
             if (stride == 1) {
                 // Nivel medio (celda nativa): mismo jitter anti-retícula que
                 // los niveles finos. Los lejanos (stride 4/8) se quedan en
@@ -356,17 +358,21 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                 wx += jit.x;
                 wz += jit.y;
                 wy = hf.sample(wx, wz);
+                // Domain warp del color también en media distancia (el borde de
+                // material serpentea, no solo en el LOD cercano).
+                const glm::vec2 mw = material_warp(wx, wz);
+                cx = wx + mw.x;
+                cz = wz + mw.y;
+                m = sampler_->material_near(cx, cz);
             }
             float tint = ground_tint(wx, wz);
             if (m == Material::Rock) {
                 tint *= rock_banding(wy);
             }
-            const size_t si = static_cast<size_t>(sz) * static_cast<size_t>(res)
-                            + static_cast<size_t>(sx);
             return render::Vertex{
                 {wx, wy, wz},
-                ground_color(m, data_->forest_density[si], data_->climate[si], wy,
-                             wx, wz)
+                ground_color(m, sampler_->forest_density_near(cx, cz),
+                             sampler_->climate_near(cx, cz), wy, cx, cz)
                     * tint,
                 hf.normal_at(sx, sz)};
         });
