@@ -274,7 +274,16 @@ void sculpt_fall(Heightfield& hf, Hydrology& out,
                 if (bed[ni] > t) {
                     bed[ni] = t;
                 }
-                out.water_level[ni] = t + depth_w;
+                // Regla de MÍNIMO (la misma de la incisión, hydrology.cpp):
+                // en la frontera entre dos pisos la celda recibía la lámina
+                // del piso ALTO sobre el lecho ya rebanado del piso BAJO y
+                // el agua quedaba volando la altura del salto (torres de
+                // 20-40 m del feedback 2026-07-08). El agua se asienta en el
+                // nivel más bajo que la reclame.
+                const float sheet = t + depth_w;
+                out.water_level[ni] = std::isnan(out.water_level[ni])
+                    ? sheet
+                    : std::min(out.water_level[ni], sheet);
                 out.whitewater[ni] = std::max(out.whitewater[ni], flag);
             }
         }

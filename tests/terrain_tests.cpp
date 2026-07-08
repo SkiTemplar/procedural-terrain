@@ -263,6 +263,8 @@ TEST(Generator, ElAguaDeLosRiosNoFlota) {
     int contained = 0;
     int total = 0;
     constexpr int kBankRadius = 4;
+    float worst_gap = 0.0f;
+    int worst_x = -1, worst_z = -1;
 
     for (int z = kBankRadius; z < res - kBankRadius; ++z) {
         for (int x = kBankRadius; x < res - kBankRadius; ++x) {
@@ -274,6 +276,11 @@ TEST(Generator, ElAguaDeLosRiosNoFlota) {
                 continue;
             }
             gaps.push_back(wl - data.height.at(x, z));
+            if (gaps.back() > worst_gap) {
+                worst_gap = gaps.back();
+                worst_x = x;
+                worst_z = z;
+            }
 
             ++total;
             bool has_bank = false;
@@ -297,6 +304,41 @@ TEST(Generator, ElAguaDeLosRiosNoFlota) {
     EXPECT_LT(median, cfg.river_max_depth_m + 2.0f);
     EXPECT_GT(median, 0.0f);
     EXPECT_GT(static_cast<float>(contained) / static_cast<float>(total), 0.97f);
+
+    // Torres de agua (feedback 2026-07-08): la cola del gap también queda
+    // acotada — profundidad de diseño + poza + tope de rampa de cascada.
+    // A resolución de test la rampa apenas dispara (celda ~24 m); la
+    // verificación a escala real (4096², celda 2.4 m) vive en el informe de
+    // sanidad de --dump-costa ("agua flotante").
+    const float p99_gap = gaps[static_cast<size_t>(
+        static_cast<float>(gaps.size()) * 0.99f)];
+    if (worst_x >= 0 && (p99_gap >= 6.5f || gaps.back() >= 9.0f)) {
+        // Diagnóstico del peor caso: contexto hidrológico completo.
+        const size_t wi = static_cast<size_t>(worst_z) * res + worst_x;
+        printf("  peor gap %.1f m en (%d,%d): h=%.1f wl=%.1f ww=%d lago=%d "
+               "flow=%.0f\n",
+               worst_gap, worst_x, worst_z, data.height.at(worst_x, worst_z),
+               data.hydrology.water_level[wi],
+               static_cast<int>(data.hydrology.whitewater[wi]),
+               static_cast<int>(data.hydrology.lake[wi]),
+               data.hydrology.flow[wi]);
+        for (int dz = -2; dz <= 2; ++dz) {
+            printf("   ");
+            for (int dx = -2; dx <= 2; ++dx) {
+                const size_t ni =
+                    static_cast<size_t>(worst_z + dz) * res + (worst_x + dx);
+                const float nwl = data.hydrology.water_level[ni];
+                printf(" [h=%6.1f wl=%6.1f ww=%d L=%d]",
+                       data.height.at(worst_x + dx, worst_z + dz),
+                       std::isnan(nwl) ? -1.0f : nwl,
+                       static_cast<int>(data.hydrology.whitewater[ni]),
+                       static_cast<int>(data.hydrology.lake[ni]));
+            }
+            printf("\n");
+        }
+    }
+    EXPECT_LT(p99_gap, 6.5f);
+    EXPECT_LT(gaps.back(), 9.0f);
 }
 
 TEST(Generator, SinMurallasVerticales) {
@@ -653,12 +695,10 @@ TEST(Costa, SinHierbaAPieDeAgua) {
                 || h >= cfg.sea_level + 3.9f) {
                 continue;
             }
-            const glm::vec3 n = data.height.normal_at(x, z);
-            const float slope =
-                std::sqrt(std::max(0.0f, 1.0f - n.y * n.y)) / std::max(n.y, 1e-3f);
-            if (slope >= 0.35f) {
-                continue;
-            }
+            // SIN filtro de pendiente (feedback 2026-07-08): el test copiaba
+            // el mismo agujero del clasificador (slope >= 0.35 quedaba fuera
+            // de la orilla Y del test) — los montículos empinados de la playa
+            // salían verdes y el test no los veía.
             const auto m = data.material[i];
             if (m == terrain::Material::Grass || m == terrain::Material::Forest) {
                 ++green;

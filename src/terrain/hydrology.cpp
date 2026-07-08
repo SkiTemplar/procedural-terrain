@@ -637,6 +637,13 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     // pared, que para eso tiene poza debajo.
     {
         const float max_ws_slope = 0.85f; // tan de la lámina más empinada
+        // Tope físico de la rampa: la lámina nunca se aleja más de esto de su
+        // nivel original (≈ profundidad de poza). Sin tope, en tramos
+        // empinados largos NO declarados cascada la rampa se encadenaba celda
+        // a celda y el agua acababa volando 5-10 m sobre el lecho (las
+        // "torres de agua" del feedback 2026-07-08). Donde el tope recorta,
+        // el agua baja rota siguiendo el lecho: eso son rápidos (whitewater).
+        const float max_ramp_lift = 2.0f;
         for (const size_t i : order) {
             const size_t down = downstream[i];
             if (down == kNone || out.lake[down]) {
@@ -658,8 +665,35 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                              * ((xi != xd && zi != zd) ? 1.4142f : 1.0f);
             const float max_drop = max_ws_slope * dist;
             if (li - ld > max_drop) {
-                out.water_level[down] = li - max_drop;
+                const float ramped = li - max_drop;
+                if (ramped - ld > max_ramp_lift) {
+                    out.water_level[down] = ld + max_ramp_lift;
+                    out.whitewater[down] =
+                        std::max(out.whitewater[down], std::uint8_t{1});
+                } else {
+                    out.water_level[down] = ramped;
+                }
             }
+        }
+    }
+
+    // 4.5) Invariante final de lámina: fuera de lagos y de pozas/cortinas
+    // declaradas (whitewater=2), ningún cauce lleva más de max_sheet de agua
+    // sobre su propio lecho. Los escritores de riverscape (pisos de cascada,
+    // pozas, deltas) operan con puertas de cota distintas y en las COSTURAS
+    // entre pasadas podían dejar la lámina de un piso alto sobre el lecho ya
+    // rebanado del piso bajo (las "torres de agua" del feedback 2026-07-08).
+    // En vez de perseguir cada costura, se ancla la lámina al lecho — el
+    // cauce de diseño lleva 0.25-1.2 m; 3.5 deja margen a pozas no marcadas.
+    {
+        const float max_sheet = 3.5f;
+        for (size_t i = 0; i < out.water_level.size(); ++i) {
+            if (std::isnan(out.water_level[i]) || out.lake[i]
+                || out.whitewater[i] == 2) {
+                continue;
+            }
+            out.water_level[i] =
+                std::min(out.water_level[i], hf.data()[i] + max_sheet);
         }
     }
 

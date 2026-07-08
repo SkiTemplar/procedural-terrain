@@ -462,9 +462,17 @@ void classify_materials(TerrainData& data, const Noise& noise,
                     (4.0f + (cfg.beach_band_m - 2.0f) * data.climate[i])
                     * cfg.shore_width_scale
                     * (1.0f + 0.90f * e + 0.50f * supply);
-                if (rel < width_m && slope < 0.35f) {
+                // Sin filtro de pendiente en la puerta (feedback 2026-07-08):
+                // los montículos empinados de la playa caían al clasificador
+                // general y salían de HIERBA entre la arena. Criterio físico:
+                // por encima del ángulo de reposo de la arena seca (~33°,
+                // tan≈0.65) nada suelto se sostiene → roca; por debajo, el
+                // régimen de oleaje decide como siempre.
+                if (rel < width_m) {
                     is_shore = true;
-                    if (e > 0.45f) {
+                    if (slope >= 0.65f) {
+                        shore_m = Material::Rock;
+                    } else if (e > 0.45f) {
                         shore_m = slope > 0.18f ? Material::Gravel
                                                 : Material::Sand;
                     } else if (supply > 0.30f && slope < 0.12f && rel < 2.5f) {
@@ -568,6 +576,70 @@ void classify_materials(TerrainData& data, const Noise& noise,
             data.material[i] = m;
         }
     });
+
+    // Anti-dithering de orilla (N0c, feedback 2026-07-08): los umbrales de
+    // régimen (e≈0.45, aporte≈0.30, pendiente) flickean celda a celda y
+    // dejaban miles de celdas de orilla aisladas. Filtro de moda 3×3 SOLO
+    // entre materiales de orilla dentro de la banda litoral — el sorting de
+    // sedimento real es espacialmente coherente; la montaña no se toca.
+    {
+        const auto shore_slot = [](Material m) -> int {
+            switch (m) {
+                case Material::Sand: return 0;
+                case Material::Gravel: return 1;
+                case Material::Marsh: return 2;
+                case Material::Rock: return 3;
+                default: return -1;
+            }
+        };
+        const Material slot_mat[4] = {Material::Sand, Material::Gravel,
+                                      Material::Marsh, Material::Rock};
+        const std::vector<Material> before(data.material);
+        std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
+            if (z < 1 || z >= res - 1) {
+                return;
+            }
+            for (int x = 1; x < res - 1; ++x) {
+                const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
+                               + static_cast<size_t>(x);
+                // Las riberas de agua dulce mantienen su arena (regla A1):
+                // la moda del entorno no puede devolverles grava/roca.
+                if (!coast.shore_band[i] || riparian[i]
+                    || shore_slot(before[i]) < 0) {
+                    continue;
+                }
+                int counts[4] = {};
+                for (int dz = -1; dz <= 1; ++dz) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        if (dx == 0 && dz == 0) {
+                            continue;
+                        }
+                        const size_t ni =
+                            static_cast<size_t>(z + dz) * static_cast<size_t>(res)
+                            + static_cast<size_t>(x + dx);
+                        const int s = coast.shore_band[ni] ? shore_slot(before[ni])
+                                                           : -1;
+                        if (s >= 0) {
+                            ++counts[s];
+                        }
+                    }
+                }
+                const int own = counts[shore_slot(before[i])];
+                int best = 0;
+                for (int s = 1; s < 4; ++s) {
+                    if (counts[s] > counts[best]) {
+                        best = s;
+                    }
+                }
+                // Celda huérfana rodeada de una mayoría clara de otro material
+                // → se une a ella. Bordes legítimos entre regímenes (own >= 1)
+                // no se tocan.
+                if (own == 0 && counts[best] >= 3) {
+                    data.material[i] = slot_mat[best];
+                }
+            }
+        });
+    }
 }
 
 } // namespace
