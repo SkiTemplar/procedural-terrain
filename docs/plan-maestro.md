@@ -5,6 +5,8 @@
 > **Estado:** ACTIVO
 > **Propósito:** que cualquier persona o agente (Sonnet, Opus, humano) pueda continuar el proyecto **sin contexto previo de conversación**. Todo lo necesario está aquí o enlazado desde aquí.
 
+> **Actualización 2026-07-08 (2) — NATURALIDAD:** decisiones razonadas de Rodrigo tras `docs/investigacion-naturalidad.md`: (1) **A2 oxbows DESCARTADO por diseño** — en esta isla los ríos fluyen por relieve montañoso, no por llanuras aluviales blandas tipo Amazonas donde se forman los meandros; Agua v2 queda **cerrada en 8/9**. (2) Entra el track de naturalidad: **N1** picos de un vértice (diagnóstico+fix), **N2** costa emergente del LEM (opción B del informe: la silueta y los islotes emergen del contorno h=0 del relieve, fuera el disco radial y el anillo satélite estampado), y **C4 ampliado** con luz (sombras CSM + AO + tonemapping + cielo) y agua (profundidad real + espuma por `wave_energy` + flujo D8 + oleaje direccional). Orden: N1 → N2 → B → C (C4 ampliado) → E.
+
 > **Actualización 2026-07-08 — REFOCUS (sustituye a la nota TFG del 2026-07-07):** este proyecto pasa a ser un **proyectín personal**: un mundo generado proceduralmente **realista y lo más natural posible**, sin framing de portfolio Aechelon/Shield AI. Decisiones de Rodrigo (2026-07-08): (1) el track de amplificación de DEMs queda **DESCARTADO como TFG** — el TFG saldrá de un problema que Rodrigo encuentre e investigue él mismo, en un proyecto futuro aparte; la carpeta `tfg/` y sus resultados (E0, T1b) se conservan como experimento archivado (Apéndice C, tombstone). (2) El alcance final es la **isla v1.0**: Fases A2 → B → C → E y cierre; la Fase D (planeta cube-sphere) queda **descartada** (tombstone en B.4). (3) Rige el **Protocolo Socrático** (`~/.claude/CLAUDE.md`): la IA escribe el código; las decisiones no triviales de arquitectura/resolución las toma Rodrigo.
 
 ---
@@ -16,10 +18,11 @@ Si estás leyendo esto sin acceso a las conversaciones previas (otro modelo, otr
 1. **Lee este plan entero.** Es el artefacto canónico: estado, fases, criterios y manual de operaciones. Ante conflicto entre este plan y el README, **gana este plan**.
 2. **Documentos de soporte, en este orden:**
    - `docs/superpowers/specs/2026-07-02-procedural-terrain-design.md` — el diseño aprobado del juego/motor.
-   - `docs/investigacion-agua-v2.md` — algoritmos y fuentes de los 9 pasos de agua (quedan los pasos 8 ✅hecho y 9 ❌pendiente).
+   - `docs/investigacion-agua-v2.md` — algoritmos y fuentes de los 9 pasos de agua (8 ✅; 9 oxbows ❌ descartado por diseño 2026-07-08).
+   - `docs/investigacion-naturalidad.md` — diagnóstico y opciones elegidas del track de naturalidad (N1 picos, N2 costa emergente, C4 luz+agua).
    - `docs/investigacion-lem.md` — trasfondo del LEM si tocas `terrain/lem`.
    - (📦 archivado 2026-07-08, ya no es parte del proyecto) `docs/investigacion-amplificacion-dem.md` y `tfg/` — el antiguo track TFG; solo consultar si algún día se retoma como proyecto aparte.
-3. **Estado a 2026-07-08:** Fase A a medias (**A1 hecho, A2 oxbows pendiente** — es el siguiente paso); después B → C → E y cierre en `v1.0-isla`. El track TFG está descartado (ver nota de cabecera).
+3. **Estado a 2026-07-08:** Fase A **CERRADA en 8/9** (A1 ✅; A2 oxbows descartado por diseño). Siguiente: **N1 picos de un vértice** → N2 costa emergente → B → C (C4 ampliado con luz+agua) → E y cierre en `v1.0-isla`. El track TFG está descartado (ver notas de cabecera).
 4. **Comandos esenciales (desde la raíz del repo, en PowerShell):**
    - Compilar + tests: `tools\build.ps1 -Test` (recarga vcvars64 siempre; ver A.1).
    - Ejecutar: `cmake-build-debug-opengl\ProceduralTerrain.exe [seed [x z yaw pitch [alt]]]` (pose de cámara para capturas; ver A.3).
@@ -89,7 +92,7 @@ El proyecto tiene el diseño aprobado (`docs/superpowers/specs/2026-07-02-proced
 
 ## 5. MVP
 
-**MVP del plan = la isla cerrada y shippeable:** isla 10×10 km con Agua v2 completa (9/9, u 8/9 si A2 se descarta con su límite de 2 intentos), vegetación por biomas auditada, presets JSON con 3–4 mundos de demo, minimapas de depuración y >60 fps en Release. Eso es un juego de exploración completo por sí mismo — y desde el refocus 2026-07-08 el MVP **es** el proyecto entero: no hay Fase 2.
+**MVP del plan = la isla cerrada y shippeable:** isla 10×10 km con Agua v2 cerrada en 8/9 (oxbows descartados por diseño), costa e islotes emergentes (N2), sin picos artificiales (N1), luz y agua del C4 ampliado, vegetación por biomas auditada, presets JSON con 3–4 mundos de demo, minimapas de depuración y >60 fps en Release. Eso es un juego de exploración completo por sí mismo — y desde el refocus 2026-07-08 el MVP **es** el proyecto entero: no hay Fase 2.
 
 ## 6. FAIL-FAST ORDER — mapa de fases
 
@@ -97,9 +100,11 @@ Ordenadas por dependencia y riesgo. **El detalle ejecutable de cada fase está e
 
 | # | Fase | Contenido | Riesgo | ETA (sesiones) |
 |---|---|---|---|---|
-| A | Agua v2 — cierre | ~~A1 playas por energía de oleaje~~ ✅ (2026-07-07) · A2 oxbows (paso 9) **← SIGUIENTE** | A2 **ALTO** (muta la traza en planta, puede romper el D8) | 1–2 restantes |
-| B | Vegetación — auditoría | Densidades/variedad por bioma, uso real de los 6 modelos, transiciones | BAJO | 1 |
-| C | Hito 6 — pulido | C1 presets JSON · C2 minimapas de campos · C3 rendimiento >60 fps · C4 pulido visual | MEDIO (C3) | 3–4 |
+| A | Agua v2 — cierre | ✅ **CERRADA 2026-07-08 en 8/9**: A1 playas por oleaje ✅ · A2 oxbows ❌ descartado por diseño (ríos de montaña, no llanura aluvial) | — | — |
+| N1 | Picos de un vértice **← SIGUIENTE** | Diagnóstico H1-H3 (`investigacion-naturalidad.md` §3, empezar por `detail_amplitude_m=0`) + fix del culpable real | BAJO | 1–2 |
+| N2 | Costa emergente del LEM | Opción B del informe §1: continentalidad → prior débil de uplift, LEM con fondo marino real, costa = contorno h=0; islotes skerries emergentes (fuera el anillo satélite estampado) | **MEDIO-ALTO** (regenera todos los mundos, hash de tests cambia) | 2–4 |
+| B | Vegetación — auditoría | Densidades/variedad por bioma, uso real de los 6 modelos, transiciones (sobre el mundo ya final de N2) | BAJO | 1 |
+| C | Hito 6 — pulido | C1 presets JSON · C2 minimapas · C3 rendimiento >60 fps · **C4 AMPLIADO**: luz (L1 sombras CSM, L2 AO por vértice, L3 tonemapping, L4 cielo) + agua (W1 profundidad, W2 espuma por `wave_energy`, W3 flujo D8 en ríos, W4 Gerstner direccional) | MEDIO (C3, L1) | 7–10 |
 | E | Release | Build Release empaquetada, README final, capturas, presets de demo | BAJO | 1 |
 
 (La antigua Fase D — planeta — está descartada desde 2026-07-08; tombstone en B.4.)
@@ -111,10 +116,20 @@ Reglas de tránsito entre fases:
 
 ## 7. SUCCESS CRITERIA (checkeables)
 
-**Fase A:**
-- [ ] `ctest --test-dir cmake-build-debug-opengl --output-on-failure` verde, incluyendo test nuevo: tras estampar oxbows/barras, todo cauce D8 sigue alcanzando mar o lago (sin sumideros nuevos).
+**Fase A (cerrada 8/9):**
 - [x] Captura de costa: se distinguen ≥3 tipos de orilla (playa disipativa ancha, grava/acantilado expuesto, marisma/roca abrigada) correlacionados con el mapa de energía de oleaje (visible en minimapa o dump). **Cumplido 2026-07-07**: dump por octantes (E 0.57 barlovento NO vs 0.15 sotavento), 4 regímenes presentes (arena 112k / grava 18k / marisma 71k celdas) y captura 3D de costa sur con disipativa+marisma.
-- [ ] Captura de tramo llano: ≥1 oxbow (lago en herradura) con tapones de sedimento, y el río activo sigue fluyendo al mar.
+- ~~Oxbows (paso 9)~~ **DESCARTADO por diseño 2026-07-08**: los meandros exigen llanura aluvial de pendiente ~nula y orillas blandas; los ríos de esta isla son cortos y de montaña.
+
+**Fase N1:**
+- [ ] Culpable identificado con evidencia (H1/H2/H3 del informe §3, capturas antes/después).
+- [ ] Contador de picos (celda > máx. de sus 8 vecinos + umbral talus) ≈ 0 tras el fix, sin planchar crestas legítimas (captura de la misma cumbre antes/después).
+- [ ] `ctest` verde (hash regenerado solo si el fix toca generación, con justificación en el commit).
+
+**Fase N2:**
+- [ ] La silueta y los islotes salen del contorno h=0 del relieve LEM: sin `max()` de anillo satélite ni smoothstep radial como forma dominante (solo prior débil + condición de borde).
+- [ ] Captura aérea: bahías/rías donde hay valles, cabos donde hay divisorias, ≥2 islotes/skerries emergentes de tamaño no uniforme.
+- [ ] El mar sigue rodeando el dominio (invariante isla) y los 4 regímenes de orilla de A1 sobreviven.
+- [ ] `ctest` verde con hash regenerado una sola vez y justificado.
 
 **Fase B:**
 - [ ] Los 6 modelos de `veg/models.h` aparecen en el mundo (verificable con contador por tipo en el panel ImGui).
@@ -134,7 +149,7 @@ Reglas de tránsito entre fases:
 
 - Commits pequeños por sub-tarea (convención existente: `feat:`/`fix:` + descripción en minúsculas). Cada sub-tarea de apéndice = 1–2 commits como máximo.
 - Fallo en una sub-tarea ⇒ `git revert <commit>` (preferido) o `git reset --hard HEAD~1` si aún no se ha empujado nada encima.
-- **A2 (oxbows) es el rollback más probable:** si tras 2 intentos el estampado rompe el D8 o el resultado es feo, se descarta el paso entero (es el 9/9 del informe por algo) y se documenta en este fichero.
+- **N2 (costa emergente) es el cambio de generación más gordo:** commits pequeños por sub-paso (prior de uplift → fondo marino → islotes), captura de verificación en cada uno, y el hash del test se regenera UNA vez al final con justificación. Si el resultado no convence tras 2 intentos de tuning, revert y se replantea con dumps.
 - Al cerrar la Fase C: `git tag v1.0-isla && git push --tags` — la isla estable en `main` es el estado final del proyecto.
 - No hay BD ni estado externo: el rollback es siempre puro git.
 
@@ -142,9 +157,11 @@ Reglas de tránsito entre fases:
 
 | Fase | Estimación |
 |---|---|
-| A | 60–100 K (A2 puede necesitar iteración visual) |
+| A | ✅ cerrada |
+| N1 | 20–40 K (diagnóstico instrumentado + fix + capturas) |
+| N2 | 80–150 K (iteración visual fuerte: la costa nueva se tunea mirando) |
 | B | 20–30 K |
-| C | 60–90 K |
+| C | 90–150 K (C4 ampliado: luz + agua, con sus ciclos de captura) |
 | E | 15–25 K |
 
 Referencia de modo: MEDIUM ~3 K · HIGH ~8 K · ULTRA ~15 K por turno de planificación. La iteración visual (captura → ajuste → captura) es lo que dispara el gasto: presupuestar 3–5 ciclos por rasgo visual nuevo.
@@ -165,7 +182,7 @@ Referencia de modo: MEDIUM ~3 K · HIGH ~8 K · ULTRA ~15 K por turno de planifi
 |---|---|---|---|
 | HP-1 | ¿El objetivo final añade algo más al "explorar" (foto-modo, ciclo día/noche, puntos de interés)? | No. Explorar es el juego. Stretch post-v1.0 solo si apetece | Rodrigo |
 | ~~HP-2~~ | ~~¿Se mantiene ~sept 2026 como arranque de Fase 2?~~ | **CERRADA 2026-07-08**: no hay Fase 2 (planeta descartado) | — |
-| HP-3 | ¿Oxbows (A2) compensa su riesgo? | Sí, se intenta; 2 intentos máximo y descarte documentado si rompe el D8 | Rodrigo |
+| ~~HP-3~~ | ~~¿Oxbows (A2) compensa su riesgo?~~ | **CERRADA 2026-07-08**: descartado por diseño — ríos de montaña, no llanura aluvial | — |
 | HP-4 | Presets JSON: ¿nlohmann-json por vcpkg o serializador a mano? | nlohmann-json (battle-tested, header-only, ya en vcpkg) | Rodrigo |
 
 ---
@@ -247,19 +264,33 @@ Detalle algorítmico completo en `docs/investigacion-agua-v2.md` §8 (REI/fetch)
 - Commits sugeridos: `feat: mapa de energia de oleaje REI/fetch` · `feat: playas por energia — grava, disipativa, marisma y roca`.
 - Aceptación: criterio §7-A capturas; el test de hash cambia (regenerar hash esperado con justificación en el commit).
 
-### A2 — Oxbows / meandros (paso 9) — riesgo ALTO, va el último porque muta la traza en planta
+### A2 — Oxbows / meandros (paso 9) — ❌ DESCARTADO por diseño (2026-07-08)
 
-Detalle en `docs/investigacion-agua-v2.md` §9. Referencia C++: `aparis69/Meandering-rivers` (SIGGRAPH Asia 2023). Integración:
+Decisión razonada de Rodrigo: los oxbows exigen llanura aluvial ancha, de pendiente ~nula y orillas blandas (tipo Amazonas); los ríos de esta isla son cortos y de montaña — estampar meandros aquí sería exactamente el "fakeo" que prohíbe A.5. Agua v2 queda cerrada en **8/9**. El detalle técnico que había (Howard-Knutson, cutoffs, `aparis69/Meandering-rivers`) queda en el historial de git de este fichero por si un futuro mundo de llanura lo justificara.
 
-1. Seleccionar tramos candidatos: llanos (S < ~0.2 %), anchos, lejos de knickpoints (datos ya disponibles en `riverscape.cpp`).
-2. Extraer polilínea del tramo, aplicar migración Howard-Knutson (curvatura ponderada aguas arriba, kernel exponencial) unas N iteraciones.
-3. Cutoff por proximidad (< 1–2 anchuras entre nodos no adyacentes) → el bucle cortado se convierte en oxbow: tapones de sedimento en los extremos + point-bars en la orilla interna.
-4. Re-estampar el cauce migrado en el heightfield y **re-validar D8**: el río debe seguir llegando al mar (test nuevo de §7-A).
-5. Salvaguarda: si la validación falla, revertir el tramo a su traza original (mantener la traza previa en memoria hasta validar).
+## B.1b · FASES N1 y N2 — Naturalidad (detalle en `docs/investigacion-naturalidad.md`)
 
-- Commits: `feat: migracion de meandros howard-knutson` · `feat: oxbows con cutoff, tapones y point-bars`.
-- **Límite duro: 2 intentos.** Si no sale, descartar, documentar aquí y cerrar Agua v2 en 8/9.
-- Verificación: `--dump-costa` antes/después para comparar la traza en planta (los oxbows deben verse como lagos en herradura junto al cauce activo), test nuevo de §7-A (todo cauce D8 sigue alcanzando mar o lago) y captura 3D con pose CLI sobre un tramo llano (A.3).
+### N1 — Picos de un vértice (diagnóstico ANTES de fix)
+
+1. Instrumentar contador de picos sobre el heightfield (celda > máx. de sus 8 vecinos + umbral talus) y localizarlos (¿roca? ¿crestas? ¿conos de deyección?).
+2. A/B barato: `detail_amplitude_m = 0` (H1, panel ImGui, sin recompilar) → si desaparecen, el culpable es el ruido de detalle del mesher; si no, probar sin `sharpen_crags` (H2) y mirar el contador pre-mesher (H3, gotas).
+3. Fix según culpable (informe §3): H1 → grano fino a color/normal o amortiguado por curvatura; H2 → suavizar el borde del banco; H3 → depósito 3×3 como ya hace la erosión.
+- Commits: `fix: ...` según culpable. Verificación: capturas de la misma cumbre antes/después + contador ≈ 0.
+
+### N2 — Costa emergente del LEM (opción B del informe §1)
+
+1. **Prior débil**: `coast_at` deja de devolver LA forma — el smoothstep radial pasa a prior de uplift (con sus lóbulos y el eje tectónico) y condición de borde (mar garantizado en el perímetro).
+2. **Fondo marino real**: el dominio del LEM se extiende bajo el nivel del mar (la caída analítica `h −= drop·sea_depth` desaparece o queda residual).
+3. **Costa = contorno h=0** tras LEM+erosión: adaptar `shape_coast`/flatten para operar sobre la costa emergente.
+4. **Islotes skerries**: retirar el bloque `satellite` estampado (generator.cpp:62-68); los islotes deben emerger como picos del prior que asoman. Si no asoman, se tunea el prior, no se estampan.
+5. Re-validar A1 (4 regímenes de orilla sobreviven), capturas aéreas + `--dump-costa`, hash del test regenerado UNA vez con justificación.
+- Commits pequeños por sub-paso. Es el cambio de generación más gordo del track: cada paso con su captura.
+
+### C4 ampliado — luz y agua (se ejecuta dentro de la Fase C)
+
+- Luz: L1 sombras CSM (2-3 cascadas) · L2 AO por vértice precomputado del heightfield · L3 tonemapping+gamma · L4 cielo gradiente + niebla con altura.
+- Agua: W1 color por profundidad real del fondo · W2 espuma de orilla ∝ `wave_energy` · W3 ríos con flujo D8 (olas a lo largo del cauce, amplitud ∝ pendiente) · W4 mar Gerstner orientado con la rosa de vientos.
+- Regla de oro: cada efecto visual se ancla a un campo físico ya simulado — nada decorativo desacoplado del proceso.
 
 ## B.2 · FASE B — Auditoría de vegetación (cierre real del Hito 5)
 
