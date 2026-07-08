@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <numeric>
 #include <random>
 #include <utility>
 #include <vector>
@@ -212,6 +214,87 @@ void smooth_peaks(Heightfield& hf, int passes, float slope_threshold) {
         }
         hf.data().swap(next);
     }
+}
+
+void glacial_erosion(Heightfield& hf, const TerrainConfig& cfg) {
+    // Erosión glaciar (N4, feedback 2026-07-08 "glaciares"): proceso emergente,
+    // NO estampado (regla A.5). El hielo se acumula por encima de la paleo-línea
+    // de nieve (ELA), fluye pendiente abajo acumulando flujo, y SOBREEXCAVA el
+    // lecho donde el hielo es grueso y la pendiente baja (cabeceras y fondos de
+    // valle). La sobreexcavación crea cubetas cerradas y valles en U; el
+    // priority-flood posterior las llena → ibones / lagos de circo. Las paredes
+    // y cumbres (pendiente alta) no se tocan: el circo queda con su anfiteatro.
+    const int res = hf.resolution();
+    const size_t n = static_cast<size_t>(res) * static_cast<size_t>(res);
+    auto& h = hf.data();
+    const float max_h = *std::max_element(h.begin(), h.end());
+    if (max_h < cfg.sea_level + 500.0f) {
+        return; // sin alta montaña no hay glaciar
+    }
+    const float ela = cfg.sea_level + 0.52f * (max_h - cfg.sea_level);
+    const float cell = hf.cell_size();
+    const int dxs[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    const int dzs[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+
+    // 1) Fuente de hielo por altitud sobre la ELA (más alto = más nieve/hielo).
+    std::vector<float> flux(n, 0.0f);
+    for (size_t i = 0; i < n; ++i) {
+        const float above = h[i] - ela;
+        flux[i] = above > 0.0f ? above / 90.0f : 0.0f;
+    }
+
+    // 2) Orden por altura descendente y acumulación del hielo al vecino más bajo.
+    std::vector<std::uint32_t> order(n);
+    std::iota(order.begin(), order.end(), 0u);
+    std::sort(order.begin(), order.end(),
+              [&h](std::uint32_t a, std::uint32_t b) { return h[a] > h[b]; });
+    for (const std::uint32_t i : order) {
+        if (flux[i] <= 0.0f) {
+            continue;
+        }
+        const int x = static_cast<int>(i % static_cast<std::uint32_t>(res));
+        const int z = static_cast<int>(i / static_cast<std::uint32_t>(res));
+        if (x < 1 || z < 1 || x >= res - 1 || z >= res - 1) {
+            continue;
+        }
+        float best = h[i];
+        std::uint32_t bi = i;
+        for (int k = 0; k < 8; ++k) {
+            const std::uint32_t ni = static_cast<std::uint32_t>(
+                (z + dzs[k]) * res + (x + dxs[k]));
+            if (h[ni] < best) {
+                best = h[ni];
+                bi = ni;
+            }
+        }
+        if (bi != i) {
+            flux[bi] += flux[i];
+        }
+    }
+
+    // 3) Sobreexcavación: baja el lecho donde el hielo es grueso y la pendiente
+    // suave. Techo de 35 m; nada por debajo de ~120 m bajo la ELA (los glaciares
+    // no bajan hasta el mar en esta isla).
+    std::vector<float> newh(h);
+    for (int z = 1; z < res - 1; ++z) {
+        for (int x = 1; x < res - 1; ++x) {
+            const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
+                           + static_cast<size_t>(x);
+            if (h[i] < ela - 120.0f || flux[i] <= 0.6f) {
+                continue;
+            }
+            const float dhx = (h[i + 1] - h[i - 1]) * 0.5f / cell;
+            const float dhz = (h[i + static_cast<size_t>(res)]
+                               - h[i - static_cast<size_t>(res)]) * 0.5f / cell;
+            const float slope = std::sqrt(dhx * dhx + dhz * dhz);
+            // Suave en fondo/cabecera (pendiente baja), nulo en paredes.
+            const float gentle = std::clamp(1.0f - slope / 0.5f, 0.0f, 1.0f);
+            const float exc =
+                std::min(35.0f, 2.4f * std::sqrt(flux[i])) * gentle;
+            newh[i] = h[i] - exc;
+        }
+    }
+    h.swap(newh);
 }
 
 void clamp_spikes(Heightfield& hf, float max_over) {

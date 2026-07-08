@@ -690,6 +690,10 @@ TerrainData generate(const TerrainConfig& cfg,
     // Recorta las agujas de un vértice que dejan el LEM/sharpen (feedback
     // 2026-07-08 "vértices extra"): >6 m sobre TODAS las vecinas = artefacto.
     clamp_spikes(data.height, 6.0f);
+    // Erosión glaciar (N4): sobreexcava circos en alta montaña → la hidrología
+    // los llena de ibones. Antes de la costa y la hidrología.
+    report("glaciar");
+    glacial_erosion(data.height, cfg);
     report("costa");
     shape_coast(data, cfg);
     report("hidrologia");

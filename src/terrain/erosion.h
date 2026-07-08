@@ -27,4 +27,9 @@ void smooth_peaks(Heightfield& hf, int passes, float slope_threshold);
 // el LEM/sharpen sin tocar crestas ni paredes reales.
 void clamp_spikes(Heightfield& hf, float max_over);
 
+// Erosión glaciar: el hielo acumulado sobre la paleo-línea de nieve sobreexcava
+// cabeceras y fondos de valle en alta montaña → cubetas de circo que el
+// priority-flood llena (ibones). Proceso emergente, no estampado.
+void glacial_erosion(Heightfield& hf, const TerrainConfig& cfg);
+
 } // namespace terrain
