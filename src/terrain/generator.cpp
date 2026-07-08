@@ -594,51 +594,64 @@ void classify_materials(TerrainData& data, const Noise& noise,
         };
         const Material slot_mat[4] = {Material::Sand, Material::Gravel,
                                       Material::Marsh, Material::Rock};
-        const std::vector<Material> before(data.material);
-        std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
-            if (z < 1 || z >= res - 1) {
-                return;
-            }
-            for (int x = 1; x < res - 1; ++x) {
-                const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
-                               + static_cast<size_t>(x);
-                // Las riberas de agua dulce mantienen su arena (regla A1):
-                // la moda del entorno no puede devolverles grava/roca.
-                if (!coast.shore_band[i] || riparian[i]
-                    || shore_slot(before[i]) < 0) {
-                    continue;
+        // Dos pasadas: la primera consolida las celdas sueltas, la segunda
+        // las cadenas diagonales que la primera convierte en sueltas.
+        for (int pass = 0; pass < 2; ++pass) {
+            const std::vector<Material> before(data.material);
+            std::for_each(std::execution::par, rows.begin(), rows.end(),
+                          [&](int z) {
+                if (z < 1 || z >= res - 1) {
+                    return;
                 }
-                int counts[4] = {};
-                for (int dz = -1; dz <= 1; ++dz) {
-                    for (int dx = -1; dx <= 1; ++dx) {
-                        if (dx == 0 && dz == 0) {
-                            continue;
-                        }
-                        const size_t ni =
-                            static_cast<size_t>(z + dz) * static_cast<size_t>(res)
-                            + static_cast<size_t>(x + dx);
-                        const int s = coast.shore_band[ni] ? shore_slot(before[ni])
-                                                           : -1;
-                        if (s >= 0) {
-                            ++counts[s];
+                for (int x = 1; x < res - 1; ++x) {
+                    const size_t i =
+                        static_cast<size_t>(z) * static_cast<size_t>(res)
+                        + static_cast<size_t>(x);
+                    // Las riberas de agua dulce mantienen su arena (regla A1):
+                    // la moda del entorno no puede devolverles grava/roca.
+                    if (!coast.shore_band[i] || riparian[i]
+                        || shore_slot(before[i]) < 0) {
+                        continue;
+                    }
+                    int counts[4] = {};
+                    int own4 = 0; // vecinas 4-conexas del MISMO material
+                    for (int dz = -1; dz <= 1; ++dz) {
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            if (dx == 0 && dz == 0) {
+                                continue;
+                            }
+                            const size_t ni =
+                                static_cast<size_t>(z + dz)
+                                    * static_cast<size_t>(res)
+                                + static_cast<size_t>(x + dx);
+                            const int s = coast.shore_band[ni]
+                                              ? shore_slot(before[ni])
+                                              : -1;
+                            if (s >= 0) {
+                                ++counts[s];
+                                if (before[ni] == before[i]
+                                    && (dx == 0 || dz == 0)) {
+                                    ++own4;
+                                }
+                            }
                         }
                     }
-                }
-                const int own = counts[shore_slot(before[i])];
-                int best = 0;
-                for (int s = 1; s < 4; ++s) {
-                    if (counts[s] > counts[best]) {
-                        best = s;
+                    int best = 0;
+                    for (int s = 1; s < 4; ++s) {
+                        if (counts[s] > counts[best]) {
+                            best = s;
+                        }
+                    }
+                    // Celda sin continuidad 4-conexa (suelta o en cadena
+                    // diagonal punteada) rodeada de mayoría clara → se une.
+                    // Bordes legítimos entre regímenes (own4 >= 1) no se tocan.
+                    if (own4 == 0 && counts[best] >= 3
+                        && slot_mat[best] != before[i]) {
+                        data.material[i] = slot_mat[best];
                     }
                 }
-                // Celda huérfana rodeada de una mayoría clara de otro material
-                // → se une a ella. Bordes legítimos entre regímenes (own >= 1)
-                // no se tocan.
-                if (own == 0 && counts[best] >= 3) {
-                    data.material[i] = slot_mat[best];
-                }
-            }
-        });
+            });
+        }
     }
 }
 
