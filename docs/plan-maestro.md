@@ -101,8 +101,8 @@ Ordenadas por dependencia y riesgo. **El detalle ejecutable de cada fase está e
 | # | Fase | Contenido | Riesgo | ETA (sesiones) |
 |---|---|---|---|---|
 | A | Agua v2 — cierre | ✅ **CERRADA 2026-07-08 en 8/9**: A1 playas por oleaje ✅ · A2 oxbows ❌ descartado por diseño (ríos de montaña, no llanura aluvial) | — | — |
-| N0 | Bugs de feedback (2026-07-08) **← SIGUIENTE** | (a) agua en torres/cortinas de ~10 m (`build_water_mesh` usa `wl` sin clamp al terreno; knickpoints) · (b) verde en la playa (agujero `slope<0.35` en la banda litoral, generator.cpp:465) · (c) dithering grava/roca en arena (umbrales de régimen e≈0.45) — diagnóstico con dump + contadores ANTES de tocar | BAJO-MEDIO | 1–2 |
-| N1 | Picos de un vértice | Diagnóstico H1-H3 (`investigacion-naturalidad.md` §3, empezar por `detail_amplitude_m=0`) + fix del culpable real | BAJO | 1–2 |
+| N0 | Bugs de feedback (2026-07-08) | ✅ **CERRADA 2026-07-08** (commits `1e42e93`…`c8ee9f3`): agua flotante 45.652→0 celdas sobre invariante (3 causas: regla de mínimo en pisos de cascada, tope de rampa, invariante de lámina ≤3.5 m) · verde a pie de agua 0 celdas (ángulo de reposo en la puerta de orilla) · dithering 4.149→143 (filtro de moda 2 pasadas). Sanidad instrumentada en `--dump-costa` | — | — |
+| N1 | Picos de un vértice **← SIGUIENTE** | Diagnóstico H1-H3 (`investigacion-naturalidad.md` §3, empezar por `detail_amplitude_m=0`) + fix del culpable real + romper la retícula de cuadraditos (HP-6 fase 1: jitter determinista de vértices XZ, blend a suave más agresivo) | BAJO | 1–2 |
 | N2 | Costa emergente del LEM | Opción B del informe §1: continentalidad → prior débil de uplift, LEM con fondo marino real, costa = contorno h=0; islotes skerries emergentes (fuera el anillo satélite estampado) | **MEDIO-ALTO** (regenera todos los mundos, hash de tests cambia) | 2–4 |
 | N4 | Lagos glaciares (circos) — **DECIDIDO 2026-07-08 (HP-5)** | Erosión glaciar simulada en cotas altas: sobreexcavación de cabeceras de valle → cubetas de circo con paredes de anfiteatro que el priority-flood llena solo (ibones tipo Pirineos / Morskie Oko). Va tras N2 y ANTES que N3: el glaciar retoca el relieve alto y la nieve se clasifica sobre el relieve final | MEDIO-ALTO (sim nueva; mini-investigación al abrir la fase) | 2–4 |
 | N3 | Nieve realista | Verificar/corregir posible inversión de aspecto (n.z con +z=sur, generator.cpp:520), reforzar insolación (orientación+pendiente) y acumulación a sotavento con la rosa de vientos; la cota deja de mandar sola | BAJO-MEDIO | 1–2 |
@@ -123,10 +123,10 @@ Reglas de tránsito entre fases:
 - [x] Captura de costa: se distinguen ≥3 tipos de orilla (playa disipativa ancha, grava/acantilado expuesto, marisma/roca abrigada) correlacionados con el mapa de energía de oleaje (visible en minimapa o dump). **Cumplido 2026-07-07**: dump por octantes (E 0.57 barlovento NO vs 0.15 sotavento), 4 regímenes presentes (arena 112k / grava 18k / marisma 71k celdas) y captura 3D de costa sur con disipativa+marisma.
 - ~~Oxbows (paso 9)~~ **DESCARTADO por diseño 2026-07-08**: los meandros exigen llanura aluvial de pendiente ~nula y orillas blandas; los ríos de esta isla son cortos y de montaña.
 
-**Fase N0:**
-- [ ] Contador offline nuevo: cero celdas con lámina de agua >2 m por encima del terreno; las cascadas se ven como agua pegada al lecho, no torres/cortinas.
-- [ ] Dump de materiales: cero manchas de hierba dentro de la banda de playa (agujero `slope<0.35` cerrado con criterio físico, no parche ad-hoc).
-- [ ] Las transiciones arena/grava/roca de la orilla forman bandas coherentes, sin dithering de celdas sueltas (histéresis o blur de contorno en el umbral).
+**Fase N0 (✅ cerrada 2026-07-08):**
+- [x] Contador offline en `--dump-costa`: **0 celdas** de río con lámina por encima del invariante (≤3.5 m sobre lecho; antes 45.652 celdas, peor caso 50.7 m). Pendiente de confirmación in-game por Rodrigo en (455, −1335) y (−2941, 231).
+- [x] Dump de materiales: **0 celdas** de hierba/bosque a pie de agua (rel<3.9 m, sin filtro de pendiente). El test `SinHierbaAPieDeAgua` ya no copia el agujero del clasificador.
+- [x] Dithering de orilla 4.149 → **143 celdas** (−96.6%); recorte visual verificado: bandas coherentes, transiciones orgánicas.
 
 **Fase N1:**
 - [ ] Culpable identificado con evidencia (H1/H2/H3 del informe §3, capturas antes/después).
