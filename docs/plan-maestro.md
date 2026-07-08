@@ -101,10 +101,12 @@ Ordenadas por dependencia y riesgo. **El detalle ejecutable de cada fase está e
 | # | Fase | Contenido | Riesgo | ETA (sesiones) |
 |---|---|---|---|---|
 | A | Agua v2 — cierre | ✅ **CERRADA 2026-07-08 en 8/9**: A1 playas por oleaje ✅ · A2 oxbows ❌ descartado por diseño (ríos de montaña, no llanura aluvial) | — | — |
-| N1 | Picos de un vértice **← SIGUIENTE** | Diagnóstico H1-H3 (`investigacion-naturalidad.md` §3, empezar por `detail_amplitude_m=0`) + fix del culpable real | BAJO | 1–2 |
+| N0 | Bugs de feedback (2026-07-08) **← SIGUIENTE** | (a) agua en torres/cortinas de ~10 m (`build_water_mesh` usa `wl` sin clamp al terreno; knickpoints) · (b) verde en la playa (agujero `slope<0.35` en la banda litoral, generator.cpp:465) · (c) dithering grava/roca en arena (umbrales de régimen e≈0.45) — diagnóstico con dump + contadores ANTES de tocar | BAJO-MEDIO | 1–2 |
+| N1 | Picos de un vértice | Diagnóstico H1-H3 (`investigacion-naturalidad.md` §3, empezar por `detail_amplitude_m=0`) + fix del culpable real | BAJO | 1–2 |
 | N2 | Costa emergente del LEM | Opción B del informe §1: continentalidad → prior débil de uplift, LEM con fondo marino real, costa = contorno h=0; islotes skerries emergentes (fuera el anillo satélite estampado) | **MEDIO-ALTO** (regenera todos los mundos, hash de tests cambia) | 2–4 |
-| B | Vegetación — auditoría | Densidades/variedad por bioma, uso real de los 6 modelos, transiciones (sobre el mundo ya final de N2) | BAJO | 1 |
-| C | Hito 6 — pulido | C1 presets JSON · C2 minimapas · C3 rendimiento >60 fps · **C4 AMPLIADO**: luz (L1 sombras CSM, L2 AO por vértice, L3 tonemapping, L4 cielo) + agua (W1 profundidad, W2 espuma por `wave_energy`, W3 flujo D8 en ríos, W4 Gerstner direccional) | MEDIO (C3, L1) | 7–10 |
+| N3 | Nieve realista | Verificar/corregir posible inversión de aspecto (n.z con +z=sur, generator.cpp:520), reforzar insolación (orientación+pendiente) y acumulación a sotavento con la rosa de vientos; la cota deja de mandar sola | BAJO-MEDIO | 1–2 |
+| B | Vegetación — **AMPLIADA** (feedback 2026-07-08) | Más densidad (enfoque caminar/explorar), tamaños de árbol variados (distribución por edad, no uniforme), los 6 modelos en uso, transiciones por bioma (sobre el mundo final de N2) | BAJO | 1–2 |
+| C | Hito 6 — pulido | C1 presets JSON · C2 minimapas · C3 rendimiento >60 fps (feedback: "falta optimizar" — medir primero) · **C4 AMPLIADO**: luz (L1 sombras CSM, L2 AO por vértice, L3 tonemapping, L4 cielo) + agua (W1 profundidad, W2 espuma por `wave_energy`, W3 flujo D8 en ríos, W4 Gerstner direccional) + **paleta**: más variación de color por campos (altitud/clima/humedad tintan roca y hierba en gradientes, no color plano por material) | MEDIO (C3, L1) | 8–12 |
 | E | Release | Build Release empaquetada, README final, capturas, presets de demo | BAJO | 1 |
 
 (La antigua Fase D — planeta — está descartada desde 2026-07-08; tombstone en B.4.)
@@ -184,6 +186,8 @@ Referencia de modo: MEDIUM ~3 K · HIGH ~8 K · ULTRA ~15 K por turno de planifi
 | ~~HP-2~~ | ~~¿Se mantiene ~sept 2026 como arranque de Fase 2?~~ | **CERRADA 2026-07-08**: no hay Fase 2 (planeta descartado) | — |
 | ~~HP-3~~ | ~~¿Oxbows (A2) compensa su riesgo?~~ | **CERRADA 2026-07-08**: descartado por diseño — ríos de montaña, no llanura aluvial | — |
 | HP-4 | Presets JSON: ¿nlohmann-json por vcpkg o serializador a mano? | nlohmann-json (battle-tested, header-only, ya en vcpkg) | Rodrigo |
+| HP-5 | Lagos de montaña tipo Pirineos/Zakopane (ibones/tarns): ¿circos glaciares simulados, ajuste de hidrología en cotas altas, o tuning del uplift en N2? | Pendiente de decisión (opciones con trade-offs presentadas 2026-07-08) | Rodrigo |
+| HP-6 | "El suelo queda muy geométrico": ¿malla lejana (LOD), patrón del ruido de detalle, o replantear el grado de facetado low-poly? | Pendiente de aclarar qué significa exactamente | Rodrigo |
 
 ---
 ---
