@@ -588,7 +588,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                     // canal cercano — con máximo, las celdas aguas arriba
                     // pintaban su nivel alto sobre las de abajo y el agua
                     // quedaba flotando en escalones.
-                    if (r <= 1.15f && !out.lake[ni] && birth > 0.1f) {
+                    if (r <= 1.05f && !out.lake[ni] && birth > 0.1f) {
                         float candidate = surface;
                         if (level[ni] != std::numeric_limits<float>::infinity()) {
                             candidate = std::min(candidate, level[ni]);
