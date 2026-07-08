@@ -186,9 +186,18 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                                          {tint, tint, tint, ca}});
                 }
             } else {
-                const float scale = 0.8f + 0.6f * scale_r;
-                cell.logs.push_back(render::Instance{{wx, wy - 0.05f, wz, scale},
-                                                     {tint, tint, tint, yaw}});
+                // Troncos SOLO en suelo casi llano (feedback 2026-07-08): la
+                // instancia solo gira en yaw (no se inclina), así que en
+                // pendiente un extremo del prisma quedaba flotando. Se hunden
+                // un poco más para asentarse.
+                const glm::vec3 ln = sampler.normal_near(wx, wz);
+                const float lslope = std::sqrt(std::max(0.0f, 1.0f - ln.y * ln.y))
+                                   / std::max(ln.y, 1e-3f);
+                if (lslope < 0.13f) {
+                    const float scale = 0.8f + 0.6f * scale_r;
+                    cell.logs.push_back(render::Instance{{wx, wy - 0.18f, wz, scale},
+                                                         {tint, tint, tint, yaw}});
+                }
             }
         }
     }

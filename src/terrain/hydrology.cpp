@@ -456,7 +456,10 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
         return glm::clamp((out.flow[i] / threshold - 1.0f) / 2.0f, 0.0f, 1.0f);
     };
     const auto water_depth_of = [&](size_t i) {
-        return (0.35f + 1.1f * depth_of(i)) * birth_of(i);
+        // Base bajada 0.35 -> 0.15 (feedback 2026-07-08 "demasiada agua en los
+        // riachuelos"): los tributarios pequeños llevan un hilo de agua, no un
+        // cauce lleno; el río principal (depth_of alto) sigue con caudal.
+        return (0.15f + 1.05f * depth_of(i)) * birth_of(i);
     };
 
     for (const size_t i : order) { // de arriba a abajo

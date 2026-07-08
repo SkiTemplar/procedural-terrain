@@ -70,6 +70,24 @@ void GrassField::rebuild(const glm::vec3& camera_pos) {
         return false;
     };
 
+    // ¿Playa cerca? El césped se retira ~5 celdas del litoral (feedback
+    // 2026-07-08 "verde en las playas"): en las celdas de hierba justo detrás
+    // de la arena, el césped se leía como verde SOBRE la playa desde el suelo.
+    const auto near_shore = [&](int x, int z) -> bool {
+        for (int dz = -5; dz <= 5; dz += 5) {
+            for (int dx = -5; dx <= 5; dx += 5) {
+                const int nx = std::clamp(x + dx, 0, res - 1);
+                const int nz = std::clamp(z + dz, 0, res - 1);
+                if (data_->wave_energy[static_cast<size_t>(nz)
+                        * static_cast<size_t>(res) + static_cast<size_t>(nx)]
+                    > 0.005f) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
     for (int z = cz0; z <= cz1; ++z) {
         for (int x = cx0; x <= cx1; ++x) {
             const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
@@ -80,6 +98,9 @@ void GrassField::rebuild(const glm::vec3& camera_pos) {
             }
             if (!std::isnan(data_->hydrology.water_level[i])) {
                 continue; // lámina de agua: sin césped
+            }
+            if (near_shore(x, z)) {
+                continue; // backshore de playa: sin césped que invada la arena
             }
             // Altura por ZONA (feedback 2026-07-08): corto en pradera llana,
             // alto en ladera y ribera. Pendiente desde la normal del terreno.

@@ -47,7 +47,9 @@ struct TerrainConfig {
 
     // Hidrología: pocos ríos pero grandes. El umbral está expresado en celdas
     // equivalentes de un mapa de 1024 (se normaliza por resolución real).
-    float river_flow_threshold = 1200.0f; // más red tributaria visible
+    // Subido 1200 -> 2000 (feedback 2026-07-08): menos riachuelos y que nazcan
+    // más abajo (con más cuenca acumulada), no un río brotando en la cima.
+    float river_flow_threshold = 2000.0f;
     float river_max_depth_m = 5.0f;
     float river_max_width_m = 20.0f; // los caudales grandes se notan de verdad
 
