@@ -697,12 +697,14 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                     int cnt = 1;
                     for (int n = 0; n < 8; ++n) {
                         const size_t ni = idx(x + kDx[n], z + kDz[n]);
-                        if (!std::isnan(out.water_level[ni])) {
-                            // Los lagos anclan (peso alto): la orilla del río
-                            // se funde a la cota del lago sin escalón.
-                            const int w = out.lake[ni] ? 3 : 1;
-                            sum += static_cast<float>(w) * out.water_level[ni];
-                            cnt += w;
+                        // Los LAGOS ya NO influyen en el suavizado del río
+                        // (feedback 2026-07-08 "río elevado"): antes pesaban x3
+                        // y tiraban del desagüe hacia la cota del lago perchado
+                        // → el río salía flotando sobre su cauce aguas abajo.
+                        // Solo se promedia río-con-río.
+                        if (!std::isnan(out.water_level[ni]) && !out.lake[ni]) {
+                            sum += out.water_level[ni];
+                            ++cnt;
                         }
                     }
                     smooth[i] = sum / static_cast<float>(cnt);
@@ -721,7 +723,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     // no se hunda bajo el terreno tras el suavizado y deje huecos). Cierra la
     // clase entera de "torres de agua" sin perseguir cada costura de pasada.
     {
-        const float max_sheet = 3.5f;
+        const float max_sheet = 2.5f; // bajado de 3.5 (río elevado, 2026-07-08)
         const float min_sheet = 0.12f;
         for (size_t i = 0; i < out.water_level.size(); ++i) {
             if (std::isnan(out.water_level[i]) || out.lake[i]) {

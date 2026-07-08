@@ -489,8 +489,11 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
         int px = -1, pz = -1;
         for (int z = kR; z < res - kR; ++z) {
             for (int x = kR; x < res - kR; ++x) {
-                const float w = wl[at(x, z)];
-                if (std::isnan(w)) {
+                const size_t wi = at(x, z);
+                const float w = wl[wi];
+                // Solo RÍOS: los lagos son cuencas anchas y su "perchado" (la
+                // cubeta) es legítimo — falso positivo para este bug.
+                if (std::isnan(w) || lake[wi]) {
                     continue;
                 }
                 bool has_bank = false;
