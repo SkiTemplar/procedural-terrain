@@ -5,7 +5,7 @@
 > **Estado:** ACTIVO
 > **Propósito:** que cualquier persona o agente (Sonnet, Opus, humano) pueda continuar el proyecto **sin contexto previo de conversación**. Todo lo necesario está aquí o enlazado desde aquí.
 
-> **Actualización 2026-07-08 (2) — NATURALIDAD:** decisiones razonadas de Rodrigo tras `docs/investigacion-naturalidad.md`: (1) **A2 oxbows DESCARTADO por diseño** — en esta isla los ríos fluyen por relieve montañoso, no por llanuras aluviales blandas tipo Amazonas donde se forman los meandros; Agua v2 queda **cerrada en 8/9**. (2) Entra el track de naturalidad: **N1** picos de un vértice (diagnóstico+fix), **N2** costa emergente del LEM (opción B del informe: la silueta y los islotes emergen del contorno h=0 del relieve, fuera el disco radial y el anillo satélite estampado), y **C4 ampliado** con luz (sombras CSM + AO + tonemapping + cielo) y agua (profundidad real + espuma por `wave_energy` + flujo D8 + oleaje direccional). Orden: N1 → N2 → B → C (C4 ampliado) → E.
+> **Actualización 2026-07-08 (2) — NATURALIDAD:** decisiones razonadas de Rodrigo tras `docs/investigacion-naturalidad.md`: (1) **A2 oxbows DESCARTADO por diseño** — en esta isla los ríos fluyen por relieve montañoso, no por llanuras aluviales blandas tipo Amazonas donde se forman los meandros; Agua v2 queda **cerrada en 8/9**. (2) Entra el track de naturalidad: **N1** picos de un vértice (diagnóstico+fix), **N2** costa emergente del LEM (opción B del informe: la silueta y los islotes emergen del contorno h=0 del relieve, fuera el disco radial y el anillo satélite estampado), y **C4 ampliado** con luz (sombras CSM + AO + tonemapping + cielo) y agua (profundidad real + espuma por `wave_energy` + flujo D8 + oleaje direccional). Tras el feedback in-game del mismo día se añaden **N0** (bugs: agua en torres, verde en playa, dithering de orilla) y **N4 lagos glaciares** (circos simulados, HP-5 cerrada). **Orden confirmado por Rodrigo: N0 → N1 → N2 → N4 glaciares → N3 nieve → B árboles → C (C4 ampliado) → E.**
 
 > **Actualización 2026-07-08 — REFOCUS (sustituye a la nota TFG del 2026-07-07):** este proyecto pasa a ser un **proyectín personal**: un mundo generado proceduralmente **realista y lo más natural posible**, sin framing de portfolio Aechelon/Shield AI. Decisiones de Rodrigo (2026-07-08): (1) el track de amplificación de DEMs queda **DESCARTADO como TFG** — el TFG saldrá de un problema que Rodrigo encuentre e investigue él mismo, en un proyecto futuro aparte; la carpeta `tfg/` y sus resultados (E0, T1b) se conservan como experimento archivado (Apéndice C, tombstone). (2) El alcance final es la **isla v1.0**: Fases A2 → B → C → E y cierre; la Fase D (planeta cube-sphere) queda **descartada** (tombstone en B.4). (3) Rige el **Protocolo Socrático** (`~/.claude/CLAUDE.md`): la IA escribe el código; las decisiones no triviales de arquitectura/resolución las toma Rodrigo.
 
@@ -42,7 +42,7 @@ El proyecto tiene el diseño aprobado (`docs/superpowers/specs/2026-07-02-proced
 ## 2. NON-GOALS
 
 - Multijugador, guardado de partida, gameplay más allá de explorar.
-- Texturas realistas / PBR / normal maps — el flat shading por material es decisión estética cerrada.
+- Texturas realistas / PBR / normal maps — el flat shading por material es decisión estética cerrada. ⚠ 2026-07-08: Rodrigo ha puesto el facetado en duda (HP-6, resolución escalonada) — sigue cerrado hasta la re-evaluación de la fase 1 de HP-6.
 - Assets externos (modelos, texturas, sonidos importados). Todo por código.
 - Streaming infinito de chunks (el mundo es finito: la isla).
 - Generación en GPU (compute). El pipeline es CPU, offline, determinista.
@@ -104,6 +104,7 @@ Ordenadas por dependencia y riesgo. **El detalle ejecutable de cada fase está e
 | N0 | Bugs de feedback (2026-07-08) **← SIGUIENTE** | (a) agua en torres/cortinas de ~10 m (`build_water_mesh` usa `wl` sin clamp al terreno; knickpoints) · (b) verde en la playa (agujero `slope<0.35` en la banda litoral, generator.cpp:465) · (c) dithering grava/roca en arena (umbrales de régimen e≈0.45) — diagnóstico con dump + contadores ANTES de tocar | BAJO-MEDIO | 1–2 |
 | N1 | Picos de un vértice | Diagnóstico H1-H3 (`investigacion-naturalidad.md` §3, empezar por `detail_amplitude_m=0`) + fix del culpable real | BAJO | 1–2 |
 | N2 | Costa emergente del LEM | Opción B del informe §1: continentalidad → prior débil de uplift, LEM con fondo marino real, costa = contorno h=0; islotes skerries emergentes (fuera el anillo satélite estampado) | **MEDIO-ALTO** (regenera todos los mundos, hash de tests cambia) | 2–4 |
+| N4 | Lagos glaciares (circos) — **DECIDIDO 2026-07-08 (HP-5)** | Erosión glaciar simulada en cotas altas: sobreexcavación de cabeceras de valle → cubetas de circo con paredes de anfiteatro que el priority-flood llena solo (ibones tipo Pirineos / Morskie Oko). Va tras N2 y ANTES que N3: el glaciar retoca el relieve alto y la nieve se clasifica sobre el relieve final | MEDIO-ALTO (sim nueva; mini-investigación al abrir la fase) | 2–4 |
 | N3 | Nieve realista | Verificar/corregir posible inversión de aspecto (n.z con +z=sur, generator.cpp:520), reforzar insolación (orientación+pendiente) y acumulación a sotavento con la rosa de vientos; la cota deja de mandar sola | BAJO-MEDIO | 1–2 |
 | B | Vegetación — **AMPLIADA** (feedback 2026-07-08) | Más densidad (enfoque caminar/explorar), tamaños de árbol variados (distribución por edad, no uniforme), los 6 modelos en uso, transiciones por bioma (sobre el mundo final de N2) | BAJO | 1–2 |
 | C | Hito 6 — pulido | C1 presets JSON · C2 minimapas · C3 rendimiento >60 fps (feedback: "falta optimizar" — medir primero) · **C4 AMPLIADO**: luz (L1 sombras CSM, L2 AO por vértice, L3 tonemapping, L4 cielo) + agua (W1 profundidad, W2 espuma por `wave_energy`, W3 flujo D8 en ríos, W4 Gerstner direccional) + **paleta**: más variación de color por campos (altitud/clima/humedad tintan roca y hierba en gradientes, no color plano por material) | MEDIO (C3, L1) | 8–12 |
@@ -122,6 +123,11 @@ Reglas de tránsito entre fases:
 - [x] Captura de costa: se distinguen ≥3 tipos de orilla (playa disipativa ancha, grava/acantilado expuesto, marisma/roca abrigada) correlacionados con el mapa de energía de oleaje (visible en minimapa o dump). **Cumplido 2026-07-07**: dump por octantes (E 0.57 barlovento NO vs 0.15 sotavento), 4 regímenes presentes (arena 112k / grava 18k / marisma 71k celdas) y captura 3D de costa sur con disipativa+marisma.
 - ~~Oxbows (paso 9)~~ **DESCARTADO por diseño 2026-07-08**: los meandros exigen llanura aluvial de pendiente ~nula y orillas blandas; los ríos de esta isla son cortos y de montaña.
 
+**Fase N0:**
+- [ ] Contador offline nuevo: cero celdas con lámina de agua >2 m por encima del terreno; las cascadas se ven como agua pegada al lecho, no torres/cortinas.
+- [ ] Dump de materiales: cero manchas de hierba dentro de la banda de playa (agujero `slope<0.35` cerrado con criterio físico, no parche ad-hoc).
+- [ ] Las transiciones arena/grava/roca de la orilla forman bandas coherentes, sin dithering de celdas sueltas (histéresis o blur de contorno en el umbral).
+
 **Fase N1:**
 - [ ] Culpable identificado con evidencia (H1/H2/H3 del informe §3, capturas antes/después).
 - [ ] Contador de picos (celda > máx. de sus 8 vecinos + umbral talus) ≈ 0 tras el fix, sin planchar crestas legítimas (captura de la misma cumbre antes/después).
@@ -132,6 +138,11 @@ Reglas de tránsito entre fases:
 - [ ] Captura aérea: bahías/rías donde hay valles, cabos donde hay divisorias, ≥2 islotes/skerries emergentes de tamaño no uniforme.
 - [ ] El mar sigue rodeando el dominio (invariante isla) y los 4 regímenes de orilla de A1 sobreviven.
 - [ ] `ctest` verde con hash regenerado una sola vez y justificado.
+
+**Fase N4 (lagos glaciares):**
+- [ ] ≥2 ibones en cabeceras altas con morfología de circo (cubeta cerrada + pared de anfiteatro), llenados por el priority-flood existente — el lago **nunca** se estampa, emerge de la cubeta.
+- [ ] Captura comparable a un ibón pirenaico / Morskie Oko (encuadre desde la orilla de la cubeta mirando a la pared).
+- [ ] `ctest` verde (hash regenerado y justificado).
 
 **Fase B:**
 - [ ] Los 6 modelos de `veg/models.h` aparecen en el mundo (verificable con contador por tipo en el panel ImGui).
@@ -186,8 +197,8 @@ Referencia de modo: MEDIUM ~3 K · HIGH ~8 K · ULTRA ~15 K por turno de planifi
 | ~~HP-2~~ | ~~¿Se mantiene ~sept 2026 como arranque de Fase 2?~~ | **CERRADA 2026-07-08**: no hay Fase 2 (planeta descartado) | — |
 | ~~HP-3~~ | ~~¿Oxbows (A2) compensa su riesgo?~~ | **CERRADA 2026-07-08**: descartado por diseño — ríos de montaña, no llanura aluvial | — |
 | HP-4 | Presets JSON: ¿nlohmann-json por vcpkg o serializador a mano? | nlohmann-json (battle-tested, header-only, ya en vcpkg) | Rodrigo |
-| HP-5 | Lagos de montaña tipo Pirineos/Zakopane (ibones/tarns): ¿circos glaciares simulados, ajuste de hidrología en cotas altas, o tuning del uplift en N2? | Pendiente de decisión (opciones con trade-offs presentadas 2026-07-08) | Rodrigo |
-| HP-6 | "El suelo queda muy geométrico": ¿malla lejana (LOD), patrón del ruido de detalle, o replantear el grado de facetado low-poly? | Pendiente de aclarar qué significa exactamente | Rodrigo |
+| ~~HP-5~~ | ~~Lagos de montaña: ¿cómo?~~ | **CERRADA 2026-07-08**: erosión glaciar simulada (Fase N4) — es el proceso real de los ibones y encaja con A.5 | — |
+| HP-6 | Suelo "geométrico" — aclarado 2026-07-08: "veo cuadraditos, no es smooth al 100% como la vida real" + el facetado low-poly le convence menos | **Resolución ESCALONADA**: fase 1 (dentro de N1/C4) romper la retícula sin abandonar el estilo — jitter determinista de vértices XZ (mata los cuadraditos), blended-smooth más agresivo con la distancia, densidad de malla lejana (LOD); fase 2: re-evaluar con capturas — si sigue sin convencer, decisión de pilar estético (smooth shading, reabre §2) que toma Rodrigo explícitamente | Rodrigo |
 
 ---
 ---
@@ -289,6 +300,16 @@ Decisión razonada de Rodrigo: los oxbows exigen llanura aluvial ancha, de pendi
 4. **Islotes skerries**: retirar el bloque `satellite` estampado (generator.cpp:62-68); los islotes deben emerger como picos del prior que asoman. Si no asoman, se tunea el prior, no se estampan.
 5. Re-validar A1 (4 regímenes de orilla sobreviven), capturas aéreas + `--dump-costa`, hash del test regenerado UNA vez con justificación.
 - Commits pequeños por sub-paso. Es el cambio de generación más gordo del track: cada paso con su captura.
+
+### N0 — Bugs del feedback in-game (2026-07-08)
+
+1. **Agua en torres**: `build_water_mesh` (mesher.cpp:68) usa `water_level` propio sin clamp contra el terreno actual — instrumentar contador `wl − h > 2 m`, localizar (¿knickpoints? ¿celdas con terreno mutado post-hidrología?) y arreglar la causa (clamp físico o recomputar `wl` tras la última mutación del heightfield), no el síntoma.
+2. **Verde en playa**: dentro de la banda litoral, `slope ≥ 0.35` cae al clasificador general → Grass (generator.cpp:465). Fix candidato: dentro de la banda, los no-orilla caen a arena/roca según pendiente (una duna empinada es arena, no prado) — verificar con dump.
+3. **Dithering grava/roca en arena**: umbrales duros (e≈0.45, supply≈0.30) sin histéresis — suavizar la frontera del régimen a lo largo del contorno (el blur de anchura ya existe; falta para el TIPO).
+
+### N4 — Lagos glaciares / circos (decidido 2026-07-08, HP-5)
+
+Mini-investigación al abrir la fase (modelos simples de sobreexcavación de circo sobre heightfield; el ice-flow completo tipo Egholm es overkill). Esqueleto esperado: máscara glaciar por altitud+clima (paleo-línea de equilibrio) → identificar cabeceras de valle dentro de la máscara → sobreexcavación de cubeta + retroceso de pared (proceso iterativo, determinista por seed) → el priority-flood existente llena los ibones solo. La nieve (N3) se clasifica después, sobre el relieve final.
 
 ### C4 ampliado — luz y agua (se ejecuta dentro de la Fase C)
 
