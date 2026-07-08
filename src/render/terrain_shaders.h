@@ -59,6 +59,14 @@ float vnoise(vec2 p) {
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
+// Tonemapping ACES (Narkowicz): rolloff fílmico del rango alto → contraste y
+// color sin quemar. La luz del sol aporta >1 en las caras iluminadas, así que
+// hay rango que comprimir (antes el sombreado era plano y lavado).
+vec3 aces(vec3 x) {
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14),
+                 0.0, 1.0);
+}
+
 void main() {
     // Suavizado de sombreado del SUELO (HP-6, feedback 2026-07-08): las
     // facetas subdivididas (~0.3-0.6 m) daban un sombreado a cuadros/pixelado
@@ -77,11 +85,15 @@ void main() {
     // Iluminación de exterior: sol cálido + ambiente hemisférico (las caras
     // que miran al cielo reciben azul frío; las que miran al suelo, rebote
     // verdoso cálido). Mucho más natural que un ambient constante.
-    const vec3 sun_color = vec3(1.0, 0.95, 0.86);
+    // Rebalance sol/ambiente (feedback 2026-07-08 "luces"): menos ambiente
+    // plano (0.50->0.34) y sol más fuerte (0.72->1.15, supera 1 → lo comprime
+    // el ACES) → más contraste y volumen, menos look lavado. El hemisférico
+    // (cielo frío arriba, rebote cálido abajo) se mantiene.
+    const vec3 sun_color = vec3(1.0, 0.94, 0.82);
     float diffuse = max(dot(normal, u_sun_dir), 0.0);
     float sky_facing = normal.y * 0.5 + 0.5;
-    vec3 hemi = mix(vec3(0.30, 0.31, 0.26), vec3(0.55, 0.65, 0.82), sky_facing);
-    vec3 lit = albedo * (0.50 * hemi + 0.72 * diffuse * sun_color);
+    vec3 hemi = mix(vec3(0.28, 0.30, 0.26), vec3(0.52, 0.62, 0.80), sky_facing);
+    vec3 lit = albedo * (0.34 * hemi + 1.15 * diffuse * sun_color);
 
     // Textura procedural sutil en dos escalas (~1.5 m y ~9 m): rompe el color
     // plano de cada cara sin perder la estética low-poly. Se atenúa de lejos
@@ -93,6 +105,7 @@ void main() {
         lit *= 1.0 + (tex - 0.5) * 0.10 * tex_fade;
     }
 
+    lit = aces(lit); // tonemap antes de la niebla (que ya va en rango de pantalla)
     float fog = 1.0 - exp(-u_fog_density * dist_cam);
     vec3 color = mix(lit, u_sky_color, fog);
 
@@ -199,6 +212,10 @@ uniform float u_fog_density;
 out vec4 frag_color;
 
 float hash(float n) { return fract(sin(n) * 43758.5453); }
+vec3 aces(vec3 x) {
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14),
+                 0.0, 1.0);
+}
 
 void main() {
     // Briznas procedurales dentro del card: u se reparte en columnas; cada
@@ -226,7 +243,7 @@ void main() {
 
     vec3 normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
     float diffuse = max(abs(dot(normal, u_sun_dir)), 0.0); // hoja fina: 2 caras
-    vec3 lit = col * (0.50 + 0.55 * diffuse);
+    vec3 lit = aces(col * (0.40 + 1.10 * diffuse)); // mismo rebalance + tonemap
     float dist = length(v_world_pos - u_camera_pos);
     float fog = 1.0 - exp(-u_fog_density * dist);
     frag_color = vec4(mix(lit, u_sky_color, fog), 1.0);
