@@ -272,25 +272,39 @@ void glacial_erosion(Heightfield& hf, const TerrainConfig& cfg) {
         }
     }
 
-    // 3) Sobreexcavación: baja el lecho donde el hielo es grueso y la pendiente
-    // suave. Techo de 35 m; nada por debajo de ~120 m bajo la ELA (los glaciares
-    // no bajan hasta el mar en esta isla).
+    // 3) Sobreexcavación CONCENTRADA (refinada 2026-07-08): solo los canales de
+    // hielo PRINCIPALES (flujo > 15% del máximo) sobreexcavan — las cabeceras y
+    // troughs por donde funela todo el hielo de la cuenca, no cada rincón llano.
+    // Así salen POCOS circos grandes y valles en U limpios, no un alto
+    // agujereado de cubetas. La excavación crece con el exceso de flujo sobre el
+    // umbral (los troughs mayores son los más hondos).
+    float max_flux = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        max_flux = std::max(max_flux, flux[i]);
+    }
+    const float flux_thresh = 0.15f * max_flux;
+    if (flux_thresh <= 0.0f) {
+        return;
+    }
     std::vector<float> newh(h);
     for (int z = 1; z < res - 1; ++z) {
         for (int x = 1; x < res - 1; ++x) {
             const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
                            + static_cast<size_t>(x);
-            if (h[i] < ela - 120.0f || flux[i] <= 0.6f) {
+            if (h[i] < ela - 120.0f || flux[i] < flux_thresh) {
                 continue;
             }
             const float dhx = (h[i + 1] - h[i - 1]) * 0.5f / cell;
             const float dhz = (h[i + static_cast<size_t>(res)]
                                - h[i - static_cast<size_t>(res)]) * 0.5f / cell;
             const float slope = std::sqrt(dhx * dhx + dhz * dhz);
-            // Suave en fondo/cabecera (pendiente baja), nulo en paredes.
-            const float gentle = std::clamp(1.0f - slope / 0.5f, 0.0f, 1.0f);
-            const float exc =
-                std::min(35.0f, 2.4f * std::sqrt(flux[i])) * gentle;
+            // Suave en fondo/cabecera (pendiente baja), nulo en paredes: el
+            // circo conserva su anfiteatro.
+            const float gentle = std::clamp(1.0f - slope / 0.45f, 0.0f, 1.0f);
+            // Excavación ∝ raíz del EXCESO de flujo sobre el umbral: los troughs
+            // principales (mucho hielo) se ahondan; los del borde, apenas.
+            const float over = (flux[i] - flux_thresh) / std::max(max_flux, 1.0f);
+            const float exc = std::min(50.0f, 90.0f * std::sqrt(over)) * gentle;
             newh[i] = h[i] - exc;
         }
     }
