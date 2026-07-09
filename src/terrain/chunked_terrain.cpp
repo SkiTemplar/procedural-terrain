@@ -14,10 +14,20 @@ namespace {
 
 constexpr float kSkirtDepth = 5.0f; // m hacia abajo para tapar grietas de LOD
 
-// Estratos sutiles en la roca: bandas horizontales de tono (~18 m de período)
-// que insinúan capas geológicas en paredes y cañones.
-float rock_banding(float y) {
-    return 0.93f + 0.07f * std::sin(y * 0.35f);
+float value_noise(float x, float z); // definido más abajo
+
+// Estratos de roca SIN coherencia global (auditoría 2026-07-09): antes un seno
+// puro de la cota en fase global pintaba las MISMAS bandas horizontales a las
+// mismas alturas en TODA la isla (curvas de nivel, no geología). Ahora la fase
+// y la frecuencia se desfasan por zona (~250 m) y se mezclan dos frecuencias
+// con una leve inclinación: dos paredes separadas por km ya no riman.
+float rock_banding(float y, float wx, float wz) {
+    const float phase =
+        6.2831853f * value_noise(wx * 0.004f + 2.0f, wz * 0.004f - 7.0f);
+    const float tilt =
+        0.10f * (value_noise(wx * 0.012f - 5.0f, wz * 0.012f + 3.0f) - 0.5f);
+    const float yb = y * (0.35f + tilt) + phase;
+    return 0.93f + 0.05f * std::sin(yb) + 0.02f * std::sin(yb * 2.3f + 1.7f);
 }
 
 // Value noise sobre la retícula de hash01: determinista y compartido entre
@@ -329,7 +339,7 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                 const Material m = sampler_->material_near(cx, cz);
                 float tint = ground_tint(wx, wz);
                 if (m == Material::Rock) {
-                    tint *= rock_banding(wy);
+                    tint *= rock_banding(wy, wx, wz);
                 }
                 const glm::vec3 color =
                     ground_color(m, sampler_->forest_density_near(cx, cz),
@@ -367,7 +377,7 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
             }
             float tint = ground_tint(wx, wz);
             if (m == Material::Rock) {
-                tint *= rock_banding(wy);
+                tint *= rock_banding(wy, wx, wz);
             }
             return render::Vertex{
                 {wx, wy, wz},
