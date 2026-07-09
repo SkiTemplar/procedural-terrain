@@ -80,13 +80,24 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             // Árboles: densidad muy subida (feedback: "muchísimos más árboles
             // en la montaña"); la treeline extendida en el generador los sube
             // en cota.
+            // Copa GRADUADA por forest_density (auditoría 2026-07-09): antes el
+            // bosque paraba en seco al cruzar la frontera de material (muro de
+            // coníferas, density 0.155→0.011 en una celda), mientras el COLOR
+            // del suelo ya verdeaba gradual con forest_density → el desajuste
+            // cantaba. Ahora la probabilidad de árbol decae suave hacia el
+            // claro con la misma señal, así árbol y verdor se apagan juntos.
+            const float fd = data.forest_density[i];
+            const float canopy = std::clamp((fd - 0.12f) / 0.45f, 0.0f, 1.0f);
             switch (m) {
                 case terrain::Material::Forest:
-                    tree_p = 0.155f; tuft_p = 0.085f;
+                    tree_p = 0.16f * canopy; tuft_p = 0.085f;
                     bush_p = 0.012f; log_p = 0.0030f;
                     break;
                 case terrain::Material::Grass:
-                    tree_p = 0.011f; tuft_p = 0.200f; bush_p = 0.010f;
+                    // Árboles dispersos de pradera + cola de la copa que se
+                    // adentra en el claro (canopy>0 en la franja de transición).
+                    tree_p = 0.011f + 0.15f * canopy;
+                    tuft_p = 0.200f; bush_p = 0.010f;
                     break;
                 case terrain::Material::Sand:
                     tuft_p = 0.008f; // hierba rala de duna
@@ -245,7 +256,10 @@ void VegRenderer::draw(const glm::vec3& camera_pos, float max_distance) const {
     const glm::vec2 cam{camera_pos.x, camera_pos.z};
     // Margen de media diagonal de celda para no cortar lotes por el centro.
     const float far_cutoff = max_distance + kCellSize * 0.71f;
-    const float near_cutoff = std::min(900.0f, max_distance) + kCellSize * 0.71f;
+    // Matas/arbustos (~0.5 m) dejan de dibujarse a >~400 m: allí su tamaño
+    // angular cae bajo ~1 px y solo aportan centelleo/aliasing — el "confeti"
+    // de vegetación (auditoría 2026-07-09). Antes se dibujaban hasta 900 m.
+    const float near_cutoff = std::min(400.0f, max_distance) + kCellSize * 0.71f;
 
     for (const Cell& cell : cells_) {
         const float dist = glm::length(cam - cell.center);

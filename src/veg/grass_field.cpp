@@ -121,6 +121,19 @@ void GrassField::rebuild(const glm::vec3& camera_pos) {
                 base_h *= 0.7f;
             }
             base_h = std::min(base_h, 0.5f);
+            // Empardecido acoplado al suelo (mismas señales que ground_color:
+            // clima + altitud): sin esto el césped seguía verde fresco sobre
+            // laderas/sectores fríos que el suelo ya empardece — capa verde
+            // flotante (auditoría 2026-07-09). El tinte multiplica el verde de
+            // la brizna hacia pardo donde el terreno se seca.
+            const float climate = data_->climate[i];
+            const float dryness = std::clamp(
+                std::clamp((hf.at(x, z) - 200.0f) / 400.0f, 0.0f, 1.0f) * 0.30f
+                    + (1.0f - climate) * 0.18f,
+                0.0f, 0.6f);
+            const float dry_r = 1.0f + 0.55f * dryness;
+            const float dry_g = 1.0f + 0.10f * dryness;
+            const float dry_b = 1.0f - 0.38f * dryness;
             const int n = std::max(1, static_cast<int>(kPerCell * density));
             for (int k = 0; k < n; ++k) {
                 const auto ku = static_cast<std::uint32_t>(k);
@@ -152,8 +165,9 @@ void GrassField::rebuild(const glm::vec3& camera_pos) {
                 const float tint = (0.8f + 0.35f * hash01(
                     static_cast<std::uint32_t>(x),
                     static_cast<std::uint32_t>(z) + ku, salt + 21u)) * green;
-                inst.push_back(render::Instance{{wx, wy - 0.02f, wz, height},
-                                                {tint, tint, tint, yaw}});
+                inst.push_back(render::Instance{
+                    {wx, wy - 0.02f, wz, height},
+                    {tint * dry_r, tint * dry_g, tint * dry_b, yaw}});
             }
         }
     }
