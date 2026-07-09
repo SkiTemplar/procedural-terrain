@@ -21,6 +21,12 @@ namespace {
 // para que los parámetros sean independientes del tamaño del mapa.
 constexpr float kWarpFreq = 0.35f;
 
+// Sol canónico de generación: el aspecto de la nieve (umbría) se hornea con el
+// azimut por defecto del panel (ui::DebugState::sun_azimuth_deg = 135°). La
+// nieve baja aguanta en la cara RESGUARDADA del sol; la solana pela. Mantener
+// en sincronía con el default del panel si se cambia.
+constexpr float kSunAzimuthDeg = 135.0f;
+
 float smoothstep(float edge0, float edge1, float x) {
     const float t = glm::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
@@ -401,6 +407,12 @@ void classify_materials(TerrainData& data, const Noise& noise,
     // las laderas altas en vez de cortarse a media montaña.
     const float treeline_base = snow_line - 150.0f;
 
+    // Dirección horizontal al sol canónico (para el aspecto de nieve): la
+    // umbría es la cara con insolación negativa (n·sol < 0).
+    const float sun_az = kSunAzimuthDeg * 3.14159265f / 180.0f;
+    const float sun_hx = std::cos(sun_az);
+    const float sun_hz = std::sin(sun_az);
+
     // Máscara de ribera: agua interior dilatada ~4 celdas. Los ríos y lagos
     // concentran humedad → bosque de galería a su alrededor.
     std::vector<std::uint8_t> riparian(data.hydrology.water_level.size(), 0);
@@ -515,10 +527,15 @@ void classify_materials(TerrainData& data, const Noise& noise,
                                                              : Material::LakeBed;
             } else if (is_shore) {
                 m = shore_m;
-            } else if (riparian[i] && h < 60.0f && slope < 0.35f) {
+            } else if (riparian[i] && slope < 0.35f
+                       && h < 50.0f + 24.0f * noise.fbm(
+                              p_km * 2.5f + glm::vec3{12.4f, 0.0f, -63.8f}, 2)) {
                 // Orilla de lago/río de tierras bajas: franja de arena/limo.
                 // Sin ella el agua cortaba la hierba a ras y los lagos de
-                // pradera parecían pegados encima del prado.
+                // pradera parecían pegados encima del prado. Umbral de cota con
+                // jitter espacial (~26..74 m) en vez del corte duro en 60 m
+                // (auditoría 2026-07-09): dos lagos a cotas parecidas ya no
+                // lucen uno con anillo de arena y el otro sin.
                 m = Material::Sand;
             } else {
                 const float snow_edge_jitter =
@@ -532,7 +549,13 @@ void classify_materials(TerrainData& data, const Noise& noise,
                 // Score de nieve: altitud relativa + umbría − pendiente + parches.
                 float snow_score =
                     (h - (snow_line + snow_edge_jitter)) / 120.0f;
-                snow_score += 0.30f * std::max(n.z, 0.0f); // cara norte
+                // Umbría: la ladera resguardada del sol conserva nieve más
+                // abajo (menos insolación). Antes se premiaba +n.z, que con el
+                // sol por defecto (az 135°) es justo la cara ILUMINADA → nieve
+                // colgada de la solana (bug de aspecto invertido, auditoría
+                // 2026-07-09). Ahora el bonus va a la cara opuesta al sol.
+                const float insol = n.x * sun_hx + n.z * sun_hz;
+                snow_score += 0.30f * std::max(-insol, 0.0f);
                 // La nieve NO se acumula en paredes: penalización fuerte por
                 // pendiente — los acantilados quedan de roca viva.
                 snow_score -= 0.80f * slope;
