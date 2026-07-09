@@ -93,9 +93,13 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     };
     constexpr size_t kNone = std::numeric_limits<size_t>::max();
 
-    // Sinuosidad: ondulación suave (±1.2 m, λ≈430 m) SOLO en llanuras, antes
+    // Sinuosidad: ondulación suave (±0.8 m, λ≈220 m) SOLO en llanuras, antes
     // del relleno — el D8 sobre la superficie ondulada serpentea de forma
     // natural en vez de trazar cauces rectos.
+    // Nota (auditoría 2026-07-09): el comentario decía ±1.2 m/λ430 m — tuning
+    // viejo, reconciliado con el código real. La perturbación se suma a la
+    // llanura ENTERA (no solo al cauce): serpenteo cosmético, no dinámica de
+    // meandros (A2 descartado por diseño). Se acepta así, documentado.
     {
         std::vector<float> flatness(hf.data().size(), 0.0f);
         const float inv_cell = 1.0f / hf.cell_size();
