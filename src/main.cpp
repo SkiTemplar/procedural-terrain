@@ -336,6 +336,39 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
     }
     write_bmp(prefix + "-oleaje.bmp", res, res, img);
 
+    // Relieve sombreado (diagnóstico de landforms, feedback 2026-07-10 "U de
+    // cabeceras"): hillshade lambertiano con el MISMO sol fijo del juego
+    // (az 135°, alt 40°) multiplicado por la sombra arrojada baked — se leen
+    // las formas del relieve sin el ruido de color de los materiales, y de
+    // paso se verifica la luz precomputada a vista de pájaro.
+    {
+        const float az = 135.0f * 3.14159265f / 180.0f;
+        const float alt = 40.0f * 3.14159265f / 180.0f;
+        const glm::vec3 sun{std::cos(az) * std::cos(alt), std::sin(alt),
+                            std::sin(az) * std::cos(alt)};
+        const int lres = data.light_res;
+        for (int z = 0; z < res; ++z) {
+            for (int x = 0; x < res; ++x) {
+                const size_t i = static_cast<size_t>(z) * res + x;
+                if (data.height.data()[i] <= cfg.sea_level) {
+                    img[i] = {20, 30, 80};
+                    continue;
+                }
+                const float lambert = glm::clamp(
+                    glm::dot(data.height.normal_at(x, z), sun), 0.0f, 1.0f);
+                float shadow = 1.0f;
+                if (lres >= 2 && !data.shadow.empty()) {
+                    const int lx = x * (lres - 1) / (res - 1);
+                    const int lz = z * (lres - 1) / (res - 1);
+                    shadow = data.shadow[static_cast<size_t>(lz) * lres + lx];
+                }
+                const float v = 0.12f + 0.88f * lambert * (0.35f + 0.65f * shadow);
+                img[i] = to8(glm::vec3{v, v, v});
+            }
+        }
+        write_bmp(prefix + "-relieve.bmp", res, res, img);
+    }
+
     // Informe de sanidad N0 (criterios §7-N0 del plan): números que deben ser
     // ~0. Con coordenadas de mundo del peor caso para verificar con la cámara.
     {
@@ -529,7 +562,8 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
     }
 
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "
-              << prefix << "-oleaje.bmp" << std::endl;
+              << prefix << "-oleaje.bmp / " << prefix << "-relieve.bmp"
+              << std::endl;
     return 0;
 }
 

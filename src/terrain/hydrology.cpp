@@ -260,10 +260,47 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
 
     // Purga de microlagos: la erosión deja miles de charcos de 1-3 celdas que
     // ensucian el mapa. Se eliminan las componentes conexas pequeñas o someras.
+    //
+    // Breach de depresiones someras (decisión Rodrigo 2026-07-10, "río naciendo
+    // en la cresta"): una depresión somera NO se embalsa — el agua desbordante
+    // rompe el sillín y se talla su desagüe (breaching, Lindsay 2016). Solo
+    // queda como lago la cubeta honda de verdad. El intento de breach camina
+    // aguas abajo desde el fondo de la depresión (el D8 sobre el relleno sale
+    // por el sillín) tallando una rampa descendente; si no alcanza terreno que
+    // drene en pocas celdas (sillín gordo — p. ej. una llanura), se desiste y
+    // el lago se queda: el agua solo corta sillines finos. Física, no cota.
     {
         constexpr int kMinLakeCells = 60;
         constexpr float kMinLakeDepth = 1.2f;
+        // Umbral de breach: por debajo de esta profundidad la lámina no tiene
+        // volumen que justifique cubeta — el desborde la vacía.
+        constexpr float kBreachMaxDepth = 4.0f;
+        constexpr int kBreachMaxCarve = 120;   // sillín máximo talladle (~300 m)
+        constexpr float kBreachStep = 0.05f;   // caída de la rampa por celda (m)
         int mountain_lakes_logged = 0;
+        int breached_logged = 0;
+
+        // Talla una rampa monótona descendente desde el fondo de la depresión
+        // siguiendo el D8 del relleno. Devuelve true si alcanzó terreno que ya
+        // drena (éxito: aplica el tallado); false si el sillín es demasiado
+        // largo (no toca el terreno).
+        const auto try_breach = [&](size_t pit) {
+            std::vector<std::pair<size_t, float>> carve;
+            float level = hf.data()[pit];
+            size_t i = downstream[pit];
+            for (int steps = 0; steps < kBreachMaxCarve && i != kNone; ++steps) {
+                level -= kBreachStep;
+                if (hf.data()[i] <= level) {
+                    for (const auto& [ci, ch] : carve) {
+                        hf.data()[ci] = ch;
+                    }
+                    return true; // el desagüe ya drena
+                }
+                carve.emplace_back(i, level);
+                i = downstream[i];
+            }
+            return false;
+        };
 
         std::vector<bool> visited(filled.size(), false);
         std::vector<size_t> component;
@@ -277,12 +314,17 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
             stack.assign(1, start);
             visited[start] = true;
             float max_depth = 0.0f;
+            size_t pit = start; // celda más honda: arranque del breach
 
             while (!stack.empty()) {
                 const size_t i = stack.back();
                 stack.pop_back();
                 component.push_back(i);
-                max_depth = std::max(max_depth, out.water_level[i] - hf.data()[i]);
+                const float depth = out.water_level[i] - hf.data()[i];
+                if (depth > max_depth) {
+                    max_depth = depth;
+                    pit = i;
+                }
 
                 const int x = static_cast<int>(i % static_cast<size_t>(res));
                 const int z = static_cast<int>(i / static_cast<size_t>(res));
@@ -304,6 +346,23 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                 || max_depth < kMinLakeDepth) {
                 for (const size_t i : component) {
                     out.water_level[i] = kNoWater;
+                }
+            } else if (max_depth < kBreachMaxDepth && try_breach(pit)) {
+                // Depresión somera con sillín fino: el agua lo rompe y drena.
+                // Sin lago no hay efluente "nacido río hecho" — se acabaron
+                // los ríos manando de una cresta.
+                for (const size_t i : component) {
+                    out.water_level[i] = kNoWater;
+                }
+                if (breached_logged < 8) {
+                    const int bx = static_cast<int>(pit % static_cast<size_t>(res));
+                    const int bz = static_cast<int>(pit / static_cast<size_t>(res));
+                    std::cout << "  breach de charco @ ("
+                              << static_cast<int>(hf.world_x(bx)) << ", "
+                              << static_cast<int>(hf.world_z(bz)) << ") prof "
+                              << max_depth << " m ("
+                              << component.size() << " celdas)\n";
+                    ++breached_logged;
                 }
             } else {
                 for (const size_t i : component) {

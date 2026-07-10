@@ -512,6 +512,48 @@ TEST(Hidrologia, UnLagoInteriorDesaguaConRioVisible) {
     EXPECT_TRUE(water_reaches_coast);
 }
 
+TEST(Hidrologia, UnCharcoSomeroEnAltoNoSeEmbalsa) {
+    // Contrato del breach (feedback 2026-07-10 "río naciendo en la cresta"):
+    // una depresión SOMERA de sillín fino en cota alta no se embalsa — el agua
+    // rompe el sillín y drena (breaching). Sin lago no hay efluente "nacido
+    // río hecho" manando de la cresta. La cubeta HONDA del test anterior (30 m)
+    // sí sobrevive: el breach solo toca charcos.
+    const auto cfg = test_config();
+    terrain::Heightfield hf(cfg.resolution, cfg.size_m);
+    const int res = hf.resolution();
+    for (int z = 0; z < res; ++z) {
+        for (int x = 0; x < res; ++x) {
+            const float wx = hf.world_x(x);
+            const float wz = hf.world_z(z);
+            const float r = std::sqrt(wx * wx + wz * wz);
+            // Cono isla con un ANILLO alrededor de la cumbre: entre la ladera
+            // y el anillo queda un foso anular somero (~2.6 m bajo el sillín
+            // del anillo) a cota alta — el "charco de cresta".
+            float h = 90.0f - 0.075f * r;
+            const float ring = (r - 260.0f) / 90.0f;
+            if (ring > -1.0f && ring < 1.0f) {
+                h += 8.0f * (1.0f - ring * ring);
+            }
+            hf.at(x, z) = h;
+        }
+    }
+
+    const terrain::Noise noise(7);
+    const auto hy = terrain::compute_hydrology(hf, cfg, noise);
+
+    // Sin breach, el foso anular (~2.6 m, >100 celdas) quedaba como lago
+    // colgado a cota ~80 en una isla de 90 m. Con breach no debe quedar
+    // NINGÚN lago alto: solo drena.
+    int high_lake_cells = 0;
+    for (size_t i = 0; i < hy.water_level.size(); ++i) {
+        if (hy.lake[i] && hy.water_level[i] > 60.0f) {
+            ++high_lake_cells;
+        }
+    }
+    EXPECT_EQ(high_lake_cells, 0)
+        << "un charco somero de cresta sigue embalsado (el breach no drenó)";
+}
+
 TEST(Hidrologia, ElLechoDelRioNoSubeAguasAbajo) {
     // Contrato Agua v2 (perfil monótono): todo cauce maduro tiene salida —
     // algún vecino río/lago/mar con lecho igual o más bajo. Sin la pasada de
