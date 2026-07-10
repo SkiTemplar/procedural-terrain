@@ -134,6 +134,12 @@ void GrassField::rebuild(const glm::vec3& camera_pos) {
             const float dry_r = 1.0f + 0.55f * dryness;
             const float dry_g = 1.0f + 0.10f * dryness;
             const float dry_b = 1.0f - 0.38f * dryness;
+            // Luz baked del terreno en el césped (feedback 2026-07-10): la
+            // sombra arrojada + AO oscurecen la hierba que cae en sombra, como
+            // el suelo bajo ella.
+            const float grass_light =
+                (0.5f + 0.5f * sampler_->shadow_at(hf.world_x(x), hf.world_z(z)))
+                * (0.7f + 0.3f * sampler_->sky_ao_at(hf.world_x(x), hf.world_z(z)));
             const int n = std::max(1, static_cast<int>(kPerCell * density));
             for (int k = 0; k < n; ++k) {
                 const auto ku = static_cast<std::uint32_t>(k);
@@ -164,7 +170,8 @@ void GrassField::rebuild(const glm::vec3& camera_pos) {
                 const float green = riparian ? 1.05f : 1.0f;
                 const float tint = (0.8f + 0.35f * hash01(
                     static_cast<std::uint32_t>(x),
-                    static_cast<std::uint32_t>(z) + ku, salt + 21u)) * green;
+                    static_cast<std::uint32_t>(z) + ku, salt + 21u))
+                    * green * grass_light;
                 inst.push_back(render::Instance{
                     {wx, wy - 0.02f, wz, height},
                     {tint * dry_r, tint * dry_g, tint * dry_b, yaw}});

@@ -345,7 +345,9 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                     ground_color(m, sampler_->forest_density_near(cx, cz),
                                  sampler_->climate_near(cx, cz), wy, cx, cz);
                 return render::Vertex{{wx, wy, wz}, color * tint,
-                                      sampler_->normal_near(wx, wz)};
+                                      sampler_->normal_near(wx, wz),
+                                      {sampler_->shadow_at(wx, wz),
+                                       sampler_->sky_ao_at(wx, wz)}};
             });
         }
         const int stride = level == 2 ? 1 : (level == 3 ? 4 : 8);
@@ -384,7 +386,8 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                 ground_color(m, sampler_->forest_density_near(cx, cz),
                              sampler_->climate_near(cx, cz), wy, cx, cz)
                     * tint,
-                hf.normal_at(sx, sz)};
+                hf.normal_at(sx, sz),
+                {sampler_->shadow_at(wx, wz), sampler_->sky_ao_at(wx, wz)}};
         });
     }();
 

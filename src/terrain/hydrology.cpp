@@ -238,103 +238,17 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
         }
     }
 
-    // ---- Sobreexcavación glaciar ----
-    // Lagos de montaña EMERGENTES: en los tramos altos y TENDIDOS de los
-    // valles con caudal, el hielo sobreexcavó pozas a lo largo del cauce
-    // alternadas con umbrales (paternoster). Se talla el terreno real y el
-    // priority-flood posterior decide dónde queda agua y hasta qué cota — la
-    // orilla sigue las curvas del valle. Nada de cubetas estampadas: las
-    // versiones anteriores colocaban circos por ruido y salían lagos
-    // colgados en las crestas.
+    // Cota máxima del relieve (para clasificar los lagos de montaña naturales
+    // en el log de diagnóstico). GLACIACIÓN ELIMINADA 2026-07-10: la
+    // sobreexcavación glaciar daba lagos-pozo (>100 m) y su tope estaba acoplado
+    // al drenaje (bajarlo disparaba el agua perchada ×6); los lagos de altura
+    // ahora emergen solo del relieve + priority-flood.
     const float terrain_max =
         *std::max_element(hf.data().begin(), hf.data().end());
-    {
-        // Tras la incisión fluvial a propósito: es la que crea los fondos de
-        // valle tendidos donde el hielo pudo embalsar.
-        const float glacial_flow = 0.20f * threshold;
-        const float inv_cell = 1.0f / hf.cell_size();
-        // Brocha de ~16 m: en mapas gruesos (tests a 128²) es sub-celda y
-        // solo haría agujeros desproporcionados — el pase se apaga.
-        const int rc = static_cast<int>(std::round(16.0f * inv_cell));
-        if (terrain_max > 400.0f && rc >= 3) {
-            const float lo = 0.30f * terrain_max;
-            const float hi = 0.80f * terrain_max;
-            const std::vector<float> snapshot(hf.data());
-            for (int z = 2; z < res - 2; ++z) {
-                for (int x = 2; x < res - 2; ++x) {
-                    const size_t i = idx(x, z);
-                    if (out.flow[i] < glacial_flow) {
-                        continue; // solo donde el valle lleva caudal
-                    }
-                    const float h0 = snapshot[i];
-                    if (h0 < lo || h0 > hi) {
-                        continue; // banda glaciar
-                    }
-                    // Pendiente A LO LARGO del cauce (hacia la receptora):
-                    // la transversal incluye las paredes del valle en V y
-                    // vetaba todos los candidatos.
-                    const size_t down = downstream[i];
-                    if (down == kNone) {
-                        continue;
-                    }
-                    const int xd = static_cast<int>(down % static_cast<size_t>(res));
-                    const int zd = static_cast<int>(down / static_cast<size_t>(res));
-                    const float dist = hf.cell_size()
-                        * ((x != xd && z != zd) ? 1.4142f : 1.0f);
-                    const float s = (snapshot[i] - snapshot[down]) / dist;
-                    if (s > 0.12f) {
-                        continue; // en cascada el agua no se embalsa
-                    }
-                    // Pulso CORTO a lo largo del valle (λ ~400 m): poza o
-                    // umbral. Con λ larga el gradiente de la excavación no
-                    // superaba la pendiente del valle y la poza no cerraba
-                    // cubeta — profundizaba el cauce sin embalsar nada.
-                    const glm::vec3 p_km{hf.world_x(x) / 1000.0f, 0.0f,
-                                         hf.world_z(z) / 1000.0f};
-                    const float pulse = noise.fbm(
-                        p_km * 2.5f + glm::vec3{-14.7f, 0.0f, 83.2f}, 2);
-                    if (pulse <= 0.20f) {
-                        continue;
-                    }
-                    // Cuanto más llano el tramo, más honda la poza respecto a
-                    // su pendiente — es lo que permite cerrar la cubeta.
-                    const float depth =
-                        (2.5f + 5.5f * glm::clamp((pulse - 0.20f) / 0.35f,
-                                                  0.0f, 1.0f))
-                        * (1.0f - s / 0.12f);
-                    if (depth < 1.5f) {
-                        continue;
-                    }
-                    for (int dz = -rc; dz <= rc; ++dz) {
-                        for (int dx = -rc; dx <= rc; ++dx) {
-                            const int nx = x + dx;
-                            const int nz = z + dz;
-                            if (nx < 1 || nz < 1 || nx >= res - 1
-                                || nz >= res - 1) {
-                                continue;
-                            }
-                            const float r2 =
-                                static_cast<float>(dx * dx + dz * dz)
-                                / static_cast<float>(rc * rc);
-                            if (r2 > 1.0f) {
-                                continue;
-                            }
-                            const size_t ni = idx(nx, nz);
-                            const float target =
-                                snapshot[ni] - depth * (1.0f - r2);
-                            if (hf.data()[ni] > target) {
-                                hf.data()[ni] = target;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // La incisión (y la sobreexcavación) han cambiado el terreno desde el
-    // primer relleno: recalcular SIEMPRE antes de detectar lagos. Con el
-    // relleno viejo, cada cauce tallado quedaba por debajo de él y salía una
-    // tira de "lago" fantasma a lo largo de todos los ríos.
+    // La incisión fluvial ha cambiado el terreno desde el primer relleno:
+    // recalcular SIEMPRE antes de detectar lagos. Con el relleno viejo, cada
+    // cauce tallado quedaba por debajo de él y salía una tira de "lago"
+    // fantasma a lo largo de todos los ríos.
     filled = fill_depressions(hf);
 
     // Lagos: donde el relleno superó el suelo original.
@@ -405,6 +319,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                               << static_cast<int>(hf.world_x(lx)) << ", "
                               << static_cast<int>(hf.world_z(lz)) << ") cota "
                               << static_cast<int>(out.water_level[start])
+                              << " m prof " << static_cast<int>(max_depth)
                               << " m (" << component.size() << " celdas)\n";
                     ++mountain_lakes_logged;
                 }

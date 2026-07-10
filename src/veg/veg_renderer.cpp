@@ -131,9 +131,16 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             const float yaw = hash01(static_cast<std::uint32_t>(x),
                                      static_cast<std::uint32_t>(z), salt + 4)
                             * 6.2831853f;
-            const float tint = 0.85f + 0.30f * hash01(static_cast<std::uint32_t>(x),
-                                                      static_cast<std::uint32_t>(z),
-                                                      salt + 5);
+            // Luz baked en los modelos (feedback 2026-07-10 "que los modelos
+            // tengan luz"): la instancia recibe la sombra arrojada y el AO del
+            // terreno en su base → los árboles/matas en la sombra de una montaña
+            // se oscurecen como el suelo. Va en el tinte (no hay v_light por
+            // instancia); un árbol al sol queda a plena luz.
+            const float veg_light = (0.45f + 0.55f * sampler.shadow_at(wx, wz))
+                                  * (0.70f + 0.30f * sampler.sky_ao_at(wx, wz));
+            const float tint = (0.85f + 0.30f * hash01(static_cast<std::uint32_t>(x),
+                                                       static_cast<std::uint32_t>(z),
+                                                       salt + 5)) * veg_light;
 
             Placement& cell = cell_of(wx, wz);
             if (roll < tree_p) {

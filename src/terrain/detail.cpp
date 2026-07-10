@@ -51,6 +51,38 @@ float DetailSampler::climate_near(float wx, float wz) const {
     return data_->climate[nearest_index(data_->height, wx, wz)];
 }
 
+float DetailSampler::light_sample(const std::vector<float>& field,
+                                  float wx, float wz) const {
+    const int lr = data_->light_res;
+    if (lr < 2 || field.empty()) {
+        return 1.0f; // sin iluminación calculada: sin ocluir
+    }
+    const float size = data_->height.size();
+    const float half = size * 0.5f;
+    const float fx = glm::clamp((wx + half) / size * static_cast<float>(lr - 1),
+                                0.0f, static_cast<float>(lr - 1));
+    const float fz = glm::clamp((wz + half) / size * static_cast<float>(lr - 1),
+                                0.0f, static_cast<float>(lr - 1));
+    const int x0 = std::min(static_cast<int>(fx), lr - 2);
+    const int z0 = std::min(static_cast<int>(fz), lr - 2);
+    const float tx = fx - static_cast<float>(x0);
+    const float tz = fz - static_cast<float>(z0);
+    const auto at = [&](int x, int z) {
+        return field[static_cast<size_t>(z) * static_cast<size_t>(lr) + x];
+    };
+    const float top = std::lerp(at(x0, z0), at(x0 + 1, z0), tx);
+    const float bot = std::lerp(at(x0, z0 + 1), at(x0 + 1, z0 + 1), tx);
+    return std::lerp(top, bot, tz);
+}
+
+float DetailSampler::shadow_at(float wx, float wz) const {
+    return light_sample(data_->shadow, wx, wz);
+}
+
+float DetailSampler::sky_ao_at(float wx, float wz) const {
+    return light_sample(data_->sky_ao, wx, wz);
+}
+
 glm::vec3 DetailSampler::normal_near(float wx, float wz) const {
     const auto& hf = data_->height;
     const size_t i = nearest_index(hf, wx, wz);

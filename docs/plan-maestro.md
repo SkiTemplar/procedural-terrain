@@ -35,6 +35,7 @@ Si estás leyendo esto sin acceso a las conversaciones previas (otro modelo, otr
    - `docs/investigacion-lem.md` — trasfondo del LEM si tocas `terrain/lem`.
    - (📦 archivado 2026-07-08, ya no es parte del proyecto) `docs/investigacion-amplificacion-dem.md` y `tfg/` — el antiguo track TFG; solo consultar si algún día se retoma como proyecto aparte.
 3. **Estado a 2026-07-08:** Fase A **CERRADA en 8/9** (A1 ✅; A2 oxbows descartado por diseño). Siguiente: **N1 picos de un vértice** → N2 costa emergente → B → C (C4 ampliado con luz+agua) → E y cierre en `v1.0-isla`. El track TFG está descartado (ver notas de cabecera).
+   **Estado a 2026-07-10:** luz precomputada ✅ (parte de C4-L: sombra arrojada ray-marched + AO de cielo horneados por vértice sobre grid ≤1024, sol fijo 135°/40° — si se mueve el sol del panel, la sombra baked NO le sigue; aplicada a terreno, césped y modelos). **Glaciación (N4) ELIMINADA**: daba lagos-pozo >100 m y su tope estaba acoplado al drenaje (agua perchada ×6); los lagos de altura ahora emergen solo de relieve+priority-flood — N4 queda SIN mecanismo de ibones (decisión pendiente). Seed por defecto 20260711 (mundo regenerado). **Abierto (feedback in-game 2026-07-10):** ríos que nacen en cresta (hipótesis: charcos de cabecera que el fill embalsa — p. ej. lago a cota 930 con prof 2 m en (1300, 492) — y desaguan como río) y cabeceras "en U" uniformes vistas desde arriba — en diagnóstico.
 4. **Comandos esenciales (desde la raíz del repo, en PowerShell):**
    - Compilar + tests: `tools\build.ps1 -Test` (recarga vcvars64 siempre; ver A.1).
    - Ejecutar: `cmake-build-debug-opengl\ProceduralTerrain.exe [seed [x z yaw pitch [alt]]]` (pose de cámara para capturas; ver A.3).
@@ -234,6 +235,7 @@ tools\build.ps1 -Target release  # Release (para medir rendimiento SIEMPRE en Re
 
 - Configurar la primera vez (si no existen los directorios de build): consola con vcvars64 cargado → `cmake --preset Debug-OpenGL` / `cmake --preset Release-OpenGL`.
 - **Matar el exe antes de recompilar** (el linker falla si el binario está en uso): `taskkill /IM ProceduralTerrain.exe /F`.
+- **Al añadir/quitar campos de un struct compartido entre TUs (p. ej. `TerrainData` en `generator.h`), rebuild LIMPIO** — `cmake --build cmake-build-debug-opengl --clean-first`. El build incremental puede dejar `.obj` stale con el layout viejo (`terrain_tests.obj` vs `generator.obj`) → `sizeof` distinto → **RTC #2 "Stack around variable corrupted"** en cada `generate()` (ventana modal de Debug que cuelga los tests horas). Precedente: el desbordamiento de `counts[8]` de 2026-07-07. Diagnosticado y resuelto 2026-07-09 tras añadir `shadow`/`sky_ao`/`light_res`.
 
 ## A.2 Tests
 

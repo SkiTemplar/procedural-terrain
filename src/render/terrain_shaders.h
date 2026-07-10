@@ -9,6 +9,7 @@ constexpr const char* kTerrainVert = R"glsl(
 layout (location = 0) in vec3 a_pos;
 layout (location = 1) in vec3 a_color;
 layout (location = 2) in vec3 a_normal;
+layout (location = 3) in vec2 a_light; // x = sombra arrojada, y = AO de cielo
 
 uniform mat4 u_view;
 uniform mat4 u_proj;
@@ -17,12 +18,14 @@ out vec3 v_world_pos;
 flat out vec3 v_color;
 out vec3 v_color_smooth;
 out vec3 v_normal_smooth;
+out vec2 v_light;
 
 void main() {
     v_world_pos = a_pos;
     v_color = a_color;
     v_color_smooth = a_color;
     v_normal_smooth = a_normal;
+    v_light = a_light;
     gl_Position = u_proj * u_view * vec4(a_pos, 1.0);
 }
 )glsl";
@@ -33,6 +36,7 @@ in vec3 v_world_pos;
 flat in vec3 v_color;
 in vec3 v_color_smooth;
 in vec3 v_normal_smooth;
+in vec2 v_light;             // x = sombra arrojada (1=al sol), y = AO de cielo
 
 uniform vec3 u_sun_dir;      // hacia el sol, normalizado
 uniform vec3 u_camera_pos;
@@ -93,7 +97,13 @@ void main() {
     float diffuse = max(dot(normal, u_sun_dir), 0.0);
     float sky_facing = normal.y * 0.5 + 0.5;
     vec3 hemi = mix(vec3(0.28, 0.30, 0.26), vec3(0.52, 0.62, 0.80), sky_facing);
-    vec3 lit = albedo * (0.34 * hemi + 1.15 * diffuse * sun_color);
+    // Iluminación precomputada (sol fijo): la SOMBRA arrojada (v_light.x) atenúa
+    // el sol — una montaña oscurece a su vecina; el AO de cielo (v_light.y)
+    // atenúa el ambiente hemisférico — valles y pies de acantilado se asientan.
+    // La sombra conserva el ambiente: una ladera en sombra la ilumina el cielo,
+    // no queda negra.
+    vec3 lit = albedo * (0.34 * hemi * v_light.y
+                         + 1.15 * diffuse * sun_color * v_light.x);
 
     // Textura procedural sutil en dos escalas (~1.5 m y ~9 m): rompe el color
     // plano de cada cara sin perder la estética low-poly. Se atenúa de lejos
@@ -129,6 +139,7 @@ out vec3 v_world_pos;
 flat out vec3 v_color;
 out vec3 v_color_smooth;
 out vec3 v_normal_smooth;
+out vec2 v_light;
 
 void main() {
     float c = cos(i_tint_yaw.w);
@@ -139,6 +150,7 @@ void main() {
     v_color = a_color * i_tint_yaw.rgb;
     v_color_smooth = v_color;
     v_normal_smooth = vec3(0.0, 1.0, 0.0); // sin uso: la vegetación va con u_smooth_blend=0
+    v_light = vec2(1.0); // la vegetación no recibe sombra/AO precomputados
     gl_Position = u_proj * u_view * vec4(p, 1.0);
 }
 )glsl";

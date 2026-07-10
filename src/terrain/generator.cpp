@@ -26,6 +26,7 @@ constexpr float kWarpFreq = 0.35f;
 // nieve baja aguanta en la cara RESGUARDADA del sol; la solana pela. Mantener
 // en sincronía con el default del panel si se cambia.
 constexpr float kSunAzimuthDeg = 135.0f;
+constexpr float kSunAltitudeDeg = 40.0f; // == ui::DebugState default
 
 float smoothstep(float edge0, float edge1, float x) {
     const float t = glm::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
@@ -687,6 +688,165 @@ void classify_materials(TerrainData& data, const Noise& noise,
     }
 }
 
+// Iluminación precomputada del terreno FINAL (sol fijo, decisión Rodrigo
+// 2026-07-09): sombra arrojada (una montaña oscurece a su vecina) + AO de cielo
+// (valles y pies de acantilado se asientan). "No fakear": ambas salen de la
+// geometría real por ray-march del heightfield. Se hornea con el sol canónico
+// (kSunAzimuthDeg/kSunAltitudeDeg = default del panel). Grid de luz a resolución
+// reducida (<=1024): son campos de baja frecuencia y el vértice los muestrea
+// bilineal — ahorra ~16x el ray-march a 4096² sin pérdida visible.
+void compute_lighting(TerrainData& data, const TerrainConfig& cfg) {
+    const Heightfield& hf = data.height;
+    const int res = hf.resolution();
+    const int lres = std::min(res, 1024);
+    if (lres < 2) {
+        return;
+    }
+    const size_t ln = static_cast<size_t>(lres) * static_cast<size_t>(lres);
+    const float half = cfg.size_m * 0.5f;
+    const float lcell = cfg.size_m / static_cast<float>(lres - 1);
+
+    // Altura muestreada en el grid de luz (una vez; el ray-march lee de aquí).
+    std::vector<float> lh(ln);
+    const auto lrows = row_indices(lres);
+    std::for_each(std::execution::par, lrows.begin(), lrows.end(), [&](int z) {
+        for (int x = 0; x < lres; ++x) {
+            const float wx = -half + static_cast<float>(x) * lcell;
+            const float wz = -half + static_cast<float>(z) * lcell;
+            lh[static_cast<size_t>(z) * lres + x] = hf.sample(wx, wz);
+        }
+    });
+    const float max_h = *std::max_element(lh.begin(), lh.end());
+
+    const float sun_az = kSunAzimuthDeg * 3.14159265f / 180.0f;
+    const float sun_alt = kSunAltitudeDeg * 3.14159265f / 180.0f;
+    const float sx = std::cos(sun_az); // dirección horizontal HACIA el sol
+    const float sz = std::sin(sun_az);
+    const float tan_alt = std::tan(sun_alt);
+
+    const auto sample_lh = [&](float fx, float fz) -> float {
+        fx = glm::clamp(fx, 0.0f, static_cast<float>(lres - 1));
+        fz = glm::clamp(fz, 0.0f, static_cast<float>(lres - 1));
+        const int x0 = std::min(static_cast<int>(fx), lres - 2);
+        const int z0 = std::min(static_cast<int>(fz), lres - 2);
+        const float tx = fx - static_cast<float>(x0);
+        const float tz = fz - static_cast<float>(z0);
+        const float h00 = lh[static_cast<size_t>(z0) * lres + x0];
+        const float h10 = lh[static_cast<size_t>(z0) * lres + x0 + 1];
+        const float h01 = lh[static_cast<size_t>(z0 + 1) * lres + x0];
+        const float h11 = lh[static_cast<size_t>(z0 + 1) * lres + x0 + 1];
+        return (h00 * (1.0f - tx) + h10 * tx) * (1.0f - tz)
+             + (h01 * (1.0f - tx) + h11 * tx) * tz;
+    };
+
+    data.shadow.assign(ln, 1.0f);
+    data.sky_ao.assign(ln, 1.0f);
+    data.light_res = lres;
+
+    constexpr int kAoDirs = 8;
+    std::for_each(std::execution::par, lrows.begin(), lrows.end(), [&](int z) {
+        for (int x = 0; x < lres; ++x) {
+            const size_t i = static_cast<size_t>(z) * lres + x;
+            const float h0 = lh[i];
+
+            // Sombra arrojada: marcha hacia el sol; si algún relieve supera la
+            // línea del rayo (h0 + dist·tan(alt)), la celda queda en sombra.
+            float shadow = 1.0f;
+            for (int s = 1; s <= 900; ++s) {
+                const float fx = static_cast<float>(x) + sx * s;
+                const float fz = static_cast<float>(z) + sz * s;
+                if (fx < 0.0f || fz < 0.0f || fx > lres - 1 || fz > lres - 1) {
+                    break;
+                }
+                const float ray_h = h0 + tan_alt * (static_cast<float>(s) * lcell);
+                if (ray_h > max_h) {
+                    break; // el rayo va por encima de todo relieve: al sol
+                }
+                if (sample_lh(fx, fz) > ray_h + 0.5f) {
+                    shadow = 0.0f;
+                    break;
+                }
+            }
+            data.shadow[i] = shadow;
+
+            // AO de cielo: por 8 azimutes, ángulo de horizonte máximo (relieve
+            // que tapa el cielo). AO = 1 − media de sin(horizonte).
+            float occ = 0.0f;
+            for (int d = 0; d < kAoDirs; ++d) {
+                const float a = 6.2831853f * static_cast<float>(d)
+                              / static_cast<float>(kAoDirs);
+                const float dx = std::cos(a);
+                const float dz = std::sin(a);
+                float max_tan = 0.0f;
+                for (int s = 1; s <= 40; ++s) {
+                    const float fx = static_cast<float>(x) + dx * s;
+                    const float fz = static_cast<float>(z) + dz * s;
+                    if (fx < 0.0f || fz < 0.0f || fx > lres - 1 || fz > lres - 1) {
+                        break;
+                    }
+                    const float dh = sample_lh(fx, fz) - h0;
+                    if (dh > 0.0f) {
+                        max_tan = std::max(max_tan,
+                                           dh / (static_cast<float>(s) * lcell));
+                    }
+                }
+                occ += max_tan / std::sqrt(1.0f + max_tan * max_tan);
+            }
+            data.sky_ao[i] =
+                glm::clamp(1.0f - occ / static_cast<float>(kAoDirs), 0.0f, 1.0f);
+        }
+    });
+
+    // Penumbra "baked" tipo UE (feedback 2026-07-10 "sombra real, lo más
+    // parecido a Unreal pero baked"): la sombra arrojada es dura por celda de
+    // luz; un box-blur separable la ablanda a ~2 celdas (~20 m de penumbra), el
+    // sello del baked de Lightmass. El núcleo en sombra se mantiene; solo los
+    // bordes degradan. Se difumina también el AO para quitar el moteado del
+    // horizonte discreto (8 direcciones).
+    {
+        constexpr int kBlurR = 1;
+        std::vector<float> tmp(ln, 0.0f);
+        const auto blur_field = [&](std::vector<float>& field, int passes) {
+            for (int pass = 0; pass < passes; ++pass) {
+                std::for_each(std::execution::par, lrows.begin(), lrows.end(),
+                              [&](int z) {
+                    for (int x = 0; x < lres; ++x) {
+                        float acc = 0.0f;
+                        int cnt = 0;
+                        for (int dx = -kBlurR; dx <= kBlurR; ++dx) {
+                            const int nx = x + dx;
+                            if (nx < 0 || nx >= lres) {
+                                continue;
+                            }
+                            acc += field[static_cast<size_t>(z) * lres + nx];
+                            ++cnt;
+                        }
+                        tmp[static_cast<size_t>(z) * lres + x] = acc / cnt;
+                    }
+                });
+                std::for_each(std::execution::par, lrows.begin(), lrows.end(),
+                              [&](int z) {
+                    for (int x = 0; x < lres; ++x) {
+                        float acc = 0.0f;
+                        int cnt = 0;
+                        for (int dz = -kBlurR; dz <= kBlurR; ++dz) {
+                            const int nz = z + dz;
+                            if (nz < 0 || nz >= lres) {
+                                continue;
+                            }
+                            acc += tmp[static_cast<size_t>(nz) * lres + x];
+                            ++cnt;
+                        }
+                        field[static_cast<size_t>(z) * lres + x] = acc / cnt;
+                    }
+                });
+            }
+        };
+        blur_field(data.shadow, 1); // penumbra FINA (sombra dura/realista, feedback 2026-07-10)
+        blur_field(data.sky_ao, 1); // solo alisa el moteado del horizonte discreto
+    }
+}
+
 } // namespace
 
 TerrainData generate(const TerrainConfig& cfg,
@@ -713,10 +873,6 @@ TerrainData generate(const TerrainConfig& cfg,
     // Recorta las agujas de un vértice que dejan el LEM/sharpen (feedback
     // 2026-07-08 "vértices extra"): >6 m sobre TODAS las vecinas = artefacto.
     clamp_spikes(data.height, 6.0f);
-    // Erosión glaciar (N4): sobreexcava circos en alta montaña → la hidrología
-    // los llena de ibones. Antes de la costa y la hidrología.
-    report("glaciar");
-    glacial_erosion(data.height, cfg);
     report("costa");
     shape_coast(data, cfg);
     report("hidrologia");
@@ -726,6 +882,8 @@ TerrainData generate(const TerrainConfig& cfg,
     report("materiales");
     classify_materials(data, noise, coast);
     data.wave_energy = std::move(coast.wave_energy);
+    report("luz");
+    compute_lighting(data, cfg);
 
     return data;
 }

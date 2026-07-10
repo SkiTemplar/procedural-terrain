@@ -17,10 +17,17 @@ public:
     float forest_density_near(float wx, float wz) const;
     float climate_near(float wx, float wz) const;
     glm::vec3 normal_near(float wx, float wz) const;
+    // Iluminación precomputada (bilineal sobre el grid de luz de resolución
+    // propia). 1.0 si aún no se ha calculado. shadow: 1=al sol, 0=en sombra;
+    // sky_ao: 1=cielo abierto, 0=ocluido.
+    float shadow_at(float wx, float wz) const;
+    float sky_ao_at(float wx, float wz) const;
 
 private:
     const TerrainData* data_;
     Noise noise_;
+
+    float light_sample(const std::vector<float>& field, float wx, float wz) const;
 
     static float material_roughness(Material m);
     // Rugosidad interpolada bilinealmente entre celdas: con nearest, cada
