@@ -187,9 +187,15 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
     }
     // El uplift acumulado dobla la cota objetivo: la incisión del propio LEM
     // rebaja hasta dejar cumbres del orden de mountain_height.
+    // Viento dominante fijo por seed (independiente del rumbo tectónico, como
+    // en la Tierra): activa la precipitación orográfica del LEM — flancos de
+    // barlovento diseccionados fino/hondo, sotavento liso con sombra de lluvia.
+    const float wind_theta =
+        noise.fbm(glm::vec3{41.2f, 0.0f, -17.9f}, 1) * 6.2831853f;
+    const glm::vec2 wind{std::cos(wind_theta), std::sin(wind_theta)};
     const std::vector<float> macro_h =
         run_lem(uplift, lithology, macro_res, macro_cell,
-                2.0f * cfg.mountain_height_m);
+                2.0f * cfg.mountain_height_m, 150, wind);
 
     // ---- Fase B: amplificación bicúbica + colinillas ----
     const float to_macro = static_cast<float>(macro_res - 1) / static_cast<float>(res - 1);

@@ -1,5 +1,7 @@
 #include "terrain/lem.h"
 
+#include <glm/geometric.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -39,6 +41,20 @@ constexpr float kChannelAreaM2 = 22500.0f; // (~150 m)² de ladera sin canal
 // mapeo exponencial centrado en 1 para no tocar la calibración).
 constexpr float kErodSpan = 1.7f;  // ratio de erodibilidad K blanda/centro
 constexpr float kA0Span = 2.5f;    // ratio del área crítica dura/centro
+// Precipitación orográfica (feedback 2026-07-10): advección de humedad en la
+// dirección del viento. La lluvia por celda = humedad × (base + ganancia por
+// pendiente de BARLOVENTO); la humedad se agota al llover (sombra de lluvia
+// emergente) y se recarga sobre el mar. El peso final se normaliza a media 1
+// sobre tierra con suelo kRainFloor: no cambia la calibración global, cambia
+// DÓNDE trabaja el agua.
+constexpr float kRainBase = 0.05f;   // fracción de humedad que llueve en llano
+constexpr float kRainLiftGain = 0.6f; // ganancia por pendiente de barlovento
+constexpr float kRainFracMax = 0.35f; // tope de descarga por celda
+// Suelo de lluvia: 0.30 empinaba los canales secos ×1.52 (S ∝ Q^-θ) y las
+// cumbres de sotavento se pasaban del contrato 1.30×objetivo (test a escala
+// isla: 1862 vs 1820). Con 0.50 el empinamiento queda en ×1.27 y el contraste
+// de disección húmedo/seco sigue siendo ×2.5 — visible sin romper la cota.
+constexpr float kRainFloor = 0.50f;  // lluvia mínima relativa (sotavento)
 
 constexpr int kDx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
 constexpr int kDz[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
@@ -103,7 +119,7 @@ void fill_pits(std::vector<float>& h, int res) {
 std::vector<float> run_lem(const std::vector<float>& uplift,
                            const std::vector<float>& lithology, int macro_res,
                            float cell_size_m, float uplift_total_m,
-                           int iterations) {
+                           int iterations, glm::vec2 wind) {
     const int res = macro_res;
     const size_t n = static_cast<size_t>(res) * static_cast<size_t>(res);
     const float uplift_per_iter = uplift_total_m / static_cast<float>(iterations);
@@ -121,6 +137,7 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
             a0[i] = kChannelAreaM2 * std::pow(kA0Span, 1.0f - 2.0f * lith);
         }
     }
+
     // Calibración física e independiente del grid: la pendiente de equilibrio
     // es kHeadwaterSlope en el dominio de ladera (A ≤ kChannelAreaM2) y decae
     // como (A0/A)^θ en los canales (perfil cóncavo de Flint). La pendiente
@@ -137,6 +154,80 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
         h[i] = uplift[i] * 2.0f;
     }
     fill_pits(h, res);
+
+    // Precipitación orográfica: preparación del pase de humedad. El viento se
+    // ajusta a la dirección de grid más cercana (8-dir) para que la celda de
+    // barlovento sea un vecino fijo; el recorrido en orden de proyección del
+    // viento garantiza que el barlovento ya está resuelto al llegar a cada
+    // celda. rain_w == 1 uniforme si no hay viento (comportamiento clásico).
+    std::vector<float> rain_w(n, 1.0f);
+    const bool has_wind = glm::length(wind) > 0.5f;
+    int sdx = 0;
+    int sdz = 0;
+    std::vector<std::uint32_t> wind_order;
+    std::vector<float> moisture;
+    if (has_wind) {
+        const float a_snap = std::round(std::atan2(wind.y, wind.x) / 0.7853982f)
+                           * 0.7853982f;
+        sdx = static_cast<int>(std::lround(std::cos(a_snap)));
+        sdz = static_cast<int>(std::lround(std::sin(a_snap)));
+        wind_order.resize(n);
+        std::iota(wind_order.begin(), wind_order.end(), 0u);
+        std::sort(wind_order.begin(), wind_order.end(),
+                  [&](std::uint32_t a, std::uint32_t b) {
+                      const int ax = static_cast<int>(a) % res;
+                      const int az = static_cast<int>(a) / res;
+                      const int bx = static_cast<int>(b) % res;
+                      const int bz = static_cast<int>(b) / res;
+                      return ax * sdx + az * sdz < bx * sdx + bz * sdz;
+                  });
+        moisture.assign(n, 1.0f);
+    }
+    const float wind_dist =
+        cell_size_m * ((sdx != 0 && sdz != 0) ? 1.4142f : 1.0f);
+    const auto recompute_rain = [&]() {
+        float rain_sum = 0.0f;
+        size_t land = 0;
+        for (const std::uint32_t i : wind_order) {
+            const int x = static_cast<int>(i) % res;
+            const int z = static_cast<int>(i) / res;
+            const int ux = x - sdx;
+            const int uz = z - sdz;
+            const bool edge = ux < 0 || uz < 0 || ux >= res || uz >= res;
+            const float m_up =
+                edge ? 1.0f : moisture[static_cast<size_t>(uz) * res + ux];
+            if (uplift[i] < kBaseUplift) {
+                // Mar: la masa de aire se recarga; no cuenta para la media.
+                moisture[i] = m_up + (1.0f - m_up) * 0.35f;
+                rain_w[i] = 0.0f;
+                continue;
+            }
+            const float h_up =
+                edge ? h[i] : h[static_cast<size_t>(uz) * res + ux];
+            const float lift = std::max(0.0f, (h[i] - h_up) / wind_dist);
+            const float frac =
+                std::min(kRainFracMax, kRainBase + kRainLiftGain * lift);
+            const float rain = m_up * frac;
+            moisture[i] = m_up - rain;
+            rain_w[i] = rain;
+            rain_sum += rain;
+            ++land;
+        }
+        if (land == 0 || rain_sum <= 0.0f) {
+            std::fill(rain_w.begin(), rain_w.end(), 1.0f);
+            return;
+        }
+        // Normalizada a media 1 sobre tierra con suelo kRainFloor: la
+        // calibración global (k_dt, umbrales) no se toca — cambia DÓNDE
+        // trabaja el agua, no cuánta hay en total.
+        const float inv_mean = static_cast<float>(land) / rain_sum;
+        for (size_t i = 0; i < n; ++i) {
+            rain_w[i] = uplift[i] < kBaseUplift
+                            ? 1.0f
+                            : kRainFloor
+                                  + (1.0f - kRainFloor) * rain_w[i] * inv_mean;
+        }
+    };
     std::vector<std::uint32_t> receiver(n);
     std::vector<float> rcv_dist(n);
     std::vector<float> area(n);
@@ -157,6 +248,11 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
     };
 
     for (int it = 0; it < iterations; ++it) {
+        // Lluvia orográfica sobre el relieve VIVO (misma cadencia que el
+        // manejo de lagos): la sombra de lluvia se muda con las montañas.
+        if (has_wind && it % 10 == 0) {
+            recompute_rain();
+        }
         // 1) Receptor de cada celda: vecino con máxima pendiente de bajada.
         std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
             for (int x = 0; x < res; ++x) {
@@ -218,9 +314,13 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
         }
 
         // 3) Área de drenaje acumulada aguas abajo (stack inverso: donantes
-        //    antes que receptores).
+        //    antes que receptores). Con viento es CAUDAL efectivo: cada celda
+        //    aporta su área × su lluvia — los valles de sotavento llevan menos
+        //    agua y tallan menos, los de barlovento más.
         const float cell_area = cell_size_m * cell_size_m;
-        std::fill(area.begin(), area.end(), cell_area);
+        for (size_t i = 0; i < n; ++i) {
+            area[i] = cell_area * rain_w[i];
+        }
         for (size_t s = n; s-- > 0;) {
             const std::uint32_t i = stack[s];
             if (receiver[i] != i) {
