@@ -16,12 +16,25 @@ namespace terrain {
 //
 // `uplift` en [0,1] por celda del grid macro (0 = mar, nivel de base fijo).
 // `uplift_total_m` = metros de levantamiento acumulado donde uplift = 1.
+// `lithology` en [0,1] por celda macro (vacío = 0.5 uniforme, comportamiento
+// clásico): 0 = roca DURA (K bajo, área crítica alta → laderas macizas y
+// empinadas, barrancos anchos), 1 = BLANDA (K alto, área crítica baja →
+// disección fina y tendida). Es lo que rompe la longitud de onda única de
+// la disección (feedback 2026-07-10 "U de cabeceras"): cada formación
+// erosiona a su escala, como en la Tierra.
 // Trabaja en UNIDADES FÍSICAS con la pendiente de equilibrio calibrada
 // (~35° en cabeceras): la altura Y la pendiente salen coherentes, sin
 // normalizaciones que distorsionen las laderas. Devuelve metros.
-std::vector<float> run_lem(const std::vector<float>& uplift, int macro_res,
+std::vector<float> run_lem(const std::vector<float>& uplift,
+                           const std::vector<float>& lithology, int macro_res,
                            float cell_size_m, float uplift_total_m,
                            int iterations = 150);
+inline std::vector<float> run_lem(const std::vector<float>& uplift,
+                                  int macro_res, float cell_size_m,
+                                  float uplift_total_m, int iterations = 150) {
+    return run_lem(uplift, {}, macro_res, cell_size_m, uplift_total_m,
+                   iterations);
+}
 
 // Muestreo bicúbico (Catmull-Rom) de un grid cuadrado en coordenadas
 // fraccionarias de celda. Para amplificar el macro al heightmap completo.

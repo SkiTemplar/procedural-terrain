@@ -111,6 +111,7 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
     const int macro_res = std::clamp(cfg.resolution / 4, 64, 1024);
     const float macro_cell = cfg.size_m / static_cast<float>(macro_res - 1);
     std::vector<float> uplift(static_cast<size_t>(macro_res) * macro_res);
+    std::vector<float> lithology(uplift.size());
     {
         // Orientación tectónica fija por seed: el uplift es ANISÓTROPO
         // (crestas ridged alargadas ~3:1 a lo largo del eje) — cordilleras
@@ -166,13 +167,29 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                                                       + 0.35f * mass,
                                                   0.0f, 1.0f))
                     * (1.0f - 0.92f * lowland);
+
+                // Litología por formaciones (feedback 2026-07-10 "U de
+                // cabeceras"): bandas de roca CUANTIZADAS siguiendo el rumbo
+                // tectónico (estratos ~paralelos al orógeno, λ ~5 km a lo
+                // largo / ~1.8 km a través) con contactos suaves. 0 = dura,
+                // 1 = blanda; el LEM disecciona cada formación a SU escala —
+                // se acabó la longitud de onda única de barrancos.
+                const float geo = noise.fbm(glm::vec3{u * 0.20f, 0.0f, v * 0.55f}
+                                                + glm::vec3{-31.6f, 0.0f, 44.9f},
+                                            2)
+                                * 0.5f + 0.5f;
+                const float t4 = glm::clamp(geo, 0.0f, 0.999f) * 4.0f;
+                const float band = std::floor(t4);
+                lithology[static_cast<size_t>(z) * macro_res + x] =
+                    (band + smoothstep(0.30f, 0.70f, t4 - band)) * 0.25f;
             }
         });
     }
     // El uplift acumulado dobla la cota objetivo: la incisión del propio LEM
     // rebaja hasta dejar cumbres del orden de mountain_height.
     const std::vector<float> macro_h =
-        run_lem(uplift, macro_res, macro_cell, 2.0f * cfg.mountain_height_m);
+        run_lem(uplift, lithology, macro_res, macro_cell,
+                2.0f * cfg.mountain_height_m);
 
     // ---- Fase B: amplificación bicúbica + colinillas ----
     const float to_macro = static_cast<float>(macro_res - 1) / static_cast<float>(res - 1);

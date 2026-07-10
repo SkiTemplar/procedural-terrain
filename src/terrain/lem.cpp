@@ -34,6 +34,11 @@ constexpr float kConcavity = 0.35f;
 // celda del grid (cell/√A): a macro fino el relieve de equilibrio se hundía a
 // ~200 m y las montañas desaparecían por diseño.
 constexpr float kChannelAreaM2 = 22500.0f; // (~150 m)² de ladera sin canal
+// Litología (feedback 2026-07-10): cuánto separa una formación BLANDA (lith=1)
+// de una DURA (lith=0) respecto al centro (lith=0.5 == comportamiento clásico,
+// mapeo exponencial centrado en 1 para no tocar la calibración).
+constexpr float kErodSpan = 1.7f;  // ratio de erodibilidad K blanda/centro
+constexpr float kA0Span = 2.5f;    // ratio del área crítica dura/centro
 
 constexpr int kDx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
 constexpr int kDz[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
@@ -95,12 +100,27 @@ void fill_pits(std::vector<float>& h, int res) {
 
 } // namespace
 
-std::vector<float> run_lem(const std::vector<float>& uplift, int macro_res,
+std::vector<float> run_lem(const std::vector<float>& uplift,
+                           const std::vector<float>& lithology, int macro_res,
                            float cell_size_m, float uplift_total_m,
                            int iterations) {
     const int res = macro_res;
     const size_t n = static_cast<size_t>(res) * static_cast<size_t>(res);
     const float uplift_per_iter = uplift_total_m / static_cast<float>(iterations);
+
+    // Erodibilidad y área crítica por celda desde la litología (invariantes
+    // por iteración: precomputadas — el solver del paso 4 es serial y no puede
+    // pagar dos pow más por celda×iteración). lith 0.5 → k=1, a0=kChannelAreaM2
+    // exactos: la calibración clásica no se toca.
+    std::vector<float> k_lith(n, 1.0f);
+    std::vector<float> a0(n, kChannelAreaM2);
+    if (!lithology.empty()) {
+        for (size_t i = 0; i < n; ++i) {
+            const float lith = lithology[i];
+            k_lith[i] = std::pow(kErodSpan, 2.0f * lith - 1.0f);
+            a0[i] = kChannelAreaM2 * std::pow(kA0Span, 1.0f - 2.0f * lith);
+        }
+    }
     // Calibración física e independiente del grid: la pendiente de equilibrio
     // es kHeadwaterSlope en el dominio de ladera (A ≤ kChannelAreaM2) y decae
     // como (A0/A)^θ en los canales (perfil cóncavo de Flint). La pendiente
@@ -224,9 +244,8 @@ std::vector<float> run_lem(const std::vector<float>& uplift, int macro_res,
             // deprisa la roca blanda de poco uplift, menos el núcleo.
             const float hardness =
                 std::pow(std::max(uplift[i], 0.05f), kHardness);
-            const float f = k_dt
-                          * std::pow(std::max(area[i], kChannelAreaM2)
-                                         / kChannelAreaM2,
+            const float f = k_dt * k_lith[i]
+                          * std::pow(std::max(area[i], a0[i]) / a0[i],
                                      kConcavity)
                           / (rcv_dist[i] * hardness);
             h[i] = (h[i] + uplift_per_iter * uplift[i] + f * h[r]) / (1.0f + f);
