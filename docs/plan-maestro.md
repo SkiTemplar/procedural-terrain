@@ -328,7 +328,7 @@ Mini-investigación al abrir la fase (modelos simples de sobreexcavación de cir
 
 ### C4 ampliado — luz y agua (se ejecuta dentro de la Fase C)
 
-- Luz: L1 sombras CSM (2-3 cascadas) · L2 AO por vértice precomputado del heightfield · L3 tonemapping+gamma · L4 cielo gradiente + niebla con altura.
+- Luz: L1 sombras CSM (2-3 cascadas) — ❌ **DESCARTADO 2026-07-11 por decisión de Rodrigo**: sol fijo, la sombra arrojada precomputada se mantiene (día/noche sigue siendo stretch post-v1.0, HP-1) · L2 AO por vértice precomputado ✅ (2026-07-10) · L3 tonemapping+gamma ✅ ACES (2026-07-08) · L4 ✅ **HECHO 2026-07-11**: pase de cielo fullscreen (gradiente cenit→horizonte + disco solar + halo Mie), niebla exponencial CON ALTURA (integral analítica, H=500 m + término residual de perspectiva aérea), `sky_color(dir)` compartido por GLSL para que la niebla de todos los materiales funda exacto al cielo, océano infinito analítico bajo el horizonte (la malla del mar y su far-clip ya no se ven: olas aplanadas a >4 km y alpha→0.97 a >6 km), fresnel del agua reflejando el cielo real. Verificado en 3 vistas (hacia el sol, altura anti-sol, pie de playa).
 - Agua: W1 color por profundidad real del fondo · W2 espuma de orilla ∝ `wave_energy` · W3 ríos con flujo D8 (olas a lo largo del cauce, amplitud ∝ pendiente) · W4 mar Gerstner orientado con la rosa de vientos.
 - Regla de oro: cada efecto visual se ancla a un campo físico ya simulado — nada decorativo desacoplado del proceso.
 

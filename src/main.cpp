@@ -73,7 +73,6 @@ void set_common_uniforms(const render::Shader& shader, const render::Camera& cam
     shader.set_mat4("u_proj", camera.proj(aspect));
     shader.set_vec3("u_sun_dir", state.sun_dir());
     shader.set_vec3("u_camera_pos", camera.position);
-    shader.set_vec3("u_sky_color", kSkyColor);
     shader.set_float("u_fog_density", state.fog_density);
 }
 
@@ -97,6 +96,13 @@ void run(std::optional<std::uint32_t> seed_override,
     render::Shader veg_shader(render::kVegVert, render::kTerrainFrag);
     render::Shader grass_shader(render::kGrassVert, render::kGrassFrag);
     render::Shader water_shader(render::kWaterVert, render::kWaterFrag);
+    render::Shader sky_shader(render::kSkyVert, render::kSkyFrag);
+
+    // VAO vacío para el triángulo fullscreen del cielo (core profile exige un
+    // VAO ligado aunque el shader no lea atributos: los vértices salen de
+    // gl_VertexID).
+    GLuint sky_vao = 0;
+    glGenVertexArrays(1, &sky_vao);
 
     ui::DebugUi debug_ui(window.handle());
     ui::DebugState state;
@@ -210,6 +216,22 @@ void run(std::optional<std::uint32_t> seed_override,
 
         glClearColor(kSkyColor.r, kSkyColor.g, kSkyColor.b, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // Pase de cielo (C4-L4): gradiente + disco solar a pantalla completa,
+        // sin depth (el mundo se pinta encima). Siempre relleno, aunque el
+        // modo wireframe esté activo — el cielo no es malla que inspeccionar.
+        glDisable(GL_DEPTH_TEST);
+        sky_shader.use();
+        const glm::mat4 view_rot = glm::mat4(glm::mat3(camera.view()));
+        sky_shader.set_mat4(
+            "u_inv_vp", glm::inverse(camera.proj(window.aspect()) * view_rot));
+        sky_shader.set_vec3("u_sun_dir", state.sun_dir());
+        sky_shader.set_vec3("u_camera_pos", camera.position);
+        glBindVertexArray(sky_vao);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindVertexArray(0);
+        glEnable(GL_DEPTH_TEST);
+
         glPolygonMode(GL_FRONT_AND_BACK, state.wireframe ? GL_LINE : GL_FILL);
 
         if (world) {
@@ -260,6 +282,8 @@ void run(std::optional<std::uint32_t> seed_override,
 
         window.swap_and_poll();
     }
+
+    glDeleteVertexArrays(1, &sky_vao);
 }
 
 } // namespace
