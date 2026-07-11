@@ -92,6 +92,35 @@ float dry_patch(float wx, float wz) {
     return glm::smoothstep(0.52f, 0.80f, n);
 }
 
+// Roca con gradiente de altitud, clima y formación (paleta C4, feedback
+// 2026-07-11 "montañas muy uniformes"): la roca baja es parda-cálida
+// (meteorización, líquenes, suelo residual); la alta, gris-azulada fría. Un
+// campo de formación a ~600 m vira el matiz cálido↔frío por zonas — dos
+// paredes separadas por km ya no comparten el mismo gris idéntico.
+glm::vec3 rock_color(float y, float climate, float wx, float wz) {
+    // La roca alta es notablemente MÁS OSCURA que la nieve: sin ese contraste
+    // las cumbres fundían en un blanco uniforme (nieve y roca casi del mismo
+    // valor) y la montaña perdía estructura.
+    const float alt_k = glm::clamp((y - 200.0f) / 600.0f, 0.0f, 1.0f);
+    glm::vec3 c = glm::mix(glm::vec3{0.53f, 0.46f, 0.36f},
+                           glm::vec3{0.415f, 0.41f, 0.43f}, alt_k);
+    // El sector cálido tira a ocre; el frío se queda neutro.
+    c = glm::mix(c, glm::vec3{0.56f, 0.48f, 0.36f}, 0.22f * climate * (1.0f - alt_k));
+    const float formation =
+        glm::smoothstep(0.35f, 0.65f, value_noise(wx * 0.0016f + 31.0f,
+                                                  wz * 0.0016f - 17.0f));
+    return c * glm::mix(glm::vec3{1.10f, 1.00f, 0.88f},
+                        glm::vec3{0.93f, 0.98f, 1.08f}, formation);
+}
+
+// Nieve con gradiente de cota: sucia y azulada-gris junto al límite (polvo de
+// roca, hielo viejo), blanca pura en lo alto.
+glm::vec3 snow_color(float y) {
+    const float alt_k = glm::clamp((y - 850.0f) / 400.0f, 0.0f, 1.0f);
+    return glm::mix(glm::vec3{0.80f, 0.83f, 0.88f},
+                    glm::vec3{0.95f, 0.96f, 0.99f}, alt_k);
+}
+
 // Color del suelo con gradiente de bosque, clima, altitud y parches secos:
 // la pradera funde hacia bosque por densidad, se seca con la altura y en
 // calvas locales (más en el sector cálido), empardece en el sector frío;
@@ -116,6 +145,19 @@ glm::vec3 ground_color(Material m, float forest_density, float climate, float y,
         return glm::mix(glm::vec3{0.84f, 0.76f, 0.55f},
                         glm::vec3{0.94f, 0.90f, 0.74f},
                         climate * climate);
+    }
+    if (m == Material::Rock) {
+        return rock_color(y, climate, wx, wz);
+    }
+    if (m == Material::Snow) {
+        return snow_color(y);
+    }
+    if (m == Material::Seabed) {
+        // El fondo marino oscurece con la profundidad: da lectura de calado a
+        // las aguas someras a través del alpha del agua.
+        const float depth_k = glm::clamp(-y / 25.0f, 0.0f, 1.0f);
+        return glm::mix(material_color(Material::Seabed),
+                        glm::vec3{0.33f, 0.36f, 0.30f}, depth_k);
     }
     return material_color(m);
 }
