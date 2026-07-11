@@ -13,6 +13,10 @@ glm::vec3 material_color(Material m);
 // Hash determinista → [0,1): variación sutil de tono por vértice.
 float hash01(int x, int z);
 
+// Value noise sobre la retícula de hash01: determinista y compartido entre
+// niveles de LOD y la paleta (mismo mundo → mismos parches, sin popping).
+float value_noise(float x, float z);
+
 // Lámina de agua interior (lagos + ríos). std::nullopt si no hay agua.
 std::optional<render::Mesh> build_water_mesh(const TerrainData& data);
 

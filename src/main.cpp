@@ -8,6 +8,7 @@
 #include "terrain/chunked_terrain.h"
 #include "terrain/generator.h"
 #include "terrain/mesher.h"
+#include "terrain/palette.h"
 #include "ui/debug_ui.h"
 #include "veg/grass_field.h"
 #include "veg/veg_renderer.h"
@@ -339,14 +340,24 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
     const auto to8 = [](const glm::vec3& c) {
         return glm::u8vec3(glm::clamp(c, 0.0f, 1.0f) * 255.0f);
     };
+    // La MISMA paleta que el render in-game (review 2026-07-11: el dump
+    // llamaba a material_color plano y quedaba ciego a los gradientes de
+    // roca/nieve/lecho — verificaba una paleta que el juego ya no usa).
+    const terrain::Palette palette(data);
     for (size_t i = 0; i < n; ++i) {
-        glm::vec3 c = terrain::material_color(data.material[i]);
+        const float wx = data.height.world_x(static_cast<int>(i % static_cast<size_t>(res)));
+        const float wz = data.height.world_z(static_cast<int>(i / static_cast<size_t>(res)));
+        const float h = data.height.data()[i];
+        glm::vec3 c = palette.ground(data.material[i], data.forest_density[i],
+                                     data.climate[i], h, wx, wz, wx, wz);
         const float wl = data.hydrology.water_level[i];
-        if (!std::isnan(wl) && wl > data.height.data()[i]) {
+        if (!std::isnan(wl) && wl > h) {
             c = glm::mix(c, glm::vec3{0.15f, 0.35f, 0.75f}, 0.65f);
         }
-        if (data.height.data()[i] <= cfg.sea_level) {
-            c = {0.10f, 0.20f, 0.45f};
+        if (h <= cfg.sea_level) {
+            // Velo azul en vez de azul plano: el gradiente de calado del
+            // lecho marino queda verificable a través del "agua".
+            c = glm::mix(c, glm::vec3{0.10f, 0.20f, 0.45f}, 0.55f);
         }
         img[i] = to8(c);
     }

@@ -196,6 +196,10 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
     const std::vector<float> macro_h =
         run_lem(uplift, lithology, macro_res, macro_cell,
                 2.0f * cfg.mountain_height_m, 150, wind);
+    // La litología pasa al TerrainData: la paleta del render tiñe la roca por
+    // formación REAL (la misma que el LEM talló), no por un ruido inventado.
+    data.lithology = std::move(lithology);
+    data.litho_res = macro_res;
 
     // ---- Fase B: amplificación bicúbica + colinillas ----
     const float to_macro = static_cast<float>(macro_res - 1) / static_cast<float>(res - 1);
@@ -426,6 +430,9 @@ void classify_materials(TerrainData& data, const Noise& noise,
     const float max_h =
         *std::max_element(hf.data().begin(), hf.data().end());
     const float snow_line = std::min(cfg.snow_line_m, 0.60f * max_h);
+    // Anclas de la paleta: exactamente los valores usados al clasificar.
+    data.max_height_m = max_h;
+    data.snow_line_m = snow_line;
     // Treeline subida (feedback 2026-07-08, "más árboles en la montaña"): el
     // bosque llega hasta ~150 m por debajo de la nieve, antes 240 — trepa por
     // las laderas altas en vez de cortarse a media montaña.

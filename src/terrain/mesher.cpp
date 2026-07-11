@@ -31,6 +31,22 @@ float hash01(int x, int z) {
     return static_cast<float>(h & 0xFFFFFFu) / static_cast<float>(0x1000000u);
 }
 
+float value_noise(float x, float z) {
+    const float fx = std::floor(x);
+    const float fz = std::floor(z);
+    const int xi = static_cast<int>(fx);
+    const int zi = static_cast<int>(fz);
+    float tx = x - fx;
+    float tz = z - fz;
+    tx = tx * tx * (3.0f - 2.0f * tx);
+    tz = tz * tz * (3.0f - 2.0f * tz);
+    const float a = hash01(xi, zi);
+    const float b = hash01(xi + 1, zi);
+    const float c = hash01(xi, zi + 1);
+    const float d = hash01(xi + 1, zi + 1);
+    return glm::mix(glm::mix(a, b, tx), glm::mix(c, d, tx), tz);
+}
+
 namespace {
 
 constexpr float kWaterSink = 0.12f; // baja la lámina para no pelear con la orilla

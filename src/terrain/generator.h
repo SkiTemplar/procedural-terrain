@@ -34,6 +34,15 @@ struct TerrainData {
     std::vector<float> forest_density;   // [0,1] gradiente de bosque
     std::vector<float> climate;          // [0,1] 0=frío (Escocia) 1=cálido (Caribe)
     std::vector<float> wave_energy;      // [0,1] REI/fetch en la banda litoral
+    // Litología del LEM (grid macro litho_res², bandas 0=dura … 1=blanda):
+    // la paleta ancla en ella el matiz de formación de la roca — el color
+    // sigue la MISMA geología que el LEM disecciona, no un ruido aparte.
+    std::vector<float> lithology;
+    int litho_res = 0;
+    // Cotas reales del mundo generado — anclas de la paleta (los gradientes
+    // de color se normalizan contra ellas, nunca contra cotas absolutas).
+    float max_height_m = 0.0f;  // cumbre tras erosión
+    float snow_line_m = 0.0f;   // línea efectiva: min(cfg.snow_line_m, 0.60·max_h)
     // Iluminación precomputada (sol fijo, decisión Rodrigo 2026-07-09). Grid
     // propio de resolución `light_res` (<= height res): sombra arrojada y AO de
     // cielo son de baja frecuencia y se muestrean bilinealmente por vértice.

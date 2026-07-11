@@ -14,40 +14,6 @@ namespace {
 
 constexpr float kSkirtDepth = 5.0f; // m hacia abajo para tapar grietas de LOD
 
-float value_noise(float x, float z); // definido más abajo
-
-// Estratos de roca SIN coherencia global (auditoría 2026-07-09): antes un seno
-// puro de la cota en fase global pintaba las MISMAS bandas horizontales a las
-// mismas alturas en TODA la isla (curvas de nivel, no geología). Ahora la fase
-// y la frecuencia se desfasan por zona (~250 m) y se mezclan dos frecuencias
-// con una leve inclinación: dos paredes separadas por km ya no riman.
-float rock_banding(float y, float wx, float wz) {
-    const float phase =
-        6.2831853f * value_noise(wx * 0.004f + 2.0f, wz * 0.004f - 7.0f);
-    const float tilt =
-        0.10f * (value_noise(wx * 0.012f - 5.0f, wz * 0.012f + 3.0f) - 0.5f);
-    const float yb = y * (0.35f + tilt) + phase;
-    return 0.93f + 0.05f * std::sin(yb) + 0.02f * std::sin(yb * 2.3f + 1.7f);
-}
-
-// Value noise sobre la retícula de hash01: determinista y compartido entre
-// niveles de LOD (mismo mundo → mismos parches, sin popping de color).
-float value_noise(float x, float z) {
-    const float fx = std::floor(x);
-    const float fz = std::floor(z);
-    const int xi = static_cast<int>(fx);
-    const int zi = static_cast<int>(fz);
-    float tx = x - fx;
-    float tz = z - fz;
-    tx = tx * tx * (3.0f - 2.0f * tx);
-    tz = tz * tz * (3.0f - 2.0f * tz);
-    const float a = hash01(xi, zi);
-    const float b = hash01(xi + 1, zi);
-    const float c = hash01(xi, zi + 1);
-    const float d = hash01(xi + 1, zi + 1);
-    return glm::mix(glm::mix(a, b, tx), glm::mix(c, d, tx), tz);
-}
-
 // Jitter determinista de vértice (HP-6 fase 1, feedback 2026-07-08): desplaza
 // cada nodo de la rejilla en XZ una fracción del paso, en función SOLO de su
 // índice global de nodo — chunks vecinos del mismo nivel comparten nodos de
@@ -57,18 +23,6 @@ glm::vec2 vertex_jitter(int gx, int gz, float step) {
     const float k = 0.30f * step;
     return {(hash01(gx * 3 + 7331, gz * 5 - 911) - 0.5f) * 2.0f * k,
             (hash01(gx * 7 - 4177, gz * 11 + 263) - 0.5f) * 2.0f * k};
-}
-
-// Tinte de suelo COHERENTE (~3.3 m): el hash por nodo con color flat pintaba
-// cada triángulo de un brillo aleatorio distinto — el "tablero de colores
-// cuadrados" del feedback. El value noise da manchas continuas entre celdas.
-// Variación tonal DENTRO de cada material (feedback 2026-07-08 "color blocky"):
-// dos escalas — grano fino (~3 m) + manchas medias (~22 m) — para que el color
-// no sea plano por celda. Rango ampliado respecto al 0.94±0.06 anterior.
-float ground_tint(float wx, float wz) {
-    const float fine = value_noise(wx * 0.30f, wz * 0.30f);
-    const float coarse = value_noise(wx * 0.045f + 5.0f, wz * 0.045f - 9.0f);
-    return 0.87f + 0.14f * fine + 0.10f * coarse;
 }
 
 // Domain warp del muestreo de material (feedback 2026-07-08 "colores en
@@ -82,84 +36,6 @@ glm::vec2 material_warp(float wx, float wz) {
     const float nx = value_noise(wx * 0.05f + 13.0f, wz * 0.05f - 4.0f) - 0.5f;
     const float nz = value_noise(wx * 0.05f - 8.0f, wz * 0.05f + 21.0f) - 0.5f;
     return {nx * 2.0f * k, nz * 2.0f * k};
-}
-
-// Parches de pradera seca (~150-400 m): rompen el verde uniforme con calvas
-// pardas de hierba agostada. Umbral alto: manchas definidas, no un degradado.
-float dry_patch(float wx, float wz) {
-    const float n = 0.65f * value_noise(wx / 380.0f, wz / 380.0f)
-                  + 0.35f * value_noise(wx / 160.0f, wz / 160.0f);
-    return glm::smoothstep(0.52f, 0.80f, n);
-}
-
-// Roca con gradiente de altitud, clima y formación (paleta C4, feedback
-// 2026-07-11 "montañas muy uniformes"): la roca baja es parda-cálida
-// (meteorización, líquenes, suelo residual); la alta, gris-azulada fría. Un
-// campo de formación a ~600 m vira el matiz cálido↔frío por zonas — dos
-// paredes separadas por km ya no comparten el mismo gris idéntico.
-glm::vec3 rock_color(float y, float climate, float wx, float wz) {
-    // La roca alta es notablemente MÁS OSCURA que la nieve: sin ese contraste
-    // las cumbres fundían en un blanco uniforme (nieve y roca casi del mismo
-    // valor) y la montaña perdía estructura.
-    const float alt_k = glm::clamp((y - 200.0f) / 600.0f, 0.0f, 1.0f);
-    glm::vec3 c = glm::mix(glm::vec3{0.53f, 0.46f, 0.36f},
-                           glm::vec3{0.415f, 0.41f, 0.43f}, alt_k);
-    // El sector cálido tira a ocre; el frío se queda neutro.
-    c = glm::mix(c, glm::vec3{0.56f, 0.48f, 0.36f}, 0.22f * climate * (1.0f - alt_k));
-    const float formation =
-        glm::smoothstep(0.35f, 0.65f, value_noise(wx * 0.0016f + 31.0f,
-                                                  wz * 0.0016f - 17.0f));
-    return c * glm::mix(glm::vec3{1.10f, 1.00f, 0.88f},
-                        glm::vec3{0.93f, 0.98f, 1.08f}, formation);
-}
-
-// Nieve con gradiente de cota: sucia y azulada-gris junto al límite (polvo de
-// roca, hielo viejo), blanca pura en lo alto.
-glm::vec3 snow_color(float y) {
-    const float alt_k = glm::clamp((y - 850.0f) / 400.0f, 0.0f, 1.0f);
-    return glm::mix(glm::vec3{0.80f, 0.83f, 0.88f},
-                    glm::vec3{0.95f, 0.96f, 0.99f}, alt_k);
-}
-
-// Color del suelo con gradiente de bosque, clima, altitud y parches secos:
-// la pradera funde hacia bosque por densidad, se seca con la altura y en
-// calvas locales (más en el sector cálido), empardece en el sector frío;
-// la arena es dorada en frío y clara caribeña en cálido.
-glm::vec3 ground_color(Material m, float forest_density, float climate, float y,
-                       float wx, float wz) {
-    if (m == Material::Grass || m == Material::Forest) {
-        glm::vec3 c = glm::mix(material_color(Material::Grass),
-                               material_color(Material::Forest), forest_density);
-        // El bosque denso protege del agostado: los parches viven en claros.
-        const float patch = dry_patch(wx, wz) * (1.0f - 0.8f * forest_density)
-                          * (0.55f + 0.45f * climate);
-        const float dryness = glm::clamp(
-            glm::clamp((y - 200.0f) / 400.0f, 0.0f, 1.0f) * 0.30f
-                + (1.0f - climate) * 0.18f + 0.55f * patch,
-            0.0f, 0.85f);
-        return glm::mix(c, glm::vec3{0.62f, 0.55f, 0.31f}, dryness);
-    }
-    if (m == Material::Sand) {
-        // Arena común (dorada) por defecto; la blanca caribeña solo en el
-        // extremo cálido del clima.
-        return glm::mix(glm::vec3{0.84f, 0.76f, 0.55f},
-                        glm::vec3{0.94f, 0.90f, 0.74f},
-                        climate * climate);
-    }
-    if (m == Material::Rock) {
-        return rock_color(y, climate, wx, wz);
-    }
-    if (m == Material::Snow) {
-        return snow_color(y);
-    }
-    if (m == Material::Seabed) {
-        // El fondo marino oscurece con la profundidad: da lectura de calado a
-        // las aguas someras a través del alpha del agua.
-        const float depth_k = glm::clamp(-y / 25.0f, 0.0f, 1.0f);
-        return glm::mix(material_color(Material::Seabed),
-                        glm::vec3{0.33f, 0.36f, 0.30f}, depth_k);
-    }
-    return material_color(m);
 }
 
 // Malla de rejilla + faldón perimetral. get_vertex(i, j) devuelve el vértice
@@ -228,7 +104,7 @@ render::Mesh build_grid_mesh(int w, int h, GetVertex&& get_vertex) {
 } // namespace
 
 ChunkedTerrain::ChunkedTerrain(const TerrainData& data, const DetailSampler& sampler)
-    : data_(&data), sampler_(&sampler) {
+    : data_(&data), sampler_(&sampler), palette_(data) {
     const int cells = data.height.resolution() - 1;
     chunks_per_side_ = (cells + chunk_cells_ - 1) / chunk_cells_;
     chunks_.resize(static_cast<size_t>(chunks_per_side_) * chunks_per_side_);
@@ -379,14 +255,10 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                 const float cx = wx + mw.x;
                 const float cz = wz + mw.y;
                 const Material m = sampler_->material_near(cx, cz);
-                float tint = ground_tint(wx, wz);
-                if (m == Material::Rock) {
-                    tint *= rock_banding(wy, wx, wz);
-                }
-                const glm::vec3 color =
-                    ground_color(m, sampler_->forest_density_near(cx, cz),
-                                 sampler_->climate_near(cx, cz), wy, cx, cz);
-                return render::Vertex{{wx, wy, wz}, color * tint,
+                const glm::vec3 color = palette_.ground(
+                    m, sampler_->forest_density_near(cx, cz),
+                    sampler_->climate_near(cx, cz), wy, wx, wz, cx, cz);
+                return render::Vertex{{wx, wy, wz}, color,
                                       sampler_->normal_near(wx, wz),
                                       {sampler_->shadow_at(wx, wz),
                                        sampler_->sky_ao_at(wx, wz)}};
@@ -419,15 +291,11 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
                 cz = wz + mw.y;
                 m = sampler_->material_near(cx, cz);
             }
-            float tint = ground_tint(wx, wz);
-            if (m == Material::Rock) {
-                tint *= rock_banding(wy, wx, wz);
-            }
             return render::Vertex{
                 {wx, wy, wz},
-                ground_color(m, sampler_->forest_density_near(cx, cz),
-                             sampler_->climate_near(cx, cz), wy, cx, cz)
-                    * tint,
+                palette_.ground(m, sampler_->forest_density_near(cx, cz),
+                                sampler_->climate_near(cx, cz), wy, wx, wz,
+                                cx, cz),
                 hf.normal_at(sx, sz),
                 {sampler_->shadow_at(wx, wz), sampler_->sky_ao_at(wx, wz)}};
         });

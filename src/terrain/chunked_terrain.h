@@ -3,6 +3,7 @@
 #include "render/mesh.h"
 #include "terrain/detail.h"
 #include "terrain/generator.h"
+#include "terrain/palette.h"
 
 #include <memory>
 #include <vector>
@@ -53,6 +54,7 @@ private:
 
     const TerrainData* data_;
     const DetailSampler* sampler_;
+    Palette palette_;
     int chunk_cells_ = 64;
     int chunks_per_side_ = 0;
     std::vector<Chunk> chunks_;

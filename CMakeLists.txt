@@ -34,6 +34,7 @@ add_executable(ProceduralTerrain
         src/render/mesh.cpp
         src/render/instanced_mesh.cpp
         src/terrain/mesher.cpp
+        src/terrain/palette.cpp
         src/terrain/chunked_terrain.cpp
         src/veg/models.cpp
         src/veg/veg_renderer.cpp
