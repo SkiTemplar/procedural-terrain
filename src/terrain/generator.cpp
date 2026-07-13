@@ -162,12 +162,43 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 // el mar (exponente 1.5 → 0.4): la montaña llega a la costa
                 // por sí misma y el acantilado es su cara contra el agua —
                 // nada de mesetas artificiales pegadas después.
-                uplift[static_cast<size_t>(z) * macro_res + x] =
+                float cell_uplift =
                     std::pow(cs.continent, 1.5f - 1.1f * cs.cliff)
                     * (0.15f + 0.85f * glm::clamp(spine * (0.75f + 0.45f * mass)
                                                       + 0.35f * mass,
                                                   0.0f, 1.0f))
                     * (1.0f - 0.92f * lowland);
+
+                // Islotes skerries (N2): lóbulos SECUNDARIOS de uplift mar
+                // adentro, en cadenas alineadas con el eje tectónico (los
+                // archipiélagos reales siguen la estructura del orógeno). No
+                // se estampa su silueta: son picos del mismo campo de uplift
+                // que el LEM erosiona en cuanto asoman — la mayoría se queda
+                // en roca que apenas rompe el agua, alguno llega a islote.
+                const float half_km = cfg.size_m * 0.5f / 1000.0f;
+                const float d_edge =
+                    std::max(std::abs(p_km.x), std::abs(p_km.z)) / half_km;
+                const float sk_gate =
+                    smoothstep(0.22f, 0.05f, cs.continent)
+                    * (1.0f - smoothstep(0.78f, 0.90f, d_edge));
+                if (sk_gate > 0.01f) {
+                    // Umbral alto del ridged = dispersión: solo las crestas
+                    // más marcadas del campo tectónico asoman; el resto del
+                    // mar queda vacío (o en bajío sumergido). El warp curva
+                    // las cadenas — sin él salían segmentos rectos con
+                    // esquinas que delataban la rejilla tectónica.
+                    const glm::vec3 psk = noise.warp(p_km, 0.9f, 0.25f);
+                    const float su = psk.x * axis.x + psk.z * axis.y;
+                    const float sv = -psk.x * axis.y + psk.z * axis.x;
+                    const float chain = smoothstep(
+                        0.68f, 0.90f,
+                        noise.ridged(glm::vec3{su * 0.10f, 0.0f, sv * 0.45f}
+                                         + glm::vec3{-57.2f, 0.0f, 21.8f},
+                                     2));
+                    cell_uplift =
+                        std::max(cell_uplift, 0.38f * sk_gate * chain);
+                }
+                uplift[static_cast<size_t>(z) * macro_res + x] = cell_uplift;
 
                 // Batimetría prior (N2): plataforma que cae a sea_depth donde
                 // el prior de tierra muere. El LEM parte de aquí bajo el agua
