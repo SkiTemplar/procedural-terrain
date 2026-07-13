@@ -119,10 +119,13 @@ void fill_pits(std::vector<float>& h, int res) {
 std::vector<float> run_lem(const std::vector<float>& uplift,
                            const std::vector<float>& lithology, int macro_res,
                            float cell_size_m, float uplift_total_m,
-                           int iterations, glm::vec2 wind) {
+                           int iterations, glm::vec2 wind,
+                           const std::vector<float>& seabed) {
     const int res = macro_res;
     const size_t n = static_cast<size_t>(res) * static_cast<size_t>(res);
     const float uplift_per_iter = uplift_total_m / static_cast<float>(iterations);
+    // Modo batimetría (N2): mar = h vivo bajo cero, no una máscara de uplift.
+    const bool has_seabed = !seabed.empty();
 
     // Erodibilidad y área crítica por celda desde la litología (invariantes
     // por iteración: precomputadas — el solver del paso 4 es serial y no puede
@@ -148,10 +151,11 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
     const float k_dt = uplift_per_iter / kHeadwaterSlope;
 
     // Semilla: gradiente inicial proporcional al uplift, para que el primer
-    // routing ya tenga pendientes hacia el mar.
+    // routing ya tenga pendientes hacia el mar. Con batimetría, la semilla
+    // del mar ES su prior de fondo (la tierra parte de ~0 y se levanta).
     std::vector<float> h(n);
     for (size_t i = 0; i < n; ++i) {
-        h[i] = uplift[i] * 2.0f;
+        h[i] = (has_seabed ? seabed[i] : 0.0f) + uplift[i] * 2.0f;
     }
     fill_pits(h, res);
 
@@ -185,6 +189,12 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
     }
     const float wind_dist =
         cell_size_m * ((sdx != 0 && sdz != 0) ? 1.4142f : 1.0f);
+    // Mar a efectos de humedad: en modo batimetría es el RELIEVE VIVO bajo
+    // cero (la masa de aire se recarga sobre el agua real, islotes incluidos);
+    // en clásico, la máscara de uplift de siempre.
+    const auto is_sea = [&](std::uint32_t i) {
+        return has_seabed ? h[i] <= 0.0f : uplift[i] < kBaseUplift;
+    };
     const auto recompute_rain = [&]() {
         float rain_sum = 0.0f;
         size_t land = 0;
@@ -196,7 +206,7 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
             const bool edge = ux < 0 || uz < 0 || ux >= res || uz >= res;
             const float m_up =
                 edge ? 1.0f : moisture[static_cast<size_t>(uz) * res + ux];
-            if (uplift[i] < kBaseUplift) {
+            if (is_sea(i)) {
                 // Mar: la masa de aire se recarga; no cuenta para la media.
                 moisture[i] = m_up + (1.0f - m_up) * 0.35f;
                 rain_w[i] = 0.0f;
@@ -221,8 +231,8 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
         // calibración global (k_dt, umbrales) no se toca — cambia DÓNDE
         // trabaja el agua, no cuánta hay en total.
         const float inv_mean = static_cast<float>(land) / rain_sum;
-        for (size_t i = 0; i < n; ++i) {
-            rain_w[i] = uplift[i] < kBaseUplift
+        for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(n); ++i) {
+            rain_w[i] = is_sea(i)
                             ? 1.0f
                             : kRainFloor
                                   + (1.0f - kRainFloor) * rain_w[i] * inv_mean;
@@ -331,7 +341,15 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
         // 4) Solver implícito (stack directo: el receptor ya está resuelto).
         for (size_t s = 0; s < n; ++s) {
             const std::uint32_t i = stack[s];
-            if (uplift[i] < kBaseUplift) {
+            if (has_seabed) {
+                if (h[i] <= 0.0f) {
+                    // Fondo marino: la tectónica sigue empujando (un lóbulo
+                    // submarino puede EMERGER como islote), pero bajo el agua
+                    // no hay incisión fluvial — solo difusión (paso 5).
+                    h[i] += uplift_per_iter * uplift[i];
+                    continue;
+                }
+            } else if (uplift[i] < kBaseUplift) {
                 h[i] = 0.0f; // nivel de base: mar
                 continue;
             }
@@ -348,7 +366,11 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
                           * std::pow(std::max(area[i], a0[i]) / a0[i],
                                      kConcavity)
                           / (rcv_dist[i] * hardness);
-            h[i] = (h[i] + uplift_per_iter * uplift[i] + f * h[r]) / (1.0f + f);
+            // Con batimetría, el nivel de base fluvial es el MAR (h=0): un
+            // río que desemboca no talla su lecho por debajo del receptor
+            // sumergido — grada a la superficie del agua.
+            const float hr = has_seabed ? std::max(h[r], 0.0f) : h[r];
+            h[i] = (h[i] + uplift_per_iter * uplift[i] + f * hr) / (1.0f + f);
         }
 
         // 5) Difusión de laderas: crestas redondeadas, sin agujas.
@@ -394,8 +416,12 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
         }
         h.swap(smoothed);
     }
-    for (float& v : h) {
-        v = std::max(v, 0.0f);
+    // El clamp a ≥0 solo tiene sentido sin batimetría: con fondo marino real
+    // el relieve devuelto ES con signo (la costa se corta después en h=0).
+    if (!has_seabed) {
+        for (float& v : h) {
+            v = std::max(v, 0.0f);
+        }
     }
     return h;
 }

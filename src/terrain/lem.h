@@ -31,6 +31,15 @@ namespace terrain {
 // LEM cada 10 iteraciones sobre el relieve vivo: los flancos húmedos se
 // diseccionan fino y hondo, el sotavento queda liso y seco — segunda vía
 // (2026-07-10) contra la disección uniforme.
+// `seabed` (modo BATIMETRÍA, N2 costa emergente): prior de fondo marino en
+// metros CON SIGNO (≤0 mar adentro, →0 bajo la futura tierra). Si se pasa,
+// el LEM devuelve relieve con signo: el mar deja de estar clavado a h=0 —
+// arranca en su batimetría prior y solo lo tocan tectónica (uplift) y
+// difusión (bajo el agua no hay incisión fluvial); los ríos subaéreos gradan
+// al NIVEL DEL MAR (h=0), no al lecho de su receptor sumergido. La costa es
+// el contorno h=0 del relieve erosionado, y los lóbulos de uplift submarinos
+// que asoman se convierten en islotes reales (erosionados como tierra en
+// cuanto emergen). Vacío = comportamiento clásico (mar pinned a 0, clamp ≥0).
 // Trabaja en UNIDADES FÍSICAS con la pendiente de equilibrio calibrada
 // (~35° en cabeceras): la altura Y la pendiente salen coherentes, sin
 // normalizaciones que distorsionen las laderas. Devuelve metros.
@@ -38,7 +47,8 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
                            const std::vector<float>& lithology, int macro_res,
                            float cell_size_m, float uplift_total_m,
                            int iterations = 150,
-                           glm::vec2 wind = {0.0f, 0.0f});
+                           glm::vec2 wind = {0.0f, 0.0f},
+                           const std::vector<float>& seabed = {});
 inline std::vector<float> run_lem(const std::vector<float>& uplift,
                                   int macro_res, float cell_size_m,
                                   float uplift_total_m, int iterations = 150) {

@@ -389,6 +389,77 @@ TEST(Generator, SinMurallasVerticales) {
     EXPECT_LT(p999, 4.5f);
 }
 
+TEST(Lem, FondoMarinoRealEIsloteEmergente) {
+    // Contrato N2 (costa emergente): en modo batimetría el LEM devuelve el
+    // relieve CON SIGNO. El mar es fondo simulado bajo cero (nada lo clava a
+    // h=0), la tierra erosiona sobre el nivel del mar, y un lóbulo de uplift
+    // submarino EMERGE como islote — sin anillo satélite estampado.
+    const int res = 256;
+    const float size_m = 10000.0f;
+    const float cell = size_m / static_cast<float>(res - 1);
+    const float target_m = 2.0f * 1400.0f;
+
+    std::vector<float> uplift(static_cast<size_t>(res) * res, 0.0f);
+    std::vector<float> seabed(uplift.size(), 0.0f);
+    const auto at = [&](float wx_m, float wz_m) {
+        const int x = static_cast<int>((wx_m + 0.5f * size_m) / cell + 0.5f);
+        const int z = static_cast<int>((wz_m + 0.5f * size_m) / cell + 0.5f);
+        return static_cast<size_t>(z) * res + static_cast<size_t>(x);
+    };
+    for (int z = 0; z < res; ++z) {
+        for (int x = 0; x < res; ++x) {
+            const float wx = (static_cast<float>(x) - 0.5f * (res - 1)) * cell;
+            const float wz = (static_cast<float>(z) - 0.5f * (res - 1)) * cell;
+            const float r = std::sqrt(wx * wx + wz * wz);
+            const size_t i = static_cast<size_t>(z) * res + x;
+            // Isla principal: disco r=2 km con rizado determinista.
+            if (r < 2000.0f) {
+                const float ripple = 0.5f
+                    + 0.5f * std::sin(static_cast<float>(x) * 12.9898f
+                                      + static_cast<float>(z) * 78.233f);
+                uplift[i] = 1.0f - 0.06f * ripple;
+            }
+            // Lóbulo submarino (futuro islote) a 3.5 km del centro.
+            const float dxs = wx - 3500.0f;
+            const float rs = std::sqrt(dxs * dxs + wz * wz);
+            if (rs < 300.0f) {
+                uplift[i] = std::max(uplift[i], 0.30f * (1.0f - rs / 300.0f));
+            }
+            // Batimetría prior: plataforma que cae a -60 m mar adentro.
+            seabed[i] = -60.0f
+                * std::clamp((r - 2000.0f) / 500.0f, 0.0f, 1.0f);
+        }
+    }
+
+    const auto h = terrain::run_lem(uplift, {}, res, cell, target_m, 150,
+                                    {0.0f, 0.0f}, seabed);
+
+    // 1) El mar lejos de todo conserva su profundidad (no está clavado a 0).
+    EXPECT_LT(h[at(-3500.0f, 0.0f)], -10.0f);
+    // 2) El borde del dominio es mar hondo.
+    EXPECT_LT(h[0], -30.0f);
+    // 3) La isla principal erosiona a cota positiva de verdad.
+    const float max_h = *std::max_element(h.begin(), h.end());
+    EXPECT_GT(max_h, 0.4f * 1400.0f);
+    // 4) El islote EMERGE: algún punto del lóbulo submarino queda sobre el mar.
+    float skerry_max = -1e9f;
+    for (int z = 0; z < res; ++z) {
+        for (int x = 0; x < res; ++x) {
+            const float wx = (static_cast<float>(x) - 0.5f * (res - 1)) * cell;
+            const float wz = (static_cast<float>(z) - 0.5f * (res - 1)) * cell;
+            const float dxs = wx - 3500.0f;
+            if (std::sqrt(dxs * dxs + wz * wz) < 300.0f) {
+                skerry_max = std::max(
+                    skerry_max, h[static_cast<size_t>(z) * res + x]);
+            }
+        }
+    }
+    printf("  islote emergente: cota max %.1f m\n", skerry_max);
+    EXPECT_GT(skerry_max, 0.0f);
+    // 5) Y sigue siendo un ISLOTE, no una montaña: muy por debajo de la isla.
+    EXPECT_LT(skerry_max, 0.25f * max_h);
+}
+
 TEST(Lem, LaCotaDeCumbreSigueElObjetivo) {
     // Contrato del LEM: las cumbres deben quedar DEL ORDEN del objetivo
     // pedido (no un 40% de él). En estado estacionario el uplift total se
