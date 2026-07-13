@@ -4,6 +4,9 @@
 
 #include <glm/glm.hpp>
 
+#include <string>
+#include <vector>
+
 struct GLFWwindow;
 
 namespace render {
@@ -39,6 +42,14 @@ struct DebugState {
     // Censo de vegetación por tipo (auditoría Fase B): pino, frondoso, roca,
     // mata, arbusto, tronco caído. Rellenado por main desde VegRenderer.
     size_t veg_counts[6] = {};
+
+    // Presets JSON (C1): el panel edita el nombre y levanta peticiones; main
+    // hace la E/S (guardar con el hash del mundo actual, cargar → regenerar).
+    char preset_name[64] = "mi-mundo";
+    bool save_preset_requested = false;
+    std::string load_preset_name;         // no vacío = cargar este preset
+    std::vector<std::string> preset_list; // ficheros del directorio presets/
+    std::string preset_status;            // feedback de la última operación
 
     glm::vec3 sun_dir() const;
 };

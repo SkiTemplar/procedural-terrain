@@ -91,6 +91,26 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         if (state.last_generation_seconds > 0.0f) {
             ImGui::TextDisabled("ultima generacion: %.1f s", state.last_generation_seconds);
         }
+
+        // Presets (C1): guardar el mundo actual / cargar y regenerar.
+        ImGui::Separator();
+        ImGui::Text("Presets");
+        ImGui::InputText("nombre##preset", state.preset_name,
+                         sizeof(state.preset_name));
+        ImGui::BeginDisabled(state.generation_phase != nullptr);
+        if (ImGui::Button("Guardar preset", ImVec2(-1.0f, 0.0f))) {
+            state.save_preset_requested = true;
+        }
+        for (const auto& name : state.preset_list) {
+            if (ImGui::Button(("Cargar '" + name + "'").c_str(),
+                              ImVec2(-1.0f, 0.0f))) {
+                state.load_preset_name = name;
+            }
+        }
+        ImGui::EndDisabled();
+        if (!state.preset_status.empty()) {
+            ImGui::TextDisabled("%s", state.preset_status.c_str());
+        }
     }
 
     if (ImGui::CollapsingHeader("Vegetacion")) {

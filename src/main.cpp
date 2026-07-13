@@ -9,6 +9,7 @@
 #include "terrain/generator.h"
 #include "terrain/mesher.h"
 #include "terrain/palette.h"
+#include "terrain/preset.h"
 #include "ui/debug_ui.h"
 #include "veg/grass_field.h"
 #include "veg/veg_renderer.h"
@@ -20,6 +21,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <iostream>
@@ -110,6 +112,12 @@ void run(std::optional<std::uint32_t> seed_override,
     if (seed_override) {
         state.pending_config.seed = *seed_override;
     }
+    // Presets (C1): viven en presets/ relativo al directorio de trabajo (la
+    // raíz del repo en el flujo normal). El hash esperado del preset cargado
+    // se comprueba al terminar el bake — verificación §7-C en runtime.
+    const std::string preset_dir = "presets";
+    state.preset_list = terrain::list_presets(preset_dir);
+    std::uint64_t preset_expected_hash = 0;
 
     // Generación asíncrona: el generate() (solo CPU) corre en un hilo de
     // trabajo y la ventana sigue viva con un overlay de progreso. El montaje
@@ -173,6 +181,38 @@ void run(std::optional<std::uint32_t> seed_override,
             controller.update(camera, input, world->sampler, clock.dt);
         }
 
+        if (state.save_preset_requested) {
+            state.save_preset_requested = false;
+            if (world) {
+                std::error_code ec;
+                std::filesystem::create_directories(preset_dir, ec);
+                const std::string path =
+                    preset_dir + "/" + state.preset_name + ".json";
+                // Se guarda el config del MUNDO ACTUAL (no el de los sliders
+                // a medio editar) con el hash del heightfield que produjo.
+                const bool ok = terrain::save_preset(
+                    path, world->data.config,
+                    terrain::heightfield_hash(world->data.height));
+                state.preset_status =
+                    ok ? "guardado: " + path : "ERROR al guardar " + path;
+                state.preset_list = terrain::list_presets(preset_dir);
+            } else {
+                state.preset_status = "no hay mundo que guardar todavia";
+            }
+        }
+        if (!state.load_preset_name.empty()) {
+            const std::string name = state.load_preset_name;
+            state.load_preset_name.clear();
+            if (const auto p =
+                    terrain::load_preset(preset_dir + "/" + name + ".json")) {
+                state.pending_config = p->config;
+                preset_expected_hash = p->height_hash;
+                state.regenerate_requested = true;
+                state.preset_status = "cargando preset '" + name + "'...";
+            } else {
+                state.preset_status = "ERROR al leer preset '" + name + "'";
+            }
+        }
         if (state.regenerate_requested) {
             state.regenerate_requested = false;
             if (!baking.valid()) {
@@ -196,6 +236,17 @@ void run(std::optional<std::uint32_t> seed_override,
                           << " rocas=" << vc.rocks << " matas=" << vc.tufts
                           << " arbustos=" << vc.bushes << " troncos=" << vc.logs
                           << std::endl;
+            }
+            if (preset_expected_hash != 0) {
+                // Verificación §7-C: el mundo regenerado desde el preset debe
+                // reproducir exactamente el heightfield guardado.
+                const bool match = terrain::heightfield_hash(world->data.height)
+                                   == preset_expected_hash;
+                preset_expected_hash = 0;
+                state.preset_status =
+                    match ? "preset verificado: el mundo coincide con el hash"
+                          : "AVISO: el mundo NO coincide con el hash del preset";
+                std::cout << state.preset_status << std::endl;
             }
             state.last_generation_seconds = std::chrono::duration<float>(
                 std::chrono::steady_clock::now() - bake_start).count();

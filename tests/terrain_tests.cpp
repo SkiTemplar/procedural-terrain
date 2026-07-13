@@ -4,11 +4,15 @@
 #include "terrain/hydrology.h"
 #include "terrain/lem.h"
 #include "terrain/noise.h"
+#include "terrain/preset.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 
 namespace {
 
@@ -387,6 +391,67 @@ TEST(Generator, SinMurallasVerticales) {
     }
     EXPECT_LT(p99, 2.3f);
     EXPECT_LT(p999, 4.5f);
+}
+
+TEST(Preset, RoundTripDeConfigCompleta) {
+    // Contrato C1: guardar y cargar un preset conserva TODOS los campos del
+    // config (incluida la seed) — un campo olvidado en la serialización
+    // significa un mundo distinto al cargar.
+    terrain::TerrainConfig cfg = test_config();
+    cfg.seed = 777;
+    cfg.coast_flood_m = 11.5f;
+    cfg.wind_dir_deg = 123.0f;
+    cfg.snow_line_m = 640.0f;
+
+    const auto path = std::filesystem::temp_directory_path()
+                    / "pt-preset-roundtrip.json";
+    ASSERT_TRUE(terrain::save_preset(path.string(), cfg, 0xABCDEFull));
+    const auto loaded = terrain::load_preset(path.string());
+    std::filesystem::remove(path);
+    ASSERT_TRUE(loaded.has_value());
+
+    EXPECT_EQ(loaded->config.seed, cfg.seed);
+    EXPECT_EQ(loaded->height_hash, 0xABCDEFull);
+    EXPECT_FLOAT_EQ(loaded->config.size_m, cfg.size_m);
+    EXPECT_EQ(loaded->config.resolution, cfg.resolution);
+    EXPECT_FLOAT_EQ(loaded->config.coast_flood_m, cfg.coast_flood_m);
+    EXPECT_FLOAT_EQ(loaded->config.wind_dir_deg, cfg.wind_dir_deg);
+    EXPECT_FLOAT_EQ(loaded->config.snow_line_m, cfg.snow_line_m);
+    // El resto de campos, comparados por su serialización (si un campo nuevo
+    // entra en el config y no en el preset, esto NO lo caza — por eso
+    // save_preset serializa campo a campo y este test fija los sensibles).
+    EXPECT_EQ(terrain::preset_to_json(loaded->config),
+              terrain::preset_to_json(cfg));
+}
+
+TEST(Preset, CargarYRegenerarReproduceElMundo) {
+    // Contrato C1 (criterio §7-C del plan): cargar un preset y regenerar
+    // reproduce el mundo — el hash del heightfield coincide con el guardado.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const std::uint64_t h = terrain::heightfield_hash(data.height);
+
+    const auto path = std::filesystem::temp_directory_path()
+                    / "pt-preset-mundo.json";
+    ASSERT_TRUE(terrain::save_preset(path.string(), cfg, h));
+    const auto loaded = terrain::load_preset(path.string());
+    std::filesystem::remove(path);
+    ASSERT_TRUE(loaded.has_value());
+
+    const auto regen = terrain::generate(loaded->config);
+    EXPECT_EQ(terrain::heightfield_hash(regen.height), loaded->height_hash);
+}
+
+TEST(Preset, CargarFicheroCorruptoNoRevienta) {
+    const auto path = std::filesystem::temp_directory_path()
+                    / "pt-preset-corrupto.json";
+    {
+        std::ofstream out(path);
+        out << "{ esto no es json valido";
+    }
+    const auto loaded = terrain::load_preset(path.string());
+    std::filesystem::remove(path);
+    EXPECT_FALSE(loaded.has_value());
 }
 
 TEST(Lem, FondoMarinoRealEIsloteEmergente) {

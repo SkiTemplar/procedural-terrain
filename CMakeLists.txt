@@ -8,6 +8,7 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenGL REQUIRED)
 
 # Pipeline de generación: sin dependencias de OpenGL, testeable en aislamiento.
@@ -21,9 +22,10 @@ add_library(terrain_gen STATIC
         src/terrain/generator.cpp
         src/terrain/detail.cpp
         src/terrain/lem.cpp
+        src/terrain/preset.cpp
 )
 target_include_directories(terrain_gen PUBLIC src)
-target_link_libraries(terrain_gen PUBLIC glm::glm)
+target_link_libraries(terrain_gen PUBLIC glm::glm nlohmann_json::nlohmann_json)
 
 add_executable(ProceduralTerrain
         src/main.cpp
