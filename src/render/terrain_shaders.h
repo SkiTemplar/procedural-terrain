@@ -320,6 +320,7 @@ uniform mat4 u_view;
 uniform mat4 u_proj;
 uniform float u_time;
 uniform vec3 u_camera_pos;
+uniform vec3 u_wave_dir; // xz = dirección de VIAJE del oleaje dominante
 
 out vec3 v_world_pos;
 flat out vec3 v_color;
@@ -342,9 +343,13 @@ void main() {
         p.y += wave_k * 0.05
              * sin(dot(a_pos.xz, fdir) * 0.9 - u_time * 3.0);
     } else {
-        p.y += wave_k * (0.15 * sin(u_time * 1.1 + a_pos.x * 0.05
-                                    + a_pos.z * 0.07)
-                         + 0.08 * sin(u_time * 1.7 + a_pos.z * 0.13));
+        // C4-W4: el mar de fondo VIAJA con la rosa de vientos (dos trenes,
+        // el secundario sesgado ~20°), no con senoidales diagonales fijas.
+        vec2 wd = normalize(u_wave_dir.xz + vec2(1e-5, 0.0));
+        vec2 wd2 = normalize(wd + vec2(-wd.y, wd.x) * 0.35);
+        p.y += wave_k * (0.15 * sin(dot(a_pos.xz, wd) * 0.05 - u_time * 1.1)
+                         + 0.08 * sin(dot(a_pos.xz, wd2) * 0.13
+                                      - u_time * 1.7));
     }
     v_world_pos = p;
     v_color = a_color;
@@ -366,24 +371,69 @@ uniform int u_is_sea;        // 1 = plano del mar, 0 = malla de ríos/lagos
 uniform sampler2D u_seabed;  // r = calado bajo el mar (m), g = energía oleaje
 uniform float u_domain_half; // semiancho del heightfield (m)
 uniform float u_time;
+uniform vec3 u_wave_dir;     // xz = dirección de VIAJE del oleaje dominante
+uniform float u_wind_focus;  // 0 = mar isótropo, 1 = todo del viento dominante
 
 out vec4 frag_color;
 )glsl" PT_GLSL_SKY_COMMON R"glsl(
-void main() {
-    vec3 normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
-    vec3 view_dir = normalize(u_camera_pos - v_world_pos);
+float w_hash12(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
 
-    // C4-W3: rizado ANALÍTICO advectado con la corriente (por píxel,
-    // independiente de la teselación): perturba la normal con la derivada de
-    // una onda corta que viaja aguas abajo — el río se LEE fluir.
+float w_vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = w_hash12(i);
+    float b = w_hash12(i + vec2(1.0, 0.0));
+    float c = w_hash12(i + vec2(0.0, 1.0));
+    float d = w_hash12(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+void main() {
+    float dist = length(v_world_pos - u_camera_pos);
+    vec3 view_dir = normalize(u_camera_pos - v_world_pos);
+    vec2 wd = normalize(u_wave_dir.xz + vec2(1e-5, 0.0));
+
+    vec3 normal;
     vec2 fdir = v_river.xz;
     float flen = length(fdir);
-    if (u_is_sea == 0 && flen > 0.01) {
-        fdir /= flen;
-        float phase = dot(v_world_pos.xz, fdir) * 2.8 - u_time * 4.2;
-        float ripple = 0.055 * cos(phase)
-                     + 0.030 * cos(phase * 2.3 + 1.7);
-        normal = normalize(normal + vec3(-fdir.x, 0.0, -fdir.y) * ripple);
+    if (u_is_sea == 1) {
+        // C4-W4: normal ANALÍTICA del oleaje por píxel (independiente de la
+        // rejilla de 625 m del plano del mar): tres trenes de ola alrededor
+        // de la dirección de viaje de la rosa de vientos — con focalización
+        // alta van casi alineados, con mar isótropo se abren en abanico. El
+        // sol-glitter y el fresnel salen por píxel, no por parche de malla.
+        vec2 perp = vec2(-wd.y, wd.x);
+        float spread = 1.0 - 0.75 * u_wind_focus;
+        vec2 d1 = normalize(wd + perp * 0.55 * spread);
+        vec2 d2 = normalize(wd - perp * 0.45 * spread);
+        vec2 d3 = normalize(wd + perp * 0.18 * spread);
+        float p1 = dot(v_world_pos.xz, d1) * 0.150 - u_time * 1.5;
+        float p2 = dot(v_world_pos.xz, d2) * 0.330 - u_time * 2.3;
+        float p3 = dot(v_world_pos.xz, d3) * 0.700 - u_time * 3.4;
+        // Las olas se aplanan con la distancia (mismo criterio que las de
+        // vértice): a rasante solo ensuciaban el fresnel del mar lejano.
+        float wave_k = clamp(1.0 - (dist - 2000.0) / 2000.0, 0.0, 1.0);
+        vec2 slope = d1 * (0.14 * cos(p1)) + d2 * (0.10 * cos(p2))
+                   + d3 * (0.07 * cos(p3));
+        slope *= wave_k;
+        normal = normalize(vec3(-slope.x, 1.0, -slope.y));
+    } else {
+        normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
+        // C4-W3: rizado ANALÍTICO advectado con la corriente (por píxel,
+        // independiente de la teselación): perturba la normal con la derivada
+        // de una onda corta que viaja aguas abajo — el río se LEE fluir.
+        if (flen > 0.01) {
+            fdir /= flen;
+            float phase = dot(v_world_pos.xz, fdir) * 2.8 - u_time * 4.2;
+            float ripple = 0.055 * cos(phase)
+                         + 0.030 * cos(phase * 2.3 + 1.7);
+            normal = normalize(normal + vec3(-fdir.x, 0.0, -fdir.y) * ripple);
+        }
     }
 
     // Calado físico del punto: el color del agua sale de ÉL, no de un tinte.
@@ -423,17 +473,29 @@ void main() {
     vec3 half_dir = normalize(view_dir + u_sun_dir);
     lit += vec3(0.45) * pow(max(dot(normal, half_dir), 0.0), 96.0);
 
-    // C4-W3: espuma de RÁPIDOS/CASCADAS donde la hidrología marcó whitewater
-    // (0.5 = rápidos, 1 = caída): vetas blancas que corren con el agua.
+    // Espuma. C4-W3 en ríos: vetas blancas que corren con el agua donde la
+    // hidrología marcó whitewater (0.5 = rápidos, 1 = caída). C4-W2 en el
+    // mar: franja de rompiente donde el fondo roza la superficie, con
+    // intensidad ∝ energía de OLEAJE REAL (fetch/REI) — la costa batida
+    // rompe blanco, la abrigada apenas espumea. Nada decorativo: ambas salen
+    // de campos simulados.
     float foam = 0.0;
-    if (u_is_sea == 0 && v_ww > 0.05 && flen > 0.01) {
+    if (u_is_sea == 1) {
+        float band = 1.0 - smoothstep(0.25, 3.2, depth);
+        float chop = w_vnoise(v_world_pos.xz * 0.45 - wd * (u_time * 1.4));
+        float pulse = 0.5
+            + 0.5 * sin(dot(v_world_pos.xz, wd) * 0.30 - u_time * 1.8
+                        + chop * 2.6);
+        foam = clamp(band * (0.20 + 0.80 * wave_e) * (0.35 + 0.65 * pulse),
+                     0.0, 1.0);
+    } else if (v_ww > 0.05 && flen > 0.01) {
         float streak = 0.5
             + 0.5 * sin(dot(v_world_pos.xz, fdir) * 3.5 - u_time * 5.5
                         + sin(dot(v_world_pos.xz, vec2(-fdir.y, fdir.x)) * 2.1)
                               * 1.3);
         foam = clamp(v_ww * (0.45 + 0.55 * streak), 0.0, 1.0);
-        lit = mix(lit, vec3(0.88, 0.92, 0.95), foam * 0.65);
     }
+    lit = mix(lit, vec3(0.88, 0.92, 0.95), foam * 0.65);
 
     float fog = fog_amount(u_camera_pos, v_world_pos);
     vec3 color = mix(lit, sky_color(-view_dir), fog);
@@ -442,7 +504,6 @@ void main() {
     // camino de luz bajo el agua tan largo que el fondo nunca se ve — sin esto
     // el rectángulo del heightfield se marcaba en el mar (el fondo tras el
     // alpha cambiaba de lecho marino a océano del cielo justo en su borde).
-    float dist = length(v_world_pos - u_camera_pos);
     float opaque_k = clamp((dist - 1500.0) / 4500.0, 0.0, 1.0);
     // Alpha por calado (W1): en 20 cm de orilla el fondo se ve casi nítido;
     // a >4 m de columna el cuerpo de agua manda.

@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -395,6 +396,18 @@ void run(std::optional<std::uint32_t> seed_override,
             water_shader.set_float("u_time", clock.total);
             water_shader.set_float("u_domain_half",
                                    world->data.config.size_m * 0.5f);
+            // C4-W4: el oleaje viaja con la rosa de vientos. wind_dir_deg es
+            // DE dónde sopla (brújula: 0 = del norte = -z); las olas van al
+            // sentido contrario.
+            {
+                const float wr = world->data.config.wind_dir_deg
+                               * 3.14159265f / 180.0f;
+                water_shader.set_vec3(
+                    "u_wave_dir",
+                    {-std::sin(wr), 0.0f, std::cos(wr)});
+                water_shader.set_float("u_wind_focus",
+                                       world->data.config.wind_focus);
+            }
             water_shader.set_int("u_seabed", 0);
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, seabed_tex.id);
