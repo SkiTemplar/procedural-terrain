@@ -70,6 +70,38 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
     constexpr std::uint32_t kNoVertex = std::numeric_limits<std::uint32_t>::max();
     std::vector<std::uint32_t> vertex_of(static_cast<size_t>(res) * res, kNoVertex);
 
+    // C4-W3: dirección de CORRIENTE por vértice — el descenso más pronunciado
+    // del lecho tallado (el mismo criterio D8 de la hidrología). Los lagos no
+    // llevan corriente: su lámina es de equilibrio. El shader advecta la onda
+    // del río a lo largo de esta dirección, en vez de las dos senoidales
+    // diagonales fijas que compartía con el mar.
+    const auto flow_dir_at = [&](int x, int z) -> glm::vec2 {
+        const size_t i = sample_index(x, z);
+        if (data.hydrology.lake[i]) {
+            return {0.0f, 0.0f};
+        }
+        const float h0 = hf.at(x, z);
+        float best_slope = 0.0f;
+        glm::vec2 dir{0.0f};
+        for (int dz = -1; dz <= 1; ++dz) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if ((dx == 0 && dz == 0) || x + dx < 0 || z + dz < 0
+                    || x + dx >= res || z + dz >= res) {
+                    continue;
+                }
+                const float d = (dx != 0 && dz != 0) ? 1.4142f : 1.0f;
+                const float slope = (h0 - hf.at(x + dx, z + dz)) / d;
+                if (slope > best_slope) {
+                    best_slope = slope;
+                    dir = glm::normalize(
+                        glm::vec2{static_cast<float>(dx),
+                                  static_cast<float>(dz)});
+                }
+            }
+        }
+        return dir;
+    };
+
     const auto get_or_create = [&](int x, int z, float fallback) {
         const size_t i = sample_index(x, z);
         if (vertex_of[i] != kNoVertex) {
@@ -89,9 +121,15 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
         // color Beer-Lambert: orillas someras claras, pozas y ejes oscuros.
         // Sin ruido: es el calado físico del cauce tallado.
         const float depth = std::max(0.0f, y - hf.at(x, z));
+        const glm::vec2 fdir = flow_dir_at(x, z);
+        // light.x lleva la marca de whitewater de la hidrología (0 = agua
+        // tranquila, 0.5 = rápidos, 1 = cascada) para la espuma del shader.
+        const float ww =
+            static_cast<float>(data.hydrology.whitewater[i]) * 0.5f;
         vertices.push_back({{hf.world_x(x), y, hf.world_z(z)},
                             kLakeColor * tint,
-                            {0.0f, depth, 0.0f}});
+                            {fdir.x, depth, fdir.y},
+                            {ww, 1.0f}});
         return vertex_of[i];
     };
 

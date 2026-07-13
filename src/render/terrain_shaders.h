@@ -314,6 +314,7 @@ constexpr const char* kWaterVert = R"glsl(
 layout (location = 0) in vec3 a_pos;
 layout (location = 1) in vec3 a_color;
 layout (location = 2) in vec3 a_normal; // ríos: (flujo.x, calado, flujo.z)
+layout (location = 3) in vec2 a_light;  // ríos: x = whitewater (0/0.5/1)
 
 uniform mat4 u_view;
 uniform mat4 u_proj;
@@ -323,6 +324,7 @@ uniform vec3 u_camera_pos;
 out vec3 v_world_pos;
 flat out vec3 v_color;
 out vec3 v_river; // (flujo.x, calado, flujo.z) interpolado
+out float v_ww;   // whitewater interpolado
 
 void main() {
     vec3 p = a_pos;
@@ -331,11 +333,23 @@ void main() {
     // fresnel del mar lejano frente al océano analítico del pase de cielo).
     float dist = length(a_pos.xz - u_camera_pos.xz);
     float wave_k = clamp(1.0 - (dist - 2000.0) / 2000.0, 0.0, 1.0);
-    p.y += wave_k * (0.15 * sin(u_time * 1.1 + a_pos.x * 0.05 + a_pos.z * 0.07)
-                     + 0.08 * sin(u_time * 1.7 + a_pos.z * 0.13));
+    vec2 fdir = a_normal.xz;
+    float flen = length(fdir);
+    if (flen > 0.001) {
+        // C4-W3: el RÍO ondula A LO LARGO de su corriente (onda viajera aguas
+        // abajo), no con las senoidales diagonales del mar.
+        fdir /= flen;
+        p.y += wave_k * 0.05
+             * sin(dot(a_pos.xz, fdir) * 0.9 - u_time * 3.0);
+    } else {
+        p.y += wave_k * (0.15 * sin(u_time * 1.1 + a_pos.x * 0.05
+                                    + a_pos.z * 0.07)
+                         + 0.08 * sin(u_time * 1.7 + a_pos.z * 0.13));
+    }
     v_world_pos = p;
     v_color = a_color;
     v_river = a_normal;
+    v_ww = a_light.x;
     gl_Position = u_proj * u_view * vec4(p, 1.0);
 }
 )glsl";
@@ -345,17 +359,32 @@ constexpr const char* kWaterFrag = R"glsl(
 in vec3 v_world_pos;
 flat in vec3 v_color;
 in vec3 v_river;
+in float v_ww;
 
 uniform vec3 u_camera_pos;
 uniform int u_is_sea;        // 1 = plano del mar, 0 = malla de ríos/lagos
 uniform sampler2D u_seabed;  // r = calado bajo el mar (m), g = energía oleaje
 uniform float u_domain_half; // semiancho del heightfield (m)
+uniform float u_time;
 
 out vec4 frag_color;
 )glsl" PT_GLSL_SKY_COMMON R"glsl(
 void main() {
     vec3 normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
     vec3 view_dir = normalize(u_camera_pos - v_world_pos);
+
+    // C4-W3: rizado ANALÍTICO advectado con la corriente (por píxel,
+    // independiente de la teselación): perturba la normal con la derivada de
+    // una onda corta que viaja aguas abajo — el río se LEE fluir.
+    vec2 fdir = v_river.xz;
+    float flen = length(fdir);
+    if (u_is_sea == 0 && flen > 0.01) {
+        fdir /= flen;
+        float phase = dot(v_world_pos.xz, fdir) * 2.8 - u_time * 4.2;
+        float ripple = 0.055 * cos(phase)
+                     + 0.030 * cos(phase * 2.3 + 1.7);
+        normal = normalize(normal + vec3(-fdir.x, 0.0, -fdir.y) * ripple);
+    }
 
     // Calado físico del punto: el color del agua sale de ÉL, no de un tinte.
     float depth;
@@ -394,6 +423,18 @@ void main() {
     vec3 half_dir = normalize(view_dir + u_sun_dir);
     lit += vec3(0.45) * pow(max(dot(normal, half_dir), 0.0), 96.0);
 
+    // C4-W3: espuma de RÁPIDOS/CASCADAS donde la hidrología marcó whitewater
+    // (0.5 = rápidos, 1 = caída): vetas blancas que corren con el agua.
+    float foam = 0.0;
+    if (u_is_sea == 0 && v_ww > 0.05 && flen > 0.01) {
+        float streak = 0.5
+            + 0.5 * sin(dot(v_world_pos.xz, fdir) * 3.5 - u_time * 5.5
+                        + sin(dot(v_world_pos.xz, vec2(-fdir.y, fdir.x)) * 2.1)
+                              * 1.3);
+        foam = clamp(v_ww * (0.45 + 0.55 * streak), 0.0, 1.0);
+        lit = mix(lit, vec3(0.88, 0.92, 0.95), foam * 0.65);
+    }
+
     float fog = fog_amount(u_camera_pos, v_world_pos);
     vec3 color = mix(lit, sky_color(-view_dir), fog);
 
@@ -408,6 +449,7 @@ void main() {
     float depth_k = 1.0 - exp(-depth * 0.55);
     float alpha = mix(mix(mix(0.28, 0.62, depth_k), 0.95, fresnel), 0.97,
                       opaque_k);
+    alpha = mix(alpha, 0.96, foam); // la espuma es agua aireada: opaca
     frag_color = vec4(color, alpha);
 }
 )glsl";
