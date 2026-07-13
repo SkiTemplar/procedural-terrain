@@ -785,6 +785,17 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
                       << data.height.world_z(dz1) << ")";
         }
         std::cout << std::endl;
+
+        // Histograma de regímenes de orilla (espejo del log del modo ventana):
+        // la calibración de marisma/arena/grava se mide aquí sin abrir GL.
+        size_t n_sand = 0, n_gravel = 0, n_marsh = 0;
+        for (const auto mtl : data.material) {
+            n_sand += mtl == terrain::Material::Sand ? 1 : 0;
+            n_gravel += mtl == terrain::Material::Gravel ? 1 : 0;
+            n_marsh += mtl == terrain::Material::Marsh ? 1 : 0;
+        }
+        std::cout << "orillas: arena " << n_sand << " grava " << n_gravel
+                  << " marisma " << n_marsh << std::endl;
     }
 
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "
