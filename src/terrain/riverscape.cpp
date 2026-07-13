@@ -668,8 +668,12 @@ void build_deltas(Heightfield& hf, Hydrology& out,
                 // Solo DEPOSITA sobre celdas SUMERGIDAS y someras: nunca
                 // rellena mar profundo ni pisa la playa existente (pisar
                 // tierra dejaba un banco con escalón contra la costa).
+                // Y NUNCA sobre el canal ACTIVO (feedback 2026-07-13 "el
+                // delta bloquea el río"): el caudal mantiene su surco abierto
+                // a través del lóbulo — antes el depósito enterraba el tramo
+                // final y el río moría en seco contra su propio delta.
                 if (bed[ni] <= p.sea_level && bed[ni] > p.sea_level - 7.0f
-                    && bed[ni] < target) {
+                    && bed[ni] < target && out.flow[ni] < p.threshold) {
                     bed[ni] = target;
                 }
             }
@@ -896,7 +900,15 @@ void stamp_channel_bars(Heightfield& hf, Hydrology& out,
                             * static_cast<std::size_t>(res)
                         + static_cast<std::size_t>(nx);
                     if (e <= 1.0f) {
-                        // Núcleo de la barra: emerge sobre la lámina.
+                        // Núcleo de la barra: emerge sobre la lámina — pero
+                        // NUNCA sobre el thalweg (feedback 2026-07-13 "los
+                        // islotes bloquean el río"): la elipse recta cruzaba
+                        // la orilla en las curvas y sellaba el paso. Las
+                        // barras reales son laterales al canal activo; el eje
+                        // D8 con caudal queda siempre abierto.
+                        if (out.flow[ni] >= p.threshold) {
+                            continue;
+                        }
                         const float target =
                             wl + peak * std::pow(1.0f - e, 1.5f);
                         if (bed[ni] < target && bed[ni] > wl - 3.5f) {

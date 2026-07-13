@@ -433,11 +433,16 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
         }
         return glm::clamp((out.flow[i] / threshold - 1.0f) / 2.0f, 0.0f, 1.0f);
     };
-    const auto water_depth_of = [&](size_t i) {
-        // Base bajada 0.35 -> 0.15 (feedback 2026-07-08 "demasiada agua en los
-        // riachuelos"): los tributarios pequeños llevan un hilo de agua, no un
-        // cauce lleno; el río principal (depth_of alto) sigue con caudal.
-        return (0.15f + 1.05f * depth_of(i)) * birth_of(i);
+    // FRANCOBORDO (feedback 2026-07-13 "agua en un plato llano"): la lámina
+    // nace ENCAJADA bajo el terreno original — el río va DENTRO de su cauce y
+    // la orilla natural queda por encima del agua. Antes la lámina se asentaba
+    // bed0 + calado (sobre el terreno) y el único recipiente era el socavón
+    // cosmético de 0.35 m: en llanura el agua quedaba posada en el llano, con
+    // paredes de agua en el borde de la cinta. El CALADO no se pierde: el
+    // tallado del paso 3 excava el lecho por debajo de la lámina como siempre.
+    constexpr float kFreeboard = 0.45f;
+    const auto settled_level = [&](size_t i) {
+        return bed0[i] - kFreeboard;
     };
 
     for (const size_t i : order) { // de arriba a abajo
@@ -445,15 +450,16 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
             continue;
         }
         if (level[i] == std::numeric_limits<float>::infinity()) {
-            level[i] = bed0[i] + water_depth_of(i);
+            level[i] = settled_level(i);
         }
-        // Los lagos imponen su lámina.
+        // Los lagos imponen su lámina (el efluente nace en el vertedero y se
+        // encaja aguas abajo por la regla de mínimo).
         if (!std::isnan(out.water_level[i])) {
             level[i] = out.water_level[i];
         }
         const size_t down = downstream[i];
         if (down != kNone && is_river(down)) {
-            const float own_down = bed0[down] + water_depth_of(down);
+            const float own_down = settled_level(down);
             const float candidate = std::min(level[i], own_down);
             if (level[down] == std::numeric_limits<float>::infinity()
                 || candidate < level[down]) {
