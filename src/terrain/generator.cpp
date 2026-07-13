@@ -42,7 +42,6 @@ std::vector<int> row_indices(int res) {
 struct CoastSample {
     float continent;
     float climate;
-    float cliff; // 0-1: tramo de costa acantilada (sesgo al sector frío)
 };
 
 // Prior de continentalidad + clima en un punto (compartido entre el uplift
@@ -79,22 +78,88 @@ CoastSample coast_at(const Noise& noise, const TerrainConfig& cfg,
         std::max(std::abs(p_km.x), std::abs(p_km.z)) / half_km;
     continent *= 1.0f - smoothstep(0.86f, 0.98f, d_edge);
 
-    // Tramos de costa acantilada: ruido lento sobre el dominio warpeado (el
-    // sector sigue la forma real de la costa), sesgado al clima frío. Donde
-    // la máscara es cero la costa conserva su perfil suave de siempre.
-    const float cliff_raw =
-        noise.fbm(pw * 0.22f + glm::vec3{23.7f, 0.0f, 71.2f}, 2) * 0.5f + 0.5f;
-    // EXPOSICIÓN: los cabos y penínsulas (lóbulo negativo) reciben el oleaje
-    // de frente y se acantilan aunque el sector de ruido no lo marque — así
-    // la mainland siempre tiene tramos acantilados y las bahías quedan
-    // resguardadas para playas.
-    const float headland = smoothstep(0.0f, -0.35f, lobe);
-    const float cliff = glm::clamp(smoothstep(0.48f, 0.64f, cliff_raw)
-                                       + 0.55f * headland,
-                                   0.0f, 1.0f)
-                      * (1.0f - 0.55f * climate);
+    // N2 rank 2: el "tramo acantilado" ya no es un sector de ruido (fbm
+    // cliff_raw) ni un proxy de lóbulo (headland) — se calcula aparte como
+    // EXPOSICIÓN al oleaje (fetch con la rosa de vientos sobre el prior) ×
+    // RESISTENCIA litológica, en compute_coast_cliff().
+    return {continent, climate};
+}
 
-    return {continent, climate, cliff};
+// Acantilado por exposición + resistencia (N2 rank 2). Fetch barato sobre la
+// máscara de continentalidad ANTES del perfil de costa: para cada celda de la
+// franja litoral del prior se mide cuánto mar abierto ve con la misma rosa de
+// vientos del oleaje (compass "de dónde sopla", pesos (1-f)+3f·align² — la
+// convención de coast.cpp); la exposición se cruza con la dureza de la
+// formación litológica local (la misma que el LEM consume). Costa expuesta y
+// dura → el uplift aguanta hasta el agua y el acantilado EMERGE del corte
+// relieve×mar; costa abrigada o blanda → perfil bajo, playas y marismas.
+std::vector<float> compute_coast_cliff(const std::vector<float>& continent,
+                                       const std::vector<float>& lithology,
+                                       int macro_res, float macro_cell,
+                                       const TerrainConfig& cfg) {
+    constexpr int kRayCount = 16;
+    constexpr float kSeaPrior = 0.10f;  // por debajo, el prior es mar
+    constexpr float kFetchCapM = 3000.0f;
+    const int cap_cells = std::max(2, static_cast<int>(kFetchCapM / macro_cell));
+
+    float weights[kRayCount];
+    {
+        const float wind_rad = cfg.wind_dir_deg * 3.14159265f / 180.0f;
+        const float wind_x = std::sin(wind_rad);
+        const float wind_z = -std::cos(wind_rad);
+        float sum = 0.0f;
+        for (int k = 0; k < kRayCount; ++k) {
+            const float ang =
+                static_cast<float>(k) * 2.0f * 3.14159265f / kRayCount;
+            const float align = std::max(
+                0.0f, std::cos(ang) * wind_x + std::sin(ang) * wind_z);
+            weights[k] =
+                (1.0f - cfg.wind_focus) + cfg.wind_focus * 3.0f * align * align;
+            sum += weights[k];
+        }
+        for (float& w : weights) {
+            w /= sum;
+        }
+    }
+
+    std::vector<float> cliff(continent.size(), 0.0f);
+    const auto rows = row_indices(macro_res);
+    std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
+        for (int x = 0; x < macro_res; ++x) {
+            const size_t i = static_cast<size_t>(z) * macro_res + x;
+            // Solo la franja litoral del prior: tierra adentro el exponente
+            // del uplift apenas nota el cliff (continent ~1).
+            if (continent[i] < kSeaPrior || continent[i] > 0.85f) {
+                continue;
+            }
+            float exposure = 0.0f;
+            for (int k = 0; k < kRayCount; ++k) {
+                const float ang =
+                    static_cast<float>(k) * 2.0f * 3.14159265f / kRayCount;
+                const float dx = std::cos(ang);
+                const float dz = std::sin(ang);
+                float fetch = 0.0f;
+                for (int t = 1; t <= cap_cells; ++t) {
+                    const int sx = x + static_cast<int>(std::lround(dx * t));
+                    const int sz = z + static_cast<int>(std::lround(dz * t));
+                    if (sx < 0 || sz < 0 || sx >= macro_res || sz >= macro_res) {
+                        fetch = static_cast<float>(cap_cells); // mar abierto
+                        break;
+                    }
+                    if (continent[static_cast<size_t>(sz) * macro_res + sx]
+                        >= kSeaPrior) {
+                        break; // el rayo tocó tierra del prior
+                    }
+                    fetch = static_cast<float>(t);
+                }
+                exposure += weights[k] * fetch / static_cast<float>(cap_cells);
+            }
+            const float hardness = 1.0f - lithology[i];
+            cliff[i] = smoothstep(0.12f, 0.45f, exposure)
+                     * (0.25f + 0.75f * hardness);
+        }
+    });
+    return cliff;
 }
 
 // Pipeline INVERTIDO (Cordonnier 2016 / FastScape): la forma macro sale de un
@@ -122,12 +187,52 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
         const glm::vec2 axis{std::cos(theta), std::sin(theta)};
 
         const auto mrows = row_indices(macro_res);
+
+        // Pasada 1: prior de continentalidad + litología. El fetch de
+        // acantilados (pasada 2) necesita la MÁSCARA completa antes de que
+        // el uplift decida nada — es el orden que rompe la circularidad
+        // costa↔oleaje señalada en el dossier (rank 2).
+        std::vector<float> continent_m(uplift.size());
         std::for_each(std::execution::par, mrows.begin(), mrows.end(), [&](int z) {
             for (int x = 0; x < macro_res; ++x) {
                 const float wx = -cfg.size_m * 0.5f + static_cast<float>(x) * macro_cell;
                 const float wz = -cfg.size_m * 0.5f + static_cast<float>(z) * macro_cell;
                 const glm::vec3 p_km{wx / 1000.0f, 0.0f, wz / 1000.0f};
-                const CoastSample cs = coast_at(noise, cfg, p_km);
+                continent_m[static_cast<size_t>(z) * macro_res + x] =
+                    coast_at(noise, cfg, p_km).continent;
+
+                const float u = p_km.x * axis.x + p_km.z * axis.y;
+                const float v = -p_km.x * axis.y + p_km.z * axis.x;
+                // Litología por formaciones (feedback 2026-07-10 "U de
+                // cabeceras"): bandas de roca CUANTIZADAS siguiendo el rumbo
+                // tectónico (estratos ~paralelos al orógeno, λ ~5 km a lo
+                // largo / ~1.8 km a través) con contactos suaves. 0 = dura,
+                // 1 = blanda; el LEM disecciona cada formación a SU escala —
+                // se acabó la longitud de onda única de barrancos.
+                const float geo = noise.fbm(glm::vec3{u * 0.20f, 0.0f, v * 0.55f}
+                                                + glm::vec3{-31.6f, 0.0f, 44.9f},
+                                            2)
+                                * 0.5f + 0.5f;
+                const float t4 = glm::clamp(geo, 0.0f, 0.999f) * 4.0f;
+                const float band = std::floor(t4);
+                lithology[static_cast<size_t>(z) * macro_res + x] =
+                    (band + smoothstep(0.30f, 0.70f, t4 - band)) * 0.25f;
+            }
+        });
+
+        // Pasada 2: acantilados por exposición al oleaje × resistencia.
+        std::vector<float> cliff_m = compute_coast_cliff(
+            continent_m, lithology, macro_res, macro_cell, cfg);
+
+        // Pasada 3: uplift (espinazo/masa/tierras bajas), skerries y
+        // batimetría prior.
+        std::for_each(std::execution::par, mrows.begin(), mrows.end(), [&](int z) {
+            for (int x = 0; x < macro_res; ++x) {
+                const float wx = -cfg.size_m * 0.5f + static_cast<float>(x) * macro_cell;
+                const float wz = -cfg.size_m * 0.5f + static_cast<float>(z) * macro_cell;
+                const glm::vec3 p_km{wx / 1000.0f, 0.0f, wz / 1000.0f};
+                const size_t mi = static_cast<size_t>(z) * macro_res + x;
+                const float continent = continent_m[mi];
 
                 // Espinazo: ridged muestreado con el dominio comprimido a
                 // través del eje (λ ~12 km a lo largo, ~4 km a través).
@@ -163,7 +268,7 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 // por sí misma y el acantilado es su cara contra el agua —
                 // nada de mesetas artificiales pegadas después.
                 float cell_uplift =
-                    std::pow(cs.continent, 1.5f - 1.1f * cs.cliff)
+                    std::pow(continent, 1.5f - 1.1f * cliff_m[mi])
                     * (0.15f + 0.85f * glm::clamp(spine * (0.75f + 0.45f * mass)
                                                       + 0.35f * mass,
                                                   0.0f, 1.0f))
@@ -179,7 +284,7 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 const float d_edge =
                     std::max(std::abs(p_km.x), std::abs(p_km.z)) / half_km;
                 const float sk_gate =
-                    smoothstep(0.22f, 0.05f, cs.continent)
+                    smoothstep(0.22f, 0.05f, continent)
                     * (1.0f - smoothstep(0.78f, 0.90f, d_edge));
                 if (sk_gate > 0.01f) {
                     // Umbral alto del ridged = dispersión: solo las crestas
@@ -198,32 +303,21 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                     cell_uplift =
                         std::max(cell_uplift, 0.38f * sk_gate * chain);
                 }
-                uplift[static_cast<size_t>(z) * macro_res + x] = cell_uplift;
+                uplift[mi] = cell_uplift;
 
                 // Batimetría prior (N2): plataforma que cae a sea_depth donde
                 // el prior de tierra muere. El LEM parte de aquí bajo el agua
                 // (tectónica + difusión la retocan) — sustituye a la antigua
                 // caída analítica h -= drop·sea_depth de la Fase B.
-                seabed[static_cast<size_t>(z) * macro_res + x] =
+                seabed[mi] =
                     -cfg.sea_depth
-                    * smoothstep(0.0f, 0.65f, 1.0f - cs.continent);
-
-                // Litología por formaciones (feedback 2026-07-10 "U de
-                // cabeceras"): bandas de roca CUANTIZADAS siguiendo el rumbo
-                // tectónico (estratos ~paralelos al orógeno, λ ~5 km a lo
-                // largo / ~1.8 km a través) con contactos suaves. 0 = dura,
-                // 1 = blanda; el LEM disecciona cada formación a SU escala —
-                // se acabó la longitud de onda única de barrancos.
-                const float geo = noise.fbm(glm::vec3{u * 0.20f, 0.0f, v * 0.55f}
-                                                + glm::vec3{-31.6f, 0.0f, 44.9f},
-                                            2)
-                                * 0.5f + 0.5f;
-                const float t4 = glm::clamp(geo, 0.0f, 0.999f) * 4.0f;
-                const float band = std::floor(t4);
-                lithology[static_cast<size_t>(z) * macro_res + x] =
-                    (band + smoothstep(0.30f, 0.70f, t4 - band)) * 0.25f;
+                    * smoothstep(0.0f, 0.65f, 1.0f - continent);
             }
         });
+        // El campo de acantilados pasa al TerrainData: el aplanado de costa y
+        // la anchura de orilla se anclan en él (exposición+resistencia), no
+        // en el sector global de clima (rank 19).
+        data.coast_cliff = std::move(cliff_m);
     }
     // El uplift acumulado dobla la cota objetivo: la incisión del propio LEM
     // rebaja hasta dejar cumbres del orden de mountain_height.
@@ -390,15 +484,19 @@ void sharpen_crags(Heightfield& hf, const Noise& noise) {
     });
 }
 
-// Playas: la franja baja junto al mar se comprime SOLO donde la costa ya es
-// suave Y el clima acompaña — en el sector frío casi no se aplana (costa
-// abrupta tipo Escocia), en el cálido las playas son anchas y llanas.
+// Playas: la franja baja junto al mar se comprime SOLO donde la costa es de
+// perfil bajo (poca exposición al oleaje o roca blanda, campo coast_cliff) —
+// en un frente acantilado casi no se aplana (costa abrupta tipo Escocia), en
+// la costa abrigada/blanda el sedimento se acumula y la playa sale ancha y
+// llana. Antes esto lo decidía el sector global de clima (banding, rank 19).
 void shape_coast(TerrainData& data, const TerrainConfig& cfg) {
     Heightfield& hf = data.height;
     const float band = cfg.coast_flatten_band_m;
     const int res = hf.resolution();
     const std::vector<float> original(hf.data());
     const float inv_cell = 1.0f / hf.cell_size();
+    const float to_macro = static_cast<float>(data.litho_res - 1)
+                         / static_cast<float>(res - 1);
     const auto rows = row_indices(res);
 
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
@@ -425,8 +523,17 @@ void shape_coast(TerrainData& data, const TerrainConfig& cfg) {
             // Quintic de Perlin: C2-continua en ambos extremos — sin cambio
             // de rasante donde acaba la playa.
             const float ease = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+            const float cliff = glm::clamp(
+                sample_bicubic(data.coast_cliff, data.litho_res,
+                               static_cast<float>(x) * to_macro,
+                               static_cast<float>(z) * to_macro),
+                0.0f, 1.0f);
+            // Rango calibrado al look previo (el factor de clima promediaba
+            // ~0.7): con 0.9·(1-cliff) el aplanado saturaba a 1 en toda la
+            // costa baja y los ríos quedaban perchados sobre llanuras a ras
+            // de mar.
             const float strength =
-                cfg.coast_flatten_strength * (0.25f + 0.9f * data.climate[i]);
+                cfg.coast_flatten_strength * (0.25f + 0.6f * (1.0f - cliff));
             const float compress =
                 1.0f - glm::min(strength, 1.0f) * (1.0f - ease) * (1.0f - keep);
             hf.data()[i] = cfg.sea_level + rel * compress;
@@ -531,11 +638,23 @@ void classify_materials(TerrainData& data, const Noise& noise,
                 const float e = coast.wave_energy[i];
                 const float supply = coast.river_supply[i];
                 const float rel = h - cfg.sea_level;
-                // Anchura f(E, aporte, clima): NUNCA por debajo de la banda
-                // original (factor >= 1) — el primer intento (0.45+...)
-                // encogía las playas abrigadas a la mitad y rompía el look.
+                // Anchura f(E, aporte, perfil de costa): NUNCA por debajo de
+                // la banda original (factor >= 1). La base ya no la pone el
+                // sector global de clima (banding, rank 19) sino el campo de
+                // acantilado local: frente acantilado → orla estrecha de
+                // roca/grava; costa baja → playa con toda su banda.
+                const float cliff_here = glm::clamp(
+                    sample_bicubic(
+                        data.coast_cliff, data.litho_res,
+                        static_cast<float>(x)
+                            * static_cast<float>(data.litho_res - 1)
+                            / static_cast<float>(res - 1),
+                        static_cast<float>(z)
+                            * static_cast<float>(data.litho_res - 1)
+                            / static_cast<float>(res - 1)),
+                    0.0f, 1.0f);
                 const float width_m =
-                    (4.0f + (cfg.beach_band_m - 2.0f) * data.climate[i])
+                    (4.0f + (cfg.beach_band_m - 2.0f) * (1.0f - cliff_here))
                     * cfg.shore_width_scale
                     * (1.0f + 0.90f * e + 0.50f * supply);
                 // Sin filtro de pendiente en la puerta (feedback 2026-07-08):

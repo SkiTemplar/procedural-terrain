@@ -39,6 +39,13 @@ struct TerrainData {
     // sigue la MISMA geología que el LEM disecciona, no un ruido aparte.
     std::vector<float> lithology;
     int litho_res = 0;
+    // Acantilado de costa (grid macro litho_res², 0 = costa suave … 1 =
+    // frente acantilado): exposición al oleaje (fetch con la rosa de vientos
+    // sobre el prior de continentalidad) × resistencia litológica. Decide
+    // dónde el uplift aguanta hasta el mar y ancla el aplanado de costa y la
+    // anchura de orilla — sustituye al antiguo sector de ruido y al banding
+    // por clima (N2, ranks 2 y 19).
+    std::vector<float> coast_cliff;
     // Cotas reales del mundo generado — anclas de la paleta (los gradientes
     // de color se normalizan contra ellas, nunca contra cotas absolutas).
     float max_height_m = 0.0f;  // cumbre tras erosión
