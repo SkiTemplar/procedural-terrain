@@ -902,6 +902,32 @@ void stamp_channel_bars(Heightfield& hf, Hydrology& out,
             const float half_wid =
                 std::max(1.2f, 0.20f * w_m / cell);
             const float peak = 0.35f + 0.55f * hash01(rng);
+
+            // GATE de confinamiento (física de braid bars: solo se forman en
+            // tramos ANCHOS y someros — w/d > 40 — donde el flujo puede
+            // DIVIDIRSE en dos anabranches; en canal confinado la barra
+            // estrangularía la sección, cosa que un río real nunca hace: la
+            // erosiona). Si la orilla a la distancia del pasillo lateral está
+            // alta a cualquiera de los dos lados, aquí no cabe barra.
+            const float corridor_c = half_wid * 2.4f;
+            bool confined = false;
+            for (const float side : {1.0f, -1.0f}) {
+                const int px_ = glm::clamp(
+                    static_cast<int>(c.x + perp.x * side * corridor_c), 1,
+                    res - 2);
+                const int pz_ = glm::clamp(
+                    static_cast<int>(c.y + perp.y * side * corridor_c), 1,
+                    res - 2);
+                if (bed[static_cast<std::size_t>(pz_)
+                            * static_cast<std::size_t>(res)
+                        + static_cast<std::size_t>(px_)] > wl + 1.2f) {
+                    confined = true;
+                    break;
+                }
+            }
+            if (confined) {
+                continue;
+            }
             const int box = static_cast<int>(half_len * 2.4f) + 1;
             const int cx = static_cast<int>(c.x);
             const int cz = static_cast<int>(c.y);
@@ -940,14 +966,23 @@ void stamp_channel_bars(Heightfield& hf, Hydrology& out,
                             out.water_level[ni] = kNoWater;
                         }
                     } else if (e <= 2.4f) {
-                        // Anillo: el cauce se ensancha un 20-40% alrededor
-                        // para que el agua siga pasando por ambos lados.
-                        if (!std::isnan(out.water_level[ni])) {
-                            continue; // ya es agua
-                        }
-                        if (bed[ni] > wl - 0.05f && bed[ni] < wl + 2.0f) {
-                            bed[ni] = wl - 0.45f;
-                            out.water_level[ni] = wl;
+                        // ANABRANCHES (física de braid bars: el flujo se
+                        // DIVIDE alrededor de la barra en dos brazos activos;
+                        // la sección mojada total nunca se estrangula). El
+                        // pasillo se talla y se moja INCONDICIONALMENTE —
+                        // antes era condicional a orilla baja y cuando no se
+                        // cumplía la barra bloqueaba el río (feedback
+                        // 2026-07-13/14). El gate de confinamiento ya
+                        // garantiza que aquí el valle es bajo.
+                        const float side_bed = wl - 0.55f;
+                        if (bed[ni] < wl + 2.0f) {
+                            if (bed[ni] > side_bed) {
+                                bed[ni] = side_bed;
+                            }
+                            out.water_level[ni] =
+                                std::isnan(out.water_level[ni])
+                                    ? wl
+                                    : std::min(out.water_level[ni], wl);
                         }
                     }
                 }
