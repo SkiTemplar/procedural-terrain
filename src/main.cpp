@@ -752,6 +752,39 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
                   << " con fondo vecino bajo el mar, " << uncontained_lowbed
                   << " con lecho a <2 m sobre el mar, " << uncontained_high
                   << " con perchado >2 m)" << std::endl;
+
+        // RÍO SECO (feedback 2026-07-13 "ríos bloqueados por terreno"): celda
+        // con caudal de río hecho pero SIN lámina pintada y en tierra firme —
+        // el cauce existe y lleva agua según el D8, pero no se dibuja nada.
+        const float dry_threshold = cfg.river_flow_threshold
+                                  * (static_cast<float>(res) * static_cast<float>(res))
+                                  / (1024.0f * 1024.0f) * 1.5f;
+        int dry = 0;
+        float worst_dry_flow = 0.0f;
+        int dx1 = -1, dz1 = -1;
+        for (int z = 0; z < res; ++z) {
+            for (int x = 0; x < res; ++x) {
+                const size_t i = at(x, z);
+                if (data.hydrology.flow[i] < dry_threshold
+                    || !std::isnan(wl[i])
+                    || hfd[i] <= cfg.sea_level + 0.3f) {
+                    continue;
+                }
+                ++dry;
+                if (data.hydrology.flow[i] > worst_dry_flow) {
+                    worst_dry_flow = data.hydrology.flow[i];
+                    dx1 = x;
+                    dz1 = z;
+                }
+            }
+        }
+        std::cout << "rio seco (caudal>=1.5x umbral sin lamina, en tierra): "
+                  << dry << " celdas; peor caudal " << worst_dry_flow;
+        if (dx1 >= 0) {
+            std::cout << " en mundo (" << data.height.world_x(dx1) << ", "
+                      << data.height.world_z(dz1) << ")";
+        }
+        std::cout << std::endl;
     }
 
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "

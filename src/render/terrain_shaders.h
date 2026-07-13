@@ -413,14 +413,21 @@ void main() {
         vec2 d1 = normalize(wd + perp * 0.55 * spread);
         vec2 d2 = normalize(wd - perp * 0.45 * spread);
         vec2 d3 = normalize(wd + perp * 0.18 * spread);
-        float p1 = dot(v_world_pos.xz, d1) * 0.150 - u_time * 1.5;
-        float p2 = dot(v_world_pos.xz, d2) * 0.330 - u_time * 2.3;
-        float p3 = dot(v_world_pos.xz, d3) * 0.700 - u_time * 3.4;
+        // FASE MODULADA por ruido lento (feedback 2026-07-13 "patrones raros
+        // en los píxeles"): tres senoides puras interferían en un moiré
+        // periódico sintético; el jitter espacial rompe la retícula sin
+        // cambiar la dirección de viaje.
+        float jit = w_vnoise(v_world_pos.xz * 0.012) * 6.2831853;
+        float p1 = dot(v_world_pos.xz, d1) * 0.150 - u_time * 1.5 + jit;
+        float p2 = dot(v_world_pos.xz, d2) * 0.330 - u_time * 2.3 + jit * 0.7;
+        float p3 = dot(v_world_pos.xz, d3) * 0.700 - u_time * 3.4 + jit * 1.4;
         // Las olas se aplanan con la distancia (mismo criterio que las de
-        // vértice): a rasante solo ensuciaban el fresnel del mar lejano.
+        // vértice); el tren CORTO muere mucho antes — a media distancia su
+        // longitud de onda cae bajo el píxel y solo aporta aliasing.
         float wave_k = clamp(1.0 - (dist - 2000.0) / 2000.0, 0.0, 1.0);
+        float near_k = clamp(1.0 - (dist - 250.0) / 600.0, 0.0, 1.0);
         vec2 slope = d1 * (0.14 * cos(p1)) + d2 * (0.10 * cos(p2))
-                   + d3 * (0.07 * cos(p3));
+                   + d3 * (0.07 * cos(p3) * near_k);
         slope *= wave_k;
         normal = normalize(vec3(-slope.x, 1.0, -slope.y));
     } else {
