@@ -93,6 +93,19 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         }
     }
 
+    if (ImGui::CollapsingHeader("Vegetacion")) {
+        static const char* kVegNames[6] = {"pinos",    "frondosos", "rocas",
+                                           "matas",    "arbustos",  "troncos"};
+        size_t total = 0;
+        for (int t = 0; t < 6; ++t) {
+            ImGui::Text("%-10s %zu", kVegNames[t], state.veg_counts[t]);
+            total += state.veg_counts[t];
+        }
+        ImGui::Separator();
+        ImGui::Text("total      %zu", total);
+        ImGui::TextDisabled("(rocas=0 por decision 2026-07-08)");
+    }
+
     ImGui::TextDisabled("Esc: soltar/capturar raton · F: volar/caminar");
     ImGui::End();
 

@@ -102,6 +102,13 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 case terrain::Material::Sand:
                     tuft_p = 0.008f; // hierba rala de duna
                     break;
+                case terrain::Material::Marsh:
+                    // Marisma: pura vegetación herbácea en la realidad —
+                    // estaba estéril (auditoría Fase B). Matas densas de
+                    // junco y algún arbusto; sin árboles (suelo anegado).
+                    tuft_p = 0.120f;
+                    bush_p = 0.006f;
+                    break;
                 default:
                     break;
             }
@@ -237,6 +244,12 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 && p.tufts.empty() && p.bushes.empty() && p.logs.empty()) {
                 continue;
             }
+            counts_.pines += p.pines.size();
+            counts_.broadleafs += p.broadleafs.size();
+            counts_.rocks += p.rocks.size();
+            counts_.tufts += p.tufts.size();
+            counts_.bushes += p.bushes.size();
+            counts_.logs += p.logs.size();
             Cell cell;
             cell.center = {(-cfg.size_m * 0.5f) + (static_cast<float>(cx) + 0.5f) * kCellSize,
                            (-cfg.size_m * 0.5f) + (static_cast<float>(cz) + 0.5f) * kCellSize};

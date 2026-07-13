@@ -187,6 +187,16 @@ void run(std::optional<std::uint32_t> seed_override,
             world = std::make_unique<World>(baking.get());
             baking = {};
             bake_phase.store(nullptr);
+            {
+                // Censo de vegetación (auditoría Fase B): verificable desde el
+                // log sin volar el mapa. Espejo del panel ImGui "Vegetacion".
+                const auto& vc = world->vegetation.counts();
+                std::cout << "vegetacion: pinos=" << vc.pines
+                          << " frondosos=" << vc.broadleafs
+                          << " rocas=" << vc.rocks << " matas=" << vc.tufts
+                          << " arbustos=" << vc.bushes << " troncos=" << vc.logs
+                          << std::endl;
+            }
             state.last_generation_seconds = std::chrono::duration<float>(
                 std::chrono::steady_clock::now() - bake_start).count();
             if (first_world && pose_override) {
@@ -241,6 +251,15 @@ void run(std::optional<std::uint32_t> seed_override,
             state.visible_chunks =
                 static_cast<int>(world->ground.visible_meshes().size());
             state.total_chunks = world->ground.total_chunks();
+            {
+                const auto& vc = world->vegetation.counts();
+                state.veg_counts[0] = vc.pines;
+                state.veg_counts[1] = vc.broadleafs;
+                state.veg_counts[2] = vc.rocks;
+                state.veg_counts[3] = vc.tufts;
+                state.veg_counts[4] = vc.bushes;
+                state.veg_counts[5] = vc.logs;
+            }
 
             terrain_shader.use();
             set_common_uniforms(terrain_shader, camera, window.aspect(), state);

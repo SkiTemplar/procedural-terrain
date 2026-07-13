@@ -22,6 +22,19 @@ public:
 
     size_t total_instances() const { return total_instances_; }
 
+    // Censo por tipo (auditoría Fase B): verificable desde el panel ImGui sin
+    // volar el mapa contando árboles. Las rocas están a 0 POR DECISIÓN
+    // (feedback 2026-07-08 "quitar los peñascos") — el contador lo hace visible.
+    struct TypeCounts {
+        size_t pines = 0;
+        size_t broadleafs = 0;
+        size_t rocks = 0;
+        size_t tufts = 0;
+        size_t bushes = 0;
+        size_t logs = 0;
+    };
+    const TypeCounts& counts() const { return counts_; }
+
 private:
     struct Cell {
         glm::vec2 center{0.0f};
@@ -31,6 +44,7 @@ private:
 
     std::vector<Cell> cells_;
     size_t total_instances_ = 0;
+    TypeCounts counts_;
 };
 
 } // namespace veg

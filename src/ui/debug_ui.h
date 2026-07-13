@@ -36,6 +36,10 @@ struct DebugState {
     int visible_chunks = 0;
     int total_chunks = 0;
 
+    // Censo de vegetación por tipo (auditoría Fase B): pino, frondoso, roca,
+    // mata, arbusto, tronco caído. Rellenado por main desde VegRenderer.
+    size_t veg_counts[6] = {};
+
     glm::vec3 sun_dir() const;
 };
 
