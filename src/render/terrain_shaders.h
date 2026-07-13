@@ -537,6 +537,13 @@ void main() {
     float depth_k = 1.0 - exp(-depth * 0.9);
     float alpha = mix(mix(0.06, 0.68, depth_k), 0.95, fresnel * depth_k);
     alpha = mix(alpha, 0.97, opaque_k);
+    // FLECO de orilla (feedback 2026-07-14, borde dentado): en el agua somera
+    // el borde se deshilacha con ruido fino en vez de cortar al escalón de la
+    // celda — rompe la percepción de diente de sierra del contorno.
+    if (u_is_sea == 0 && depth_k < 0.5) {
+        float fringe = w_vnoise(v_world_pos.xz * 1.7);
+        alpha *= mix(0.4 + 0.6 * fringe, 1.0, depth_k * 2.0);
+    }
     alpha = mix(alpha, 0.96, foam); // la espuma es agua aireada: opaca
     // La pared de borde de cinta se desvanece (la orilla real queda detrás).
     alpha *= 1.0 - 0.85 * wall_k;

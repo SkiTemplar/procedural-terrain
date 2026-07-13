@@ -108,11 +108,14 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
             return vertex_of[i];
         }
         const float own = wl[i];
-        // Vértice de orilla (sin lámina propia): se POSA en el terreno si la
-        // orilla queda por debajo del nivel — antes heredaba el nivel del
-        // vecino y colgaba en el aire sobre el talud en los tramos empinados
-        // (el clásico "agua que no se pega al suelo" de los rápidos).
-        const float bank = std::min(fallback, hf.at(x, z) + 0.04f);
+        // Vértice de orilla (sin lámina propia): se HUNDE bajo el terreno
+        // (feedback 2026-07-14, borde dentado): con el borde de la malla
+        // ENTERRADO, la línea de agua visible la dibuja la intersección
+        // z-buffer contra el talud — sub-píxel y orgánica — en vez del
+        // contorno poligonal de la cinta, que escalonaba a saltos de celda.
+        // (El +0.04 anterior venía del fix "agua que no se pega al suelo":
+        // hundirlo también lo respeta — el agua muere DENTRO de la orilla.)
+        const float bank = std::min(fallback, hf.at(x, z) - 0.15f);
         const float y = (std::isnan(own) ? bank : own) - kWaterSink;
         const float tint = 0.95f + 0.10f * hash01(x, z);
         vertex_of[i] = static_cast<std::uint32_t>(vertices.size());
