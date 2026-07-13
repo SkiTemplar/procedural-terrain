@@ -399,6 +399,7 @@ void main() {
     vec2 wd = normalize(u_wave_dir.xz + vec2(1e-5, 0.0));
 
     vec3 normal;
+    float wall_k = 0.0; // 1 = "pared de agua" del borde de la cinta del río
     vec2 fdir = v_river.xz;
     float flen = length(fdir);
     if (u_is_sea == 1) {
@@ -424,6 +425,13 @@ void main() {
         normal = normalize(vec3(-slope.x, 1.0, -slope.y));
     } else {
         normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
+        // PARED DE AGUA (feedback 2026-07-13 "tensión superficial con muros
+        // de un metro"): en el borde de la cinta, los triángulos que caen de
+        // la lámina a la orilla se vuelven casi verticales y el fresnel los
+        // encendía como cortinas. Se desvanecen — SALVO en cascadas y rápidos
+        // declarados (whitewater), donde la cortina es real y a propósito.
+        wall_k = (1.0 - smoothstep(0.30, 0.60, normal.y))
+               * (1.0 - smoothstep(0.40, 0.75, v_ww));
         // C4-W3: rizado ANALÍTICO advectado con la corriente (por píxel,
         // independiente de la teselación): perturba la normal con la derivada
         // de una onda corta que viaja aguas abajo — el río se LEE fluir.
@@ -474,9 +482,11 @@ void main() {
     refl.y = abs(refl.y); // el espejo del agua nunca mira bajo el horizonte
     vec3 lit = mix(body, sky_color(refl), fresnel * 0.85);
 
-    // Especular del sol, más nítido sobre el agua.
+    // Especular del sol, más nítido sobre el agua. Las paredes de borde de
+    // cinta no brillan (eran el destello metálico de los "muros de agua").
     vec3 half_dir = normalize(view_dir + u_sun_dir);
-    lit += vec3(0.45) * pow(max(dot(normal, half_dir), 0.0), 96.0);
+    lit += vec3(0.45) * pow(max(dot(normal, half_dir), 0.0), 96.0)
+         * (1.0 - wall_k);
 
     // Espuma. C4-W3 en ríos: vetas blancas que corren con el agua donde la
     // hidrología marcó whitewater (0.5 = rápidos, 1 = caída). C4-W2 en el
@@ -513,11 +523,16 @@ void main() {
     // Alpha por calado (W1): la lámina de <20 cm es CASI INVISIBLE — los
     // márgenes someros de la cinta del río se funden con la orilla mojada y
     // el río se lee con su anchura de canal real, no "desbordado" (feedback
-    // 2026-07-13). El cuerpo con calado manda enseguida (k=0.9).
+    // 2026-07-13). El cuerpo con calado manda enseguida (k=0.9). El FRESNEL
+    // también escala por calado: una película de 5 cm rota por el fondo no
+    // refleja como superficie continua — sin esto, el ángulo rasante volvía
+    // a opacar los márgenes que el alpha somero acababa de fundir.
     float depth_k = 1.0 - exp(-depth * 0.9);
-    float alpha = mix(mix(mix(0.06, 0.68, depth_k), 0.95, fresnel), 0.97,
-                      opaque_k);
+    float alpha = mix(mix(0.06, 0.68, depth_k), 0.95, fresnel * depth_k);
+    alpha = mix(alpha, 0.97, opaque_k);
     alpha = mix(alpha, 0.96, foam); // la espuma es agua aireada: opaca
+    // La pared de borde de cinta se desvanece (la orilla real queda detrás).
+    alpha *= 1.0 - 0.85 * wall_k;
     frag_color = vec4(color, alpha);
 }
 )glsl";
