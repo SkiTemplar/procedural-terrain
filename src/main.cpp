@@ -71,6 +71,53 @@ struct World {
     World& operator=(const World&) = delete;
 };
 
+// C4-W1/W2: textura RG del dominio para el shader del MAR — r = profundidad
+// real del fondo bajo el nivel del mar (m), g = energía de oleaje [0,1]. Da
+// color por calado (Beer-Lambert) y espuma de orilla POR PÍXEL, cosa que los
+// vértices del plano del mar (~625 m) jamás podrían resolver. Los ríos no la
+// usan: llevan su calado por vértice (la malla de agua va a resolución plena).
+struct SeabedTexture {
+    GLuint id = 0;
+
+    ~SeabedTexture() {
+        release();
+    }
+    void release() {
+        if (id != 0) {
+            glDeleteTextures(1, &id);
+            id = 0;
+        }
+    }
+    void rebuild(const terrain::TerrainData& data) {
+        release();
+        constexpr int kRes = 2048;
+        const auto& hf = data.height;
+        const int res = hf.resolution();
+        const float sea = data.config.sea_level;
+        std::vector<float> texels(static_cast<size_t>(kRes) * kRes * 2);
+        for (int z = 0; z < kRes; ++z) {
+            for (int x = 0; x < kRes; ++x) {
+                const int sx = x * (res - 1) / (kRes - 1);
+                const int sz = z * (res - 1) / (kRes - 1);
+                const size_t si = static_cast<size_t>(sz) * res + sx;
+                const size_t ti = (static_cast<size_t>(z) * kRes + x) * 2;
+                texels[ti] = std::max(0.0f, sea - hf.data()[si]);
+                texels[ti + 1] =
+                    data.wave_energy.empty() ? 0.0f : data.wave_energy[si];
+            }
+        }
+        glGenTextures(1, &id);
+        glBindTexture(GL_TEXTURE_2D, id);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, kRes, kRes, 0, GL_RG,
+                     GL_FLOAT, texels.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+};
+
 void set_common_uniforms(const render::Shader& shader, const render::Camera& camera,
                          float aspect, const ui::DebugState& state) {
     shader.set_mat4("u_view", camera.view());
@@ -120,6 +167,7 @@ void run(std::optional<std::uint32_t> seed_override,
     state.preset_list = terrain::list_presets(preset_dir);
     std::uint64_t preset_expected_hash = 0;
     ui::FieldMaps field_maps; // minimapas C2: se reconstruyen al montar mundo
+    SeabedTexture seabed_tex; // C4-W1/W2: calado + oleaje para el mar
 
     // Generación asíncrona: el generate() (solo CPU) corre en un hilo de
     // trabajo y la ventana sigue viva con un overlay de progreso. El montaje
@@ -240,6 +288,7 @@ void run(std::optional<std::uint32_t> seed_override,
                           << std::endl;
             }
             field_maps.rebuild(world->data);
+            seabed_tex.rebuild(world->data);
             if (preset_expected_hash != 0) {
                 // Verificación §7-C: el mundo regenerado desde el preset debe
                 // reproducir exactamente el heightfield guardado.
@@ -344,7 +393,14 @@ void run(std::optional<std::uint32_t> seed_override,
             water_shader.use();
             set_common_uniforms(water_shader, camera, window.aspect(), state);
             water_shader.set_float("u_time", clock.total);
+            water_shader.set_float("u_domain_half",
+                                   world->data.config.size_m * 0.5f);
+            water_shader.set_int("u_seabed", 0);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, seabed_tex.id);
+            water_shader.set_int("u_is_sea", 1);
             world->sea.draw();
+            water_shader.set_int("u_is_sea", 0);
             if (world->water) {
                 world->water->draw();
             }

@@ -84,7 +84,14 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
         const float y = (std::isnan(own) ? bank : own) - kWaterSink;
         const float tint = 0.95f + 0.10f * hash01(x, z);
         vertex_of[i] = static_cast<std::uint32_t>(vertices.size());
-        vertices.push_back({{hf.world_x(x), y, hf.world_z(z)}, kLakeColor * tint});
+        // C4-W1: PROFUNDIDAD REAL por vértice (lámina − lecho) en normal.y —
+        // el canal normal está libre en el agua. El shader la usa para el
+        // color Beer-Lambert: orillas someras claras, pozas y ejes oscuros.
+        // Sin ruido: es el calado físico del cauce tallado.
+        const float depth = std::max(0.0f, y - hf.at(x, z));
+        vertices.push_back({{hf.world_x(x), y, hf.world_z(z)},
+                            kLakeColor * tint,
+                            {0.0f, depth, 0.0f}});
         return vertex_of[i];
     };
 

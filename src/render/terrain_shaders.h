@@ -306,10 +306,14 @@ void main() {
 )glsl";
 
 // Agua: olas suaves por vértice, semitransparente, con la misma niebla.
+// C4-W1: color y alpha por PROFUNDIDAD REAL (Beer-Lambert) — los ríos llevan
+// su calado por vértice (a_normal.y, malla a resolución plena); el mar lo
+// muestrea por píxel de u_seabed (r = calado, g = energía de oleaje).
 constexpr const char* kWaterVert = R"glsl(
 #version 460 core
 layout (location = 0) in vec3 a_pos;
 layout (location = 1) in vec3 a_color;
+layout (location = 2) in vec3 a_normal; // ríos: (flujo.x, calado, flujo.z)
 
 uniform mat4 u_view;
 uniform mat4 u_proj;
@@ -318,6 +322,7 @@ uniform vec3 u_camera_pos;
 
 out vec3 v_world_pos;
 flat out vec3 v_color;
+out vec3 v_river; // (flujo.x, calado, flujo.z) interpolado
 
 void main() {
     vec3 p = a_pos;
@@ -330,6 +335,7 @@ void main() {
                      + 0.08 * sin(u_time * 1.7 + a_pos.z * 0.13));
     v_world_pos = p;
     v_color = a_color;
+    v_river = a_normal;
     gl_Position = u_proj * u_view * vec4(p, 1.0);
 }
 )glsl";
@@ -338,8 +344,12 @@ constexpr const char* kWaterFrag = R"glsl(
 #version 460 core
 in vec3 v_world_pos;
 flat in vec3 v_color;
+in vec3 v_river;
 
 uniform vec3 u_camera_pos;
+uniform int u_is_sea;        // 1 = plano del mar, 0 = malla de ríos/lagos
+uniform sampler2D u_seabed;  // r = calado bajo el mar (m), g = energía oleaje
+uniform float u_domain_half; // semiancho del heightfield (m)
 
 out vec4 frag_color;
 )glsl" PT_GLSL_SKY_COMMON R"glsl(
@@ -347,13 +357,33 @@ void main() {
     vec3 normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
     vec3 view_dir = normalize(u_camera_pos - v_world_pos);
 
+    // Calado físico del punto: el color del agua sale de ÉL, no de un tinte.
+    float depth;
+    float wave_e = 0.0;
+    if (u_is_sea == 1) {
+        vec2 uv = (v_world_pos.xz + vec2(u_domain_half))
+                / (2.0 * u_domain_half);
+        // Fuera del heightfield el mar es abierto y hondo (el CLAMP del
+        // borde ya devuelve el fondo del perímetro, que es abisal).
+        vec2 de = texture(u_seabed, clamp(uv, 0.0, 1.0)).rg;
+        depth = de.r;
+        wave_e = de.g;
+    } else {
+        depth = max(v_river.y, 0.0);
+    }
+
     // Fresnel de Schlick: mirando al agua de frente se ve el fondo (alpha
     // baja, color profundo); en ángulo rasante refleja el cielo (alpha alta).
     float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(view_dir, normal), 0.0), 5.0);
 
     float diffuse = max(dot(normal, u_sun_dir), 0.0);
+    // Beer-Lambert por canal: el rojo se absorbe primero, el azul-verde llega
+    // al fondo. Somero → agua clara que enseña la arena; hondo → azul denso.
+    vec3 k_abs = vec3(0.42, 0.19, 0.11);
+    vec3 trans = exp(-depth * k_abs);
     vec3 deep = vec3(0.06, 0.20, 0.30);
-    vec3 body = mix(deep, v_color, 0.45) * (0.45 + 0.55 * diffuse);
+    vec3 shallow = mix(vec3(0.36, 0.55, 0.50), v_color, 0.30);
+    vec3 body = mix(deep, shallow, trans) * (0.45 + 0.55 * diffuse);
     // Refleja el CIELO REAL en la dirección especular (no un color plano):
     // el agua de cara al sol coge su calidez; la opuesta, el azul del cenit.
     vec3 refl = reflect(-view_dir, normal);
@@ -373,7 +403,11 @@ void main() {
     // alpha cambiaba de lecho marino a océano del cielo justo en su borde).
     float dist = length(v_world_pos - u_camera_pos);
     float opaque_k = clamp((dist - 1500.0) / 4500.0, 0.0, 1.0);
-    float alpha = mix(mix(0.62, 0.95, fresnel), 0.97, opaque_k);
+    // Alpha por calado (W1): en 20 cm de orilla el fondo se ve casi nítido;
+    // a >4 m de columna el cuerpo de agua manda.
+    float depth_k = 1.0 - exp(-depth * 0.55);
+    float alpha = mix(mix(mix(0.28, 0.62, depth_k), 0.95, fresnel), 0.97,
+                      opaque_k);
     frag_color = vec4(color, alpha);
 }
 )glsl";
