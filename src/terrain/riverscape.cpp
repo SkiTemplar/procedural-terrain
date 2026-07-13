@@ -626,6 +626,28 @@ void build_deltas(Heightfield& hf, Hydrology& out,
                 + static_cast<std::size_t>(probe_x)] < p.sea_level - 7.0f) {
             continue;
         }
+        // Boca REAL = mar abierto, no el surco del canal (feedback 2026-07-13
+        // "huella rara al final de los ríos"): con el cauce encajado, el lecho
+        // cruza sea_level tierra adentro y el delta se estampaba DENTRO del
+        // valle (lóbulo inundado + anillo de arena). Una desembocadura de
+        // verdad tiene agua a AMBOS lados; un canal tiene orillas.
+        const glm::vec2 mperp{-m.dir.y, m.dir.x};
+        const auto lateral_is_sea = [&](float side) {
+            const int lx = glm::clamp(
+                mx + static_cast<int>((m.dir.x * 60.0f + mperp.x * side * 80.0f)
+                                      / cell),
+                1, res - 2);
+            const int lz = glm::clamp(
+                mz + static_cast<int>((m.dir.y * 60.0f + mperp.y * side * 80.0f)
+                                      / cell),
+                1, res - 2);
+            return bed[static_cast<std::size_t>(lz)
+                           * static_cast<std::size_t>(res)
+                       + static_cast<std::size_t>(lx)] <= p.sea_level;
+        };
+        if (!lateral_is_sea(1.0f) || !lateral_is_sea(-1.0f)) {
+            continue; // canal u orilla a un lado: estuario, sin lóbulo
+        }
         ++built;
         // Verificable sin volar a ciegas (mismo criterio que los lagos).
         std::cout << "  delta @ (" << static_cast<int>(hf.world_x(mx)) << ", "

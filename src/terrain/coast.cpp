@@ -39,9 +39,22 @@ CoastExposure compute_coast_exposure(const Heightfield& hf,
     out.shore_band.assign(n, 0);
 
     // --- Mar y contorno de costa (tierra con mar en el vecindario 8) ---
+    // El SURCO del río no es mar (feedback 2026-07-13 "huella rara en los
+    // finales de los ríos"): con el francobordo, el lecho del tramo final va
+    // por debajo del nivel del mar tierra adentro, y tratarlo como mar creaba
+    // "costa" a ambos lados del canal — la banda litoral (BFS Chebyshev, de
+    // frentes cuadrados) rodeaba la desembocadura con un RECTÁNGULO de arena.
+    // El canal somero con caudal queda fuera; el fondo marino hondo sigue
+    // siendo mar aunque el D8 acumule caudal por él.
+    const float channel_flow = cfg.river_flow_threshold
+                             * (static_cast<float>(res) * static_cast<float>(res))
+                             / (1024.0f * 1024.0f);
     std::vector<std::uint8_t> sea(n);
     for (size_t i = 0; i < n; ++i) {
-        sea[i] = hf.data()[i] <= cfg.sea_level ? 1 : 0;
+        const bool submerged = hf.data()[i] <= cfg.sea_level;
+        const bool river_groove = hydro.flow[i] >= channel_flow
+                               && hf.data()[i] > cfg.sea_level - 3.5f;
+        sea[i] = (submerged && !river_groove) ? 1 : 0;
     }
     std::vector<std::uint8_t> coast(n, 0);
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
