@@ -340,8 +340,8 @@ void main() {
         // C4-W3: el RÍO ondula A LO LARGO de su corriente (onda viajera aguas
         // abajo), no con las senoidales diagonales del mar.
         fdir /= flen;
-        p.y += wave_k * 0.05
-             * sin(dot(a_pos.xz, fdir) * 0.9 - u_time * 3.0);
+        p.y += wave_k * 0.035
+             * sin(dot(a_pos.xz, fdir) * 0.9 - u_time * 2.4);
     } else {
         // C4-W4: el mar de fondo VIAJA con la rosa de vientos (dos trenes,
         // el secundario sesgado ~20°), no con senoidales diagonales fijas.
@@ -429,9 +429,11 @@ void main() {
         // de una onda corta que viaja aguas abajo — el río se LEE fluir.
         if (flen > 0.01) {
             fdir /= flen;
-            float phase = dot(v_world_pos.xz, fdir) * 2.8 - u_time * 4.2;
-            float ripple = 0.055 * cos(phase)
-                         + 0.030 * cos(phase * 2.3 + 1.7);
+            // Amplitudes contenidas (feedback 2026-07-13 "efectos raros"):
+            // el rizado sugiere corriente, no vibra.
+            float phase = dot(v_world_pos.xz, fdir) * 2.8 - u_time * 3.2;
+            float ripple = 0.032 * cos(phase)
+                         + 0.018 * cos(phase * 2.3 + 1.7);
             normal = normalize(normal + vec3(-fdir.x, 0.0, -fdir.y) * ripple);
         }
     }
@@ -458,10 +460,13 @@ void main() {
     float diffuse = max(dot(normal, u_sun_dir), 0.0);
     // Beer-Lambert por canal: el rojo se absorbe primero, el azul-verde llega
     // al fondo. Somero → agua clara que enseña la arena; hondo → azul denso.
+    // Tono somero contenido (feedback 2026-07-13 "el río parece desbordado"):
+    // el turquesa chillón en los márgenes de la cinta leía la lámina de
+    // orilla como agua de más — el color claro queda para calados medios.
     vec3 k_abs = vec3(0.42, 0.19, 0.11);
     vec3 trans = exp(-depth * k_abs);
     vec3 deep = vec3(0.06, 0.20, 0.30);
-    vec3 shallow = mix(vec3(0.36, 0.55, 0.50), v_color, 0.30);
+    vec3 shallow = mix(vec3(0.28, 0.44, 0.42), v_color, 0.30);
     vec3 body = mix(deep, shallow, trans) * (0.45 + 0.55 * diffuse);
     // Refleja el CIELO REAL en la dirección especular (no un color plano):
     // el agua de cara al sol coge su calidez; la opuesta, el azul del cenit.
@@ -481,7 +486,7 @@ void main() {
     // de campos simulados.
     float foam = 0.0;
     if (u_is_sea == 1) {
-        float band = 1.0 - smoothstep(0.25, 3.2, depth);
+        float band = 1.0 - smoothstep(0.25, 2.4, depth);
         float chop = w_vnoise(v_world_pos.xz * 0.45 - wd * (u_time * 1.4));
         float pulse = 0.5
             + 0.5 * sin(dot(v_world_pos.xz, wd) * 0.30 - u_time * 1.8
@@ -495,7 +500,7 @@ void main() {
                               * 1.3);
         foam = clamp(v_ww * (0.45 + 0.55 * streak), 0.0, 1.0);
     }
-    lit = mix(lit, vec3(0.88, 0.92, 0.95), foam * 0.65);
+    lit = mix(lit, vec3(0.88, 0.92, 0.95), foam * 0.55);
 
     float fog = fog_amount(u_camera_pos, v_world_pos);
     vec3 color = mix(lit, sky_color(-view_dir), fog);
@@ -505,10 +510,12 @@ void main() {
     // el rectángulo del heightfield se marcaba en el mar (el fondo tras el
     // alpha cambiaba de lecho marino a océano del cielo justo en su borde).
     float opaque_k = clamp((dist - 1500.0) / 4500.0, 0.0, 1.0);
-    // Alpha por calado (W1): en 20 cm de orilla el fondo se ve casi nítido;
-    // a >4 m de columna el cuerpo de agua manda.
-    float depth_k = 1.0 - exp(-depth * 0.55);
-    float alpha = mix(mix(mix(0.28, 0.62, depth_k), 0.95, fresnel), 0.97,
+    // Alpha por calado (W1): la lámina de <20 cm es CASI INVISIBLE — los
+    // márgenes someros de la cinta del río se funden con la orilla mojada y
+    // el río se lee con su anchura de canal real, no "desbordado" (feedback
+    // 2026-07-13). El cuerpo con calado manda enseguida (k=0.9).
+    float depth_k = 1.0 - exp(-depth * 0.9);
+    float alpha = mix(mix(mix(0.06, 0.68, depth_k), 0.95, fresnel), 0.97,
                       opaque_k);
     alpha = mix(alpha, 0.96, foam); // la espuma es agua aireada: opaca
     frag_color = vec4(color, alpha);
