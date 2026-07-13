@@ -553,6 +553,9 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
         // altura sobre el propio lecho). Es la métrica del "río elevado".
         constexpr int kR = 4;
         int uncontained = 0;
+        int uncontained_drowned = 0;
+        int uncontained_lowbed = 0;
+        int uncontained_high = 0;
         float worst_perch = 0.0f;
         int px = -1, pz = -1;
         for (int z = kR; z < res - kR; ++z) {
@@ -578,7 +581,16 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
                 }
                 if (!has_bank) {
                     ++uncontained;
+                    if (local_min < cfg.sea_level) {
+                        ++uncontained_drowned;
+                    }
+                    if (hfd[wi] < cfg.sea_level + 2.0f) {
+                        ++uncontained_lowbed;
+                    }
                     const float perch = w - local_min;
+                    if (perch > 2.0f) {
+                        ++uncontained_high;
+                    }
                     if (perch > worst_perch) {
                         worst_perch = perch;
                         px = x;
@@ -594,6 +606,10 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
                       << data.height.world_z(pz) << ")";
         }
         std::cout << std::endl;
+        std::cout << "  (desglose: " << uncontained_drowned
+                  << " con fondo vecino bajo el mar, " << uncontained_lowbed
+                  << " con lecho a <2 m sobre el mar, " << uncontained_high
+                  << " con perchado >2 m)" << std::endl;
     }
 
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "

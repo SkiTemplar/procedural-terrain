@@ -566,7 +566,12 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                     // canal cercano — con máximo, las celdas aguas arriba
                     // pintaban su nivel alto sobre las de abajo y el agua
                     // quedaba flotando en escalones.
-                    if (r <= 1.05f && !out.lake[ni] && birth > 0.1f) {
+                    // Puerta de ESTUARIO (N2): sobre terreno ahogado (lecho
+                    // original bajo el mar) el agua es MAR, no lámina de río
+                    // — sin ella, la cinta del último tramo pintaba lenguas
+                    // de río flotando sobre las rías de la transgresión.
+                    if (r <= 1.05f && !out.lake[ni] && birth > 0.1f
+                        && bed0[ni] > cfg.sea_level) {
                         float candidate = surface;
                         if (level[ni] != std::numeric_limits<float>::infinity()) {
                             candidate = std::min(candidate, level[ni]);

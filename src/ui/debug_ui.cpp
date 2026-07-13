@@ -69,6 +69,7 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         ImGui::SliderFloat("tamano isla", &cfg.size_m, 2000.0f, 12000.0f, "%.0f m");
         ImGui::SliderFloat("radio tierra", &cfg.island_radius, 0.2f, 0.85f);
         ImGui::SliderFloat("costa irregular", &cfg.coast_warp_m, 0.0f, 1500.0f, "%.0f m");
+        ImGui::SliderFloat("transgresion marina", &cfg.coast_flood_m, 0.0f, 20.0f, "%.0f m");
         ImGui::SliderFloat("colinillas", &cfg.base_height_m, 0.0f, 80.0f, "%.0f m");
         ImGui::SliderFloat("altura montanas", &cfg.mountain_height_m, 0.0f, 2500.0f, "%.0f m");
         ImGui::SliderInt("gotas erosion", &cfg.erosion_droplets, 0, 600000);

@@ -16,9 +16,17 @@ struct TerrainConfig {
     float sea_level = 0.0f;
     float sea_depth = 70.0f; // profundidad del fondo lejos de la costa
 
-    // Continentalidad (dónde hay tierra)
-    float island_radius = 0.55f; // fracción del semiancho donde empieza la costa
-    float coast_warp_m = 700.0f; // distorsión de la línea de costa
+    // Continentalidad (N2, costa emergente): ya NO es la forma de la isla —
+    // es el PRIOR DÉBIL de uplift (dónde puede haber tierra). La costa real
+    // es el contorno h=0 del relieve que el LEM erosiona sobre un fondo
+    // marino simulado; island_radius escala el prior, no el radio de un disco.
+    float island_radius = 0.55f; // fracción del semiancho donde decae el prior
+    float coast_warp_m = 700.0f; // distorsión del prior (bahías/penínsulas)
+    // Transgresión marina (mecanismo real de las rías): el mar sube unos
+    // metros sobre el nivel de base al que gradó la red fluvial del LEM y
+    // AHOGA los valles bajos — bahías donde había valles, cabos en las
+    // divisorias. 0 = costa exactamente en el nivel de base (sin rías).
+    float coast_flood_m = 6.0f;
 
     // Relieve: el LEM (uplift + stream power) genera la forma; mountain_height
     // es el objetivo de cumbre que calibra su ley de pendientes. base_height

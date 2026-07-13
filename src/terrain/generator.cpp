@@ -45,9 +45,12 @@ struct CoastSample {
     float cliff; // 0-1: tramo de costa acantilada (sesgo al sector frío)
 };
 
-// Continentalidad + clima en un punto (compartido entre el uplift macro y la
-// amplificación): bahías/penínsulas por warp compuesto, sectores de clima
-// nítidos, islotes satélite concentrados en el sector cálido.
+// Prior de continentalidad + clima en un punto (compartido entre el uplift
+// macro y la amplificación). N2: esto ya NO dibuja la costa — es el prior
+// débil de uplift (dónde puede haber tierra, con bahías/penínsulas por warp
+// compuesto). La línea de costa emerge después como contorno h=0 del relieve
+// que el LEM erosiona sobre fondo marino real. Los islotes satélite
+// estampados en anillo se eliminaron: emergen del propio prior (skerries).
 CoastSample coast_at(const Noise& noise, const TerrainConfig& cfg,
                      const glm::vec3& p_km) {
     const float half_km = cfg.size_m * 0.5f / 1000.0f;
@@ -60,24 +63,21 @@ CoastSample coast_at(const Noise& noise, const TerrainConfig& cfg,
         noise.fbm(pw * 0.09f + glm::vec3{5.9f, 0.0f, -31.7f}, 2);
     const float d = glm::length(glm::vec2{pw.x, pw.z}) / half_km
                   + 0.22f * lobe;
-    float continent = 1.0f - smoothstep(cfg.island_radius, 1.0f, d);
+    // El prior muere ANTES del antiguo radio de disco (0.92): la tierra
+    // emergente se queda donde el uplift aún sostiene relieve sobre la
+    // transgresión, no en la isohipsa de una función de distancia.
+    float continent = 1.0f - smoothstep(cfg.island_radius, 0.92f, d);
 
     const float climate_raw =
         noise.fbm(pw * 0.14f + glm::vec3{-64.2f, 0.0f, 38.5f}, 2) * 0.5f + 0.5f;
     const float climate = smoothstep(0.42f, 0.58f, climate_raw);
 
-    const float satellite =
-        smoothstep(0.60f, 0.72f,
-                   noise.fbm(pw * 0.9f + glm::vec3{97.1f, 0.0f, -44.3f}, 3)
-                       * 0.5f + 0.5f)
-        * smoothstep(0.78f, 0.95f, d) * smoothstep(1.35f, 1.0f, d)
-        * (0.5f + climate);
-    continent = std::max(continent, satellite * 0.5f);
-
-    // El mar SIEMPRE rodea el mapa: los lóbulos no pueden empujar la tierra
-    // hasta el borde del dominio.
-    const float d_raw = glm::length(glm::vec2{p_km.x, p_km.z}) / half_km;
-    continent *= 1.0f - smoothstep(0.88f, 1.0f, d_raw);
+    // El mar SIEMPRE rodea el mapa. Distancia CHEBYSHEV al borde del dominio
+    // (no radial): el fade sigue el cuadrado real del mapa y las esquinas no
+    // recortan la tierra en arco de círculo.
+    const float d_edge =
+        std::max(std::abs(p_km.x), std::abs(p_km.z)) / half_km;
+    continent *= 1.0f - smoothstep(0.86f, 0.98f, d_edge);
 
     // Tramos de costa acantilada: ruido lento sobre el dominio warpeado (el
     // sector sigue la forma real de la costa), sesgado al clima frío. Donde
@@ -112,6 +112,7 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
     const float macro_cell = cfg.size_m / static_cast<float>(macro_res - 1);
     std::vector<float> uplift(static_cast<size_t>(macro_res) * macro_res);
     std::vector<float> lithology(uplift.size());
+    std::vector<float> seabed(uplift.size());
     {
         // Orientación tectónica fija por seed: el uplift es ANISÓTROPO
         // (crestas ridged alargadas ~3:1 a lo largo del eje) — cordilleras
@@ -168,6 +169,14 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                                                   0.0f, 1.0f))
                     * (1.0f - 0.92f * lowland);
 
+                // Batimetría prior (N2): plataforma que cae a sea_depth donde
+                // el prior de tierra muere. El LEM parte de aquí bajo el agua
+                // (tectónica + difusión la retocan) — sustituye a la antigua
+                // caída analítica h -= drop·sea_depth de la Fase B.
+                seabed[static_cast<size_t>(z) * macro_res + x] =
+                    -cfg.sea_depth
+                    * smoothstep(0.0f, 0.65f, 1.0f - cs.continent);
+
                 // Litología por formaciones (feedback 2026-07-10 "U de
                 // cabeceras"): bandas de roca CUANTIZADAS siguiendo el rumbo
                 // tectónico (estratos ~paralelos al orógeno, λ ~5 km a lo
@@ -195,7 +204,7 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
     const glm::vec2 wind{std::cos(wind_theta), std::sin(wind_theta)};
     const std::vector<float> macro_h =
         run_lem(uplift, lithology, macro_res, macro_cell,
-                2.0f * cfg.mountain_height_m, 150, wind);
+                2.0f * cfg.mountain_height_m, 150, wind, seabed);
     // La litología pasa al TerrainData: la paleta del render tiñe la roca por
     // formación REAL (la misma que el LEM talló), no por un ruido inventado.
     data.lithology = std::move(lithology);
@@ -216,37 +225,27 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 macro_h, macro_res, static_cast<float>(x) * to_macro,
                 static_cast<float>(z) * to_macro);
 
-            float h = cfg.sea_level + macro;
-            // Caída al fondo marino. En costa suave es el degradado de
-            // siempre; en tramo acantilado TODA la caída se concentra en una
-            // franja estrecha de continentalidad: la meseta conserva su cota
-            // hasta la misma línea de costa y cae a pico al mar (tipo
-            // Escocia). Los ríos que alcanzan el borde saltan en cascada.
-            const float smooth_drop = 1.0f - cs.continent;
-            // Frente DENTADO: el acantilado no sigue la costa suave — un
-            // jitter de continentalidad (λ ~600 m) abre calas y adelanta
-            // espolones; sin él la muralla era una regla recta y uniforme.
-            const float c_face = cs.continent
-                + 0.06f * cs.cliff
-                      * noise.fbm(p_km * 1.7f + glm::vec3{88.8f, 0.0f, -3.4f},
-                                  2);
-            const float cliff_drop = 1.0f - smoothstep(0.04f, 0.09f, c_face);
-            // PUERTA DE RELIEVE: el perfil abrupto solo se aplica donde el
-            // LEM ya trae altura a la costa (el uplift de sector expuesto la
-            // trae). Si la tierra baja toca el mar, la costa queda suave —
-            // sin acantilados fake junto a praderas con lagos.
-            const float cliff_w = cs.cliff * smoothstep(12.0f, 40.0f, macro);
-            h -= glm::mix(smooth_drop, cliff_drop, cliff_w) * cfg.sea_depth;
+            // N2 costa emergente: el macro ya trae el fondo marino simulado
+            // (con signo) — la caída analítica al mar ha muerto. La
+            // TRANSGRESIÓN hunde el nivel de base fluvial del LEM unos metros
+            // bajo el mar: los valles que gradaron a cota ~0 se AHOGAN (rías,
+            // bahías) y las divisorias quedan como cabos. La costa es el
+            // corte del relieve erosionado con sea_level, no una función de
+            // distancia.
+            float h = cfg.sea_level - cfg.coast_flood_m + macro;
             // Colinillas suaves de pradera (el LEM deja las zonas de poco
-            // uplift casi planas; esto les da su ondulación). En los sectores
-            // de tierras bajas (misma máscara que el uplift de Fase A) se
-            // amortiguan: a plena amplitud cerraban cubetas de 5-15 m y la
-            // llanura se llenaba de lagos-charco con forma de burbuja.
+            // uplift casi planas; esto les da su ondulación). Puerta por
+            // TIERRA REAL (cota sobre el mar, no prior): el fondo marino y la
+            // franja de playa quedan sin ondular. En los sectores de tierras
+            // bajas (misma máscara que el uplift de Fase A) se amortiguan: a
+            // plena amplitud cerraban cubetas de 5-15 m y la llanura se
+            // llenaba de lagos-charco con forma de burbuja.
             const float lowland = smoothstep(
                 0.52f, 0.70f,
                 noise.fbm(p_km * 0.09f + glm::vec3{-88.4f, 0.0f, 27.6f}, 2)
                         * 0.5f + 0.5f);
-            h += cs.continent * (1.0f - 0.65f * lowland)
+            const float land = smoothstep(2.0f, 14.0f, h - cfg.sea_level);
+            h += land * (1.0f - 0.65f * lowland)
                * noise.fbm(p_km * 0.35f + glm::vec3{11.3f, 0.0f, -6.1f}, 3)
                * cfg.base_height_m;
             hf.at(x, z) = h;
