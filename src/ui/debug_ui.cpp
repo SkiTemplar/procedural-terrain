@@ -1,7 +1,8 @@
-#include "ui/debug_ui.h"
+﻿#include "ui/debug_ui.h"
 
 #include "player/controller.h"
 #include "render/camera.h"
+#include "ui/field_maps.h"
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -36,7 +37,8 @@ DebugUi::~DebugUi() {
 }
 
 void DebugUi::draw(DebugState& state, render::Camera& camera,
-                   player::Controller& controller, float dt) {
+                   player::Controller& controller, float dt,
+                   const FieldMaps* fields) {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
@@ -113,6 +115,18 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         }
     }
 
+    // Minimapas de campos intermedios (C2). Solo se dibujan con la pestaÃ±a
+    // abierta â€” las texturas ya viven en VRAM, el coste cerrado es cero.
+    if (fields != nullptr && !fields->maps().empty()
+        && ImGui::CollapsingHeader("Campos")) {
+        for (const auto& m : fields->maps()) {
+            ImGui::Text("%s", m.name.c_str());
+            ImGui::Image(static_cast<ImTextureID>(
+                             static_cast<intptr_t>(m.texture)),
+                         ImVec2(256.0f, 256.0f));
+        }
+    }
+
     if (ImGui::CollapsingHeader("Vegetacion")) {
         static const char* kVegNames[6] = {"pinos",    "frondosos", "rocas",
                                            "matas",    "arbustos",  "troncos"};
@@ -126,7 +140,7 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         ImGui::TextDisabled("(rocas=0 por decision 2026-07-08)");
     }
 
-    ImGui::TextDisabled("Esc: soltar/capturar raton · F: volar/caminar");
+    ImGui::TextDisabled("Esc: soltar/capturar raton Â· F: volar/caminar");
     ImGui::End();
 
     // Overlay central mientras el hilo de trabajo cuece el mundo: la ventana

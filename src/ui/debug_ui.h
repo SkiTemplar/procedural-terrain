@@ -18,6 +18,8 @@ class Controller;
 
 namespace ui {
 
+class FieldMaps;
+
 // Estado tuneable desde el panel de debug.
 struct DebugState {
     bool wireframe = false;
@@ -63,8 +65,11 @@ public:
     DebugUi(const DebugUi&) = delete;
     DebugUi& operator=(const DebugUi&) = delete;
 
+    // `fields` (opcional): minimapas de campos intermedios para la pestaña
+    // "Campos" (C2); nullptr = pestaña ausente.
     void draw(DebugState& state, render::Camera& camera,
-              player::Controller& controller, float dt);
+              player::Controller& controller, float dt,
+              const FieldMaps* fields = nullptr);
 };
 
 } // namespace ui

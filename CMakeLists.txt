@@ -43,6 +43,7 @@ add_executable(ProceduralTerrain
         src/veg/grass_field.cpp
         src/player/controller.cpp
         src/ui/debug_ui.cpp
+        src/ui/field_maps.cpp
 )
 
 target_include_directories(ProceduralTerrain PRIVATE src)

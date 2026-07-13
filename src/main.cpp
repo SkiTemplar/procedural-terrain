@@ -11,6 +11,7 @@
 #include "terrain/palette.h"
 #include "terrain/preset.h"
 #include "ui/debug_ui.h"
+#include "ui/field_maps.h"
 #include "veg/grass_field.h"
 #include "veg/veg_renderer.h"
 
@@ -118,6 +119,7 @@ void run(std::optional<std::uint32_t> seed_override,
     const std::string preset_dir = "presets";
     state.preset_list = terrain::list_presets(preset_dir);
     std::uint64_t preset_expected_hash = 0;
+    ui::FieldMaps field_maps; // minimapas C2: se reconstruyen al montar mundo
 
     // Generación asíncrona: el generate() (solo CPU) corre en un hilo de
     // trabajo y la ventana sigue viva con un overlay de progreso. El montaje
@@ -237,6 +239,7 @@ void run(std::optional<std::uint32_t> seed_override,
                           << " arbustos=" << vc.bushes << " troncos=" << vc.logs
                           << std::endl;
             }
+            field_maps.rebuild(world->data);
             if (preset_expected_hash != 0) {
                 // Verificación §7-C: el mundo regenerado desde el preset debe
                 // reproducir exactamente el heightfield guardado.
@@ -349,7 +352,7 @@ void run(std::optional<std::uint32_t> seed_override,
         }
 
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        debug_ui.draw(state, camera, controller, clock.dt);
+        debug_ui.draw(state, camera, controller, clock.dt, &field_maps);
 
         window.swap_and_poll();
     }
