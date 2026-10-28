@@ -1,3 +1,4 @@
+#include "terrain/coast.h"
 #include "terrain/erosion.h"
 #include "terrain/generator.h"
 #include "terrain/heightfield.h"
@@ -909,4 +910,160 @@ TEST(Erosion, ModificaElTerrenoSinRomperlo) {
         }
     }
     EXPECT_TRUE(changed);
+}
+
+// --- Erosión marina de la costa rocosa (Sunamura) ---
+
+namespace {
+
+// Costa recta sintética: mar a −5 m en x < kShoreX y acantilado de 10 m que
+// sube suave tierra adentro. Celda de 2.5 m (escala del mundo real).
+constexpr int kCoastRes = 160;
+constexpr int kShoreX = 20;
+constexpr float kCoastCell = 2.5f;
+
+terrain::Heightfield straight_cliff_coast() {
+    terrain::Heightfield hf(kCoastRes, kCoastCell * (kCoastRes - 1));
+    for (int z = 0; z < kCoastRes; ++z) {
+        for (int x = 0; x < kCoastRes; ++x) {
+            hf.at(x, z) = x < kShoreX
+                              ? -5.0f
+                              : 10.0f + 0.02f * static_cast<float>(x - kShoreX)
+                                            * kCoastCell;
+        }
+    }
+    return hf;
+}
+
+std::vector<std::uint8_t> sea_of(const terrain::Heightfield& hf) {
+    std::vector<std::uint8_t> sea(hf.data().size());
+    for (size_t i = 0; i < sea.size(); ++i) {
+        sea[i] = hf.data()[i] <= 0.0f ? 1 : 0;
+    }
+    return sea;
+}
+
+// Retroceso de la fila z: distancia de la costa original a la primera celda
+// que sigue en pie.
+float retreat_of_row(const terrain::Heightfield& hf, int z) {
+    for (int x = kShoreX; x < kCoastRes; ++x) {
+        if (hf.at(x, z) > 0.0f) {
+            return static_cast<float>(x - kShoreX) * kCoastCell;
+        }
+    }
+    return static_cast<float>(kCoastRes - kShoreX) * kCoastCell;
+}
+
+float mean_retreat(const terrain::Heightfield& hf, int z0, int z1) {
+    float sum = 0.0f;
+    for (int z = z0; z < z1; ++z) {
+        sum += retreat_of_row(hf, z);
+    }
+    return sum / static_cast<float>(z1 - z0);
+}
+
+} // namespace
+
+TEST(Costa, LaRocaDuraRetrocedeMenosQueLaBlanda) {
+    // Energía de oleaje uniforme y una franja de roca dura (z ∈ [60, 100)):
+    // Sunamura dx/dt ∝ ln(F_w/F_r) → la franja dura retrocede menos, deja un
+    // cabo, y toda la costa socavada queda como plataforma a cota de marea
+    // con el frente vertical (la pared conserva su cota original).
+    terrain::Heightfield hf = straight_cliff_coast();
+    const auto before = hf.data();
+    terrain::CliffRetreatInput in;
+    in.sea = sea_of(hf);
+    in.wave_energy = [](std::size_t) { return 0.8f; };
+    in.resistance = [](std::size_t i) {
+        const int z = static_cast<int>(i / kCoastRes);
+        return (z >= 60 && z < 100) ? 0.5f : 0.12f;
+    };
+    const terrain::CliffRetreatStats stats =
+        terrain::retreat_cliffs(hf, in, terrain::CliffRetreatParams{});
+
+    const float soft =
+        0.5f * (mean_retreat(hf, 15, 45) + mean_retreat(hf, 115, 145));
+    const float hard = mean_retreat(hf, 70, 90);
+    printf("  retroceso: blanda %.1f m, dura %.1f m (%d celdas, max %.1f m)\n",
+           soft, hard, stats.eroded_cells, stats.max_retreat_m);
+    EXPECT_GT(hard, 0.0f) << "con E=0.8 la roca dura también debe retroceder algo";
+    EXPECT_GT(soft, hard + 40.0f);
+    EXPECT_GT(soft, 60.0f);
+    EXPECT_LT(soft, 250.0f);
+
+    for (size_t i = 0; i < before.size(); ++i) {
+        const float h = hf.data()[i];
+        if (before[i] > 0.0f && h <= 0.0f) {
+            // Plataforma de abrasión: casi horizontal, ligeramente bajo el mar.
+            EXPECT_GE(h, -2.0f - 1e-4f);
+            EXPECT_LE(h, -0.5f + 1e-4f);
+        }
+        if (before[i] > 0.0f && h > 0.0f) {
+            EXPECT_FLOAT_EQ(h, before[i]) << "la tierra en pie no se toca";
+        }
+        EXPECT_LE(h, before[i] + 1e-4f) << "la abrasión solo excava";
+    }
+    // Frente vertical: en la roca blanda, la primera celda en pie conserva
+    // su pared (>= 10 m) sobre una plataforma bajo el mar.
+    const int z = 30;
+    const int x0 =
+        kShoreX + static_cast<int>(retreat_of_row(hf, z) / kCoastCell + 0.5f);
+    ASSERT_LT(x0, kCoastRes);
+    EXPECT_GE(hf.at(x0, z), 10.0f);
+    EXPECT_LE(hf.at(x0 - 1, z), -0.5f + 1e-4f);
+}
+
+TEST(Costa, UnNucleoDuroQuedaComoFarallon) {
+    // Un núcleo de roca mucho más resistente dentro de roca blanda: su
+    // entorno retrocede y él queda en pie, aislado sobre la plataforma. No
+    // se estampa nada: solo cambia F_r en esas celdas.
+    terrain::Heightfield hf = straight_cliff_coast();
+    terrain::CliffRetreatInput in;
+    in.sea = sea_of(hf);
+    in.wave_energy = [](std::size_t) { return 0.8f; };
+    in.resistance = [](std::size_t i) {
+        const int x = static_cast<int>(i % kCoastRes);
+        const int z = static_cast<int>(i / kCoastRes);
+        const bool core = x >= 30 && x < 35 && z >= 78 && z < 83;
+        return core ? 5.0f : 0.12f;
+    };
+    terrain::retreat_cliffs(hf, in, terrain::CliffRetreatParams{});
+
+    EXPECT_GT(hf.at(32, 80), 0.0f) << "el núcleo duro debe seguir en pie";
+    EXPECT_LE(hf.at(40, 80), 0.0f) << "la roca blanda tras el núcleo retrocede";
+    EXPECT_LE(hf.at(28, 80), 0.0f) << "y la de delante también";
+
+    const std::vector<float> energy(hf.data().size(), 0.8f);
+    const terrain::RockyCoastMetrics m =
+        terrain::measure_rocky_coast(hf, energy, 0.0f);
+    printf("  farallones %d (area max %.0f m2), plataforma %d celdas\n",
+           m.stacks, m.stack_max_area_m2, m.platform_cells);
+    EXPECT_EQ(m.stacks, 1);
+    EXPECT_GT(m.platform_cells, 0);
+}
+
+TEST(Costa, LaPlataformaEsMasAnchaConMasOleaje) {
+    // Roca uniforme y energía creciente a lo largo de la costa: la anchura
+    // de la plataforma de equilibrio (L·ln(F_0/F_r)) crece con el oleaje.
+    terrain::Heightfield hf = straight_cliff_coast();
+    const auto energy_at = [](std::size_t i) {
+        const int z = static_cast<int>(i / kCoastRes);
+        return 0.1f + 0.8f * static_cast<float>(z) / (kCoastRes - 1);
+    };
+    terrain::CliffRetreatInput in;
+    in.sea = sea_of(hf);
+    in.wave_energy = energy_at;
+    in.resistance = [](std::size_t) { return 0.2f; };
+    terrain::retreat_cliffs(hf, in, terrain::CliffRetreatParams{});
+
+    EXPECT_GT(mean_retreat(hf, 120, 150), mean_retreat(hf, 10, 40) + 20.0f);
+    std::vector<float> energy(hf.data().size());
+    for (size_t i = 0; i < energy.size(); ++i) {
+        energy[i] = energy_at(i);
+    }
+    const terrain::RockyCoastMetrics m =
+        terrain::measure_rocky_coast(hf, energy, 0.0f);
+    printf("  correlacion anchura-E: pearson %.2f spearman %.2f\n",
+           m.width_energy_pearson, m.width_energy_spearman);
+    EXPECT_GT(m.width_energy_spearman, 0.5f);
 }

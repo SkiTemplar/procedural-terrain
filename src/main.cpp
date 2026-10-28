@@ -6,6 +6,7 @@
 #include "render/shader.h"
 #include "render/terrain_shaders.h"
 #include "terrain/chunked_terrain.h"
+#include "terrain/coast.h"
 #include "terrain/generator.h"
 #include "terrain/mesher.h"
 #include "terrain/palette.h"
@@ -796,6 +797,27 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
         }
         std::cout << "orillas: arena " << n_sand << " grava " << n_gravel
                   << " marisma " << n_marsh << std::endl;
+
+        // Costa rocosa (erosión marina, Sunamura): plataforma de abrasión al
+        // pie de los acantilados, farallones y su relación con el oleaje.
+        const terrain::RockyCoastMetrics rc = terrain::measure_rocky_coast(
+            data.height, data.wave_energy, cfg.sea_level);
+        std::cout << "costa: " << rc.coast_cells << " celdas (E p50 "
+                  << rc.coast_energy_p50 << ", p90 " << rc.coast_energy_p90
+                  << ")" << std::endl;
+        std::cout << "costa rocosa: " << rc.cliff_toe_cells
+                  << " pies de acantilado (E p50 " << rc.toe_energy_p50
+                  << ", p90 " << rc.toe_energy_p90 << ")" << std::endl;
+        std::cout << "  plataforma de abrasion: " << rc.platform_cells
+                  << " celdas (" << rc.platform_area_m2 / 10000.0f
+                  << " ha); anchura media " << rc.mean_platform_width_m
+                  << " m; correlacion anchura-E pearson "
+                  << rc.width_energy_pearson << " spearman "
+                  << rc.width_energy_spearman << std::endl;
+        std::cout << "  farallones (<0.5 ha a <300 m de acantilado): "
+                  << rc.stacks << " (" << rc.tall_stacks
+                  << " con >3 m); area media " << rc.stack_mean_area_m2
+                  << " m2, max " << rc.stack_max_area_m2 << " m2" << std::endl;
     }
 
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "
