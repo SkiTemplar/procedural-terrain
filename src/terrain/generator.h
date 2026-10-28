@@ -2,6 +2,7 @@
 
 #include "terrain/heightfield.h"
 #include "terrain/hydrology.h"
+#include "terrain/lem.h"
 #include "terrain/terrain_config.h"
 
 #include <cstdint>
@@ -55,6 +56,7 @@ struct TerrainData {
     // cielo son de baja frecuencia y se muestrean bilinealmente por vértice.
     std::vector<float> shadow;           // [0,1] luz directa del sol (1=al sol)
     std::vector<float> sky_ao;           // [0,1] visibilidad de cielo (1=abierto)
+    LemStats lem_stats;                  // balance de sedimento del LEM (dump)
     int light_res = 0;
     TerrainConfig config;
 };

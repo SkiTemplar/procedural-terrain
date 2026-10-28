@@ -329,7 +329,8 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
     const glm::vec2 wind{std::cos(wind_theta), std::sin(wind_theta)};
     const std::vector<float> macro_h =
         run_lem(uplift, lithology, macro_res, macro_cell,
-                2.0f * cfg.mountain_height_m, 150, wind, seabed);
+                2.0f * cfg.mountain_height_m, 150, wind, seabed,
+                &data.lem_stats);
     // La litología pasa al TerrainData: la paleta del render tiñe la roca por
     // formación REAL (la misma que el LEM talló), no por un ruido inventado.
     data.lithology = std::move(lithology);
@@ -337,6 +338,22 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
 
     // ---- Fase B: amplificación bicúbica + colinillas ----
     const float to_macro = static_cast<float>(macro_res - 1) / static_cast<float>(res - 1);
+    // Enterramiento por aluvión: el sedimento que el LEM depositó rellena el
+    // valle y entierra la rugosidad de la roca. El ruido de detalle (que solo
+    // modula el relieve) se atenúa con el espesor: sin esto abría cubetas
+    // sobre los fondos llanos y cada una acababa siendo un lago-charco.
+    // e-folding de kBuryDepthM metros de aluvión.
+    constexpr float kBuryDepthM = 3.0f;
+    const std::vector<float> alluvium = data.lem_stats.alluvium_m;
+    const auto alluvium_burial = [&](int x, int z) {
+        if (alluvium.empty()) {
+            return 1.0f;
+        }
+        const float a = std::max(0.0f, sample_bicubic(alluvium, macro_res,
+                                                      static_cast<float>(x) * to_macro,
+                                                      static_cast<float>(z) * to_macro));
+        return std::exp(-a / kBuryDepthM);
+    };
     const auto rows = row_indices(res);
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
         for (int x = 0; x < res; ++x) {
@@ -370,7 +387,8 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 noise.fbm(p_km * 0.09f + glm::vec3{-88.4f, 0.0f, 27.6f}, 2)
                         * 0.5f + 0.5f);
             const float land = smoothstep(2.0f, 14.0f, h - cfg.sea_level);
-            h += land * (1.0f - 0.65f * lowland)
+            const float bury = alluvium_burial(x, z);
+            h += bury * land * (1.0f - 0.65f * lowland)
                * noise.fbm(p_km * 0.35f + glm::vec3{11.3f, 0.0f, -6.1f}, 3)
                * cfg.base_height_m;
             hf.at(x, z) = h;
@@ -393,7 +411,8 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 std::abs(base[i + static_cast<size_t>(res)]
                          - base[i - static_cast<size_t>(res)]))
                 * 0.5f * inv_cell;
-            const float amp = 32.0f * glm::clamp(slope / 0.12f, 0.0f, 1.0f)
+            const float amp = alluvium_burial(x, z) * 32.0f
+                            * glm::clamp(slope / 0.12f, 0.0f, 1.0f)
                             / (1.0f + 10.0f * slope * slope);
             if (amp < 0.5f) {
                 continue;

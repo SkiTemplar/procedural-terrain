@@ -55,6 +55,23 @@ constexpr float kRainFracMax = 0.35f; // tope de descarga por celda
 // isla: 1862 vs 1820). Con 0.50 el empinamiento queda en ×1.27 y el contraste
 // de disección húmedo/seco sigue siendo ×2.5 — visible sin romper la cota.
 constexpr float kRainFloor = 0.50f;  // lluvia mínima relativa (sotavento)
+// Coeficiente de deposición G (Yuan et al. 2019, ec. 3): adimensional, ~1 en
+// sus experimentos. Con G=0 el modelo es detachment-limited puro (todo lo
+// erosionado desaparece). La incisión se escala por (1+G): con uplift
+// uniforme el estado estacionario queda IDÉNTICO al de G=0 (la calibración de
+// cumbres no se toca) y la deposición solo aflora donde la carga que llega de
+// aguas arriba supera la que la celda generaría por sí misma: frentes de
+// montaña y tierras bajas.
+constexpr float kDeposition = 2.0f;
+// G depende de la roca de ORIGEN del sedimento (Yuan: G ∝ velocidad de
+// sedimentación): la roca dura (lith 0) da clastos gruesos que se depositan
+// pronto (G×kGSpan), la blanda (lith 1) da finos que viajan lejos (G/kGSpan).
+// El flujo transporta la G media ponderada por volumen de sus fuentes.
+constexpr float kGSpan = 2.0f;
+// Barridos de Gauss-Seidel del término de sedimento por paso (Yuan: 2-4): el
+// flujo depende de las alturas nuevas aguas arriba, que el stack directo
+// resuelve DESPUÉS de la celda.
+constexpr int kDepositionSweeps = 3;
 
 constexpr int kDx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
 constexpr int kDz[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
@@ -120,7 +137,7 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
                            const std::vector<float>& lithology, int macro_res,
                            float cell_size_m, float uplift_total_m,
                            int iterations, glm::vec2 wind,
-                           const std::vector<float>& seabed) {
+                           const std::vector<float>& seabed, LemStats* stats) {
     const int res = macro_res;
     const size_t n = static_cast<size_t>(res) * static_cast<size_t>(res);
     const float uplift_per_iter = uplift_total_m / static_cast<float>(iterations);
@@ -250,6 +267,20 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
     std::vector<std::uint32_t> donors(n);
     std::vector<std::uint32_t> stack(n);
     std::vector<float> lap(n);
+    // Sedimentación: alturas al inicio del paso, coeficiente implícito por
+    // celda (<0 = sin incisión) y flujo de sedimento acumulado.
+    std::vector<float> h_prev(n);
+    std::vector<float> fcoef(n);
+    std::vector<double> qs(n);
+    std::vector<float> area_geom(n);
+    std::vector<double> qsg(n);    // Σ volumen·G de las fuentes
+    std::vector<float> alluvium(n, 0.0f);
+    std::vector<float> g_src(n, kDeposition);
+    if (!lithology.empty()) {
+        for (size_t i = 0; i < n; ++i) {
+            g_src[i] = kDeposition * std::pow(kGSpan, 1.0f - 2.0f * lithology[i]);
+        }
+    }
     std::vector<int> rows(static_cast<size_t>(res));
     std::iota(rows.begin(), rows.end(), 0);
 
@@ -331,46 +362,111 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
         for (size_t i = 0; i < n; ++i) {
             area[i] = cell_area * rain_w[i];
         }
+        std::fill(area_geom.begin(), area_geom.end(), cell_area);
         for (size_t s = n; s-- > 0;) {
             const std::uint32_t i = stack[s];
             if (receiver[i] != i) {
                 area[receiver[i]] += area[i];
+                area_geom[receiver[i]] += area_geom[i];
             }
         }
 
-        // 4) Solver implícito (stack directo: el receptor ya está resuelto).
-        for (size_t s = 0; s < n; ++s) {
-            const std::uint32_t i = stack[s];
-            if (has_seabed) {
-                if (h[i] <= 0.0f) {
-                    // Fondo marino: la tectónica sigue empujando (un lóbulo
-                    // submarino puede EMERGER como islote), pero bajo el agua
-                    // no hay incisión fluvial — solo difusión (paso 5).
-                    h[i] += uplift_per_iter * uplift[i];
-                    continue;
-                }
-            } else if (uplift[i] < kBaseUplift) {
-                h[i] = 0.0f; // nivel de base: mar
-                continue;
+        // 4) Solver implícito con sedimentación (Yuan et al. 2019):
+        //      h' = (h + U + F·h_r' + G·Qs/A) / (1 + F·(1+G))
+        //    Qs = volumen neto erosionado aguas arriba en este paso (celda
+        //    incluida); A = área drenada GEOMÉTRICA, no el caudal: con el
+        //    caudal ponderado por lluvia, en sotavento (lluvia 0.5) la
+        //    deposición doblaba a la compensación (1+G) y todo agradaba
+        //    (cumbres ×2). La lluvia ya actúa en la incisión. Qs depende de las h' de aguas
+        //    arriba, que el stack directo resuelve después: Gauss-Seidel con
+        //    el Qs del barrido anterior. El primero parte de h' = h (erosión
+        //    = uplift, la hipótesis de equilibrio): arrancar con Qs = 0 y la
+        //    incisión ya escalada por (1+G) sobreerosionaba y el barrido
+        //    oscilaba (cumbres a la mitad).
+        h_prev = h;
+        for (size_t i = 0; i < n; ++i) {
+            fcoef[i] = -1.0f;
+            if (receiver[i] == i) {
+                continue; // pit: se rellena y drenará
             }
-            const std::uint32_t r = receiver[i];
-            if (r == i) {
-                h[i] += uplift_per_iter * uplift[i]; // pit: se rellena y drenará
-                continue;
+            if (has_seabed ? h_prev[i] <= 0.0f : uplift[i] < kBaseUplift) {
+                continue; // mar: sin incisión fluvial
             }
             // El divisor de dureza hace S ∝ u^(1+kHardness): erosiona más
             // deprisa la roca blanda de poco uplift, menos el núcleo.
             const float hardness =
                 std::pow(std::max(uplift[i], 0.05f), kHardness);
-            const float f = k_dt * k_lith[i]
-                          * std::pow(std::max(area[i], a0[i]) / a0[i],
-                                     kConcavity)
-                          / (rcv_dist[i] * hardness);
-            // Con batimetría, el nivel de base fluvial es el MAR (h=0): un
-            // río que desemboca no talla su lecho por debajo del receptor
-            // sumergido — grada a la superficie del agua.
-            const float hr = has_seabed ? std::max(h[r], 0.0f) : h[r];
-            h[i] = (h[i] + uplift_per_iter * uplift[i] + f * hr) / (1.0f + f);
+            fcoef[i] = (1.0f + g_src[i]) * k_dt * k_lith[i]
+                     * std::pow(std::max(area[i], a0[i]) / a0[i], kConcavity)
+                     / (rcv_dist[i] * hardness);
+        }
+        for (int sweep = 0; sweep < kDepositionSweeps; ++sweep) {
+            for (size_t i = 0; i < n; ++i) {
+                qs[i] = fcoef[i] < 0.0f
+                            ? 0.0
+                            : static_cast<double>(h_prev[i]
+                                                  + uplift_per_iter * uplift[i]
+                                                  - h[i])
+                                  * cell_area;
+                qsg[i] = qs[i] * g_src[i];
+            }
+            for (size_t s = n; s-- > 0;) {
+                const std::uint32_t i = stack[s];
+                const std::uint32_t r = receiver[i];
+                // El sedimento que llega al mar o a un pit se queda allí:
+                // solo viaja entre celdas con incisión.
+                if (r != i && fcoef[r] >= 0.0f) {
+                    qs[r] += qs[i];
+                    qsg[r] += qsg[i];
+                }
+            }
+            for (size_t s = 0; s < n; ++s) {
+                const std::uint32_t i = stack[s];
+                const float up = uplift_per_iter * uplift[i];
+                if (fcoef[i] < 0.0f) {
+                    // Nivel de base clásico clavado a 0; fondo marino (solo
+                    // tectónica + difusión) o pit: suben con el uplift.
+                    h[i] = (!has_seabed && uplift[i] < kBaseUplift)
+                               ? 0.0f
+                               : h_prev[i] + up;
+                    continue;
+                }
+                // Con batimetría, el nivel de base fluvial es el MAR (h=0): un
+                // río que desemboca no talla su lecho por debajo del receptor
+                // sumergido — grada a la superficie del agua.
+                const std::uint32_t r = receiver[i];
+                const float hr = has_seabed ? std::max(h[r], 0.0f) : h[r];
+                // G·Qs/A con G la media de las fuentes: Σ(e·G)/A.
+                const float dep =
+                    static_cast<float>(std::max(qsg[i], 0.0) / area_geom[i]);
+                h[i] = (h_prev[i] + up + fcoef[i] * hr + dep) / (1.0f + fcoef[i]);
+            }
+        }
+        // Aluvión: la agradación neta lo engrosa; la erosión lo consume
+        // antes de morder la roca.
+        for (size_t i = 0; i < n; ++i) {
+            if (fcoef[i] < 0.0f) {
+                continue;
+            }
+            const float d = h[i] - (h_prev[i] + uplift_per_iter * uplift[i]);
+            alluvium[i] = std::max(0.0f, alluvium[i] + d);
+        }
+        if (stats != nullptr && it == iterations - 1) {
+            *stats = LemStats{};
+            for (size_t i = 0; i < n; ++i) {
+                if (fcoef[i] < 0.0f) {
+                    continue;
+                }
+                const double e =
+                    static_cast<double>(h_prev[i] + uplift_per_iter * uplift[i] - h[i])
+                    * cell_area;
+                if (e >= 0.0) {
+                    stats->eroded_m3 += e;
+                } else {
+                    stats->deposited_m3 -= e;
+                    ++stats->aggrading_cells;
+                }
+            }
         }
 
         // 5) Difusión de laderas: crestas redondeadas, sin agujas.
@@ -415,6 +511,9 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
             }
         }
         h.swap(smoothed);
+    }
+    if (stats != nullptr) {
+        stats->alluvium_m = std::move(alluvium);
     }
     // El clamp a ≥0 solo tiene sentido sin batimetría: con fondo marino real
     // el relieve devuelto ES con signo (la costa se corta después en h=0).

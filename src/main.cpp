@@ -786,6 +786,66 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
         }
         std::cout << std::endl;
 
+        // Sedimentación del LEM (Yuan 2019): cuánto de lo erosionado se
+        // redeposita en la última iteración, y fondos de valle llanos en
+        // tierra (pendiente < 2 %, 5-600 m: excluye playa y cumbres), que es
+        // donde la deposición tiene que notarse.
+        {
+            const auto& ls = data.lem_stats;
+            const double ratio =
+                ls.eroded_m3 > 0.0 ? ls.deposited_m3 / ls.eroded_m3 : 0.0;
+            std::cout << "sedimento LEM: erosionado " << ls.eroded_m3
+                      << " m3, depositado " << ls.deposited_m3 << " m3 ("
+                      << ratio * 100.0 << " %), celdas en agradacion "
+                      << ls.aggrading_cells << std::endl;
+            const int hres = data.height.resolution();
+            const float cell = data.height.cell_size();
+            std::size_t flat = 0;
+            std::size_t land = 0;
+            for (int z = 1; z < hres - 1; ++z) {
+                for (int x = 1; x < hres - 1; ++x) {
+                    const float h = data.height.at(x, z);
+                    if (h < 5.0f || h > 600.0f) {
+                        continue;
+                    }
+                    ++land;
+                    const float gx = (data.height.at(x + 1, z) - data.height.at(x - 1, z))
+                                   / (2.0f * cell);
+                    const float gz = (data.height.at(x, z + 1) - data.height.at(x, z - 1))
+                                   / (2.0f * cell);
+                    if (gx * gx + gz * gz < 0.02f * 0.02f) {
+                        ++flat;
+                    }
+                }
+            }
+            std::cout << "cumbre: "
+                      << *std::max_element(data.height.data().begin(),
+                                           data.height.data().end())
+                      << " m" << std::endl;
+            // Lagos: celdas, profundidad máxima (lámina − terreno) y cuántas
+            // están por encima de 600 m (lagos de altura, ver N4 descartado).
+            std::size_t lake_cells = 0;
+            std::size_t lake_high = 0;
+            float lake_depth = 0.0f;
+            for (std::size_t i = 0; i < data.hydrology.lake.size(); ++i) {
+                if (data.hydrology.lake[i] == 0) {
+                    continue;
+                }
+                ++lake_cells;
+                const float d = data.hydrology.water_level[i] - data.height.data()[i];
+                lake_depth = std::max(lake_depth, d);
+                if (data.height.data()[i] > 600.0f) {
+                    ++lake_high;
+                }
+            }
+            std::cout << "lagos: " << lake_cells << " celdas (" << lake_high
+                      << " sobre 600 m), profundidad maxima " << lake_depth
+                      << " m" << std::endl;
+            std::cout << "fondo llano (pendiente<2%, 5-600 m): " << flat
+                      << " celdas (" << (land ? 100.0 * flat / land : 0.0)
+                      << " % de la tierra media)" << std::endl;
+        }
+
         // Histograma de regímenes de orilla (espejo del log del modo ventana):
         // la calibración de marisma/arena/grava se mide aquí sin abrir GL.
         size_t n_sand = 0, n_gravel = 0, n_marsh = 0;

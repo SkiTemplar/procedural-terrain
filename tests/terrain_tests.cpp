@@ -572,7 +572,9 @@ TEST(Generator, LasMontanasAlcanzanElObjetivoAEscalaIsla) {
     // que es quien decide cuánta montaña ve el LEM.
     terrain::TerrainConfig cfg;
     cfg.seed = 31416;
-    cfg.resolution = 512; // macro 128: misma física, coste de test razonable
+    // 1024 (macro 256): a 512 la celda macro de 78 m sobreestimaba la cumbre
+    // ×1.5 frente al juego (4096) y con sedimentación pasaba del tope.
+    cfg.resolution = 1024;
     cfg.size_m = 10000.0f;
     cfg.erosion_droplets = 20000;
     const auto data = terrain::generate(cfg);

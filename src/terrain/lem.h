@@ -4,6 +4,7 @@
 
 #include <glm/vec2.hpp>
 
+#include <cstddef>
 #include <vector>
 
 namespace terrain {
@@ -40,15 +41,34 @@ namespace terrain {
 // el contorno h=0 del relieve erosionado, y los lóbulos de uplift submarinos
 // que asoman se convierten en islotes reales (erosionados como tierra en
 // cuanto emergen). Vacío = comportamiento clásico (mar pinned a 0, clamp ≥0).
+// Sedimentación (Yuan et al. 2019, JGR Earth Surface): el material que
+// erosionan las cabeceras viaja aguas abajo y se DEPOSITA donde la capacidad
+// de transporte cae (frente de montaña, llanura costera): abanicos aluviales
+// y fondos de valle planos emergen del balance, no de un estampado.
 // Trabaja en UNIDADES FÍSICAS con la pendiente de equilibrio calibrada
 // (~35° en cabeceras): la altura Y la pendiente salen coherentes, sin
 // normalizaciones que distorsionen las laderas. Devuelve metros.
+// Balance de sedimento de la ÚLTIMA iteración (para el dump): volúmenes en
+// m³ por paso sobre celdas con incisión. `deposited_m3` suma las celdas que
+// suben más que su uplift (agradación neta).
+struct LemStats {
+    double eroded_m3 = 0.0;
+    double deposited_m3 = 0.0;
+    std::size_t aggrading_cells = 0;
+    // Espesor de aluvión (m) por celda macro al final: crece con la
+    // agradación neta y se consume cuando la celda vuelve a erosionar. El
+    // generador lo usa para enterrar la rugosidad de detalle bajo el
+    // sedimento (un fondo de valle relleno es liso).
+    std::vector<float> alluvium_m;
+};
+
 std::vector<float> run_lem(const std::vector<float>& uplift,
                            const std::vector<float>& lithology, int macro_res,
                            float cell_size_m, float uplift_total_m,
                            int iterations = 150,
                            glm::vec2 wind = {0.0f, 0.0f},
-                           const std::vector<float>& seabed = {});
+                           const std::vector<float>& seabed = {},
+                           LemStats* stats = nullptr);
 inline std::vector<float> run_lem(const std::vector<float>& uplift,
                                   int macro_res, float cell_size_m,
                                   float uplift_total_m, int iterations = 150) {
