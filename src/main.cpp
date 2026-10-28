@@ -7,6 +7,7 @@
 #include "render/terrain_shaders.h"
 #include "terrain/chunked_terrain.h"
 #include "terrain/generator.h"
+#include "terrain/landform_stats.h"
 #include "terrain/mesher.h"
 #include "terrain/palette.h"
 #include "terrain/preset.h"
@@ -465,6 +466,36 @@ void write_bmp(const std::string& path, int w, int h,
             static_cast<std::streamsize>(out.size()));
 }
 
+// Laderas y pedreras (auditoría 2026-10 relieve #5/#6): histograma de
+// pendiente de tierra, paredes > 45° costeras frente a interiores, reparto por
+// formación y cobertura de canchal al pie de pared.
+void print_landform_stats(const terrain::TerrainData& data) {
+    const terrain::LandformStats st = terrain::compute_landform_stats(data);
+    const auto pct = [](std::size_t a, std::size_t b) {
+        return b > 0 ? 100.0 * static_cast<double>(a) / static_cast<double>(b) : 0.0;
+    };
+    std::cout << "pendiente de tierra (grados, % de " << st.land_cells << " celdas):";
+    for (std::size_t b = 0; b < terrain::LandformStats::kSlopeBins; ++b) {
+        const float lo = b == 0 ? 0.0f : terrain::LandformStats::kSlopeEdgesDeg[b - 1];
+        std::cout << ' ' << lo << "+:" << pct(st.slope_bins[b], st.land_cells);
+    }
+    std::cout << std::endl;
+    std::cout << "pendiente >45: interior " << st.steep45_inland << " celdas, costa (<"
+              << terrain::LandformStats::kCoastBandM << " m) " << st.steep45_coast
+              << " celdas" << std::endl;
+    const char* names[3] = {"dura", "media", "blanda"};
+    for (std::size_t c = 0; c < 3; ++c) {
+        std::cout << "  formacion " << names[c] << ": " << st.litho_cells[c]
+                  << " celdas, >45 " << pct(st.litho_steep45[c], st.litho_cells[c])
+                  << " %, >55 " << pct(st.litho_steep55[c], st.litho_cells[c])
+                  << " %, p90 tan " << st.litho_p90_tan[c] << std::endl;
+    }
+    std::cout << "pedreras: " << st.scree_cells << " celdas (" << st.scree_area_km2
+              << " km2), moda de pendiente tan " << st.scree_slope_mode_tan
+              << "; pie de pared " << st.wall_foot_cells << " celdas, canchal "
+              << pct(st.wall_foot_scree, st.wall_foot_cells) << " %" << std::endl;
+}
+
 // Dump de verificación de costa (criterio §7-A del plan): mapa de materiales
 // con lámina de agua y mapa de energía de oleaje, sin abrir ventana.
 int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
@@ -867,6 +898,7 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
         std::cout << "orillas: arena " << n_sand << " grava " << n_gravel
                   << " marisma " << n_marsh << std::endl;
     }
+    print_landform_stats(data);
 
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "
               << prefix << "-oleaje.bmp / " << prefix << "-relieve.bmp"

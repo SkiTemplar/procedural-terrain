@@ -27,6 +27,7 @@ add_library(terrain_gen STATIC
         src/terrain/generator.cpp
         src/terrain/detail.cpp
         src/terrain/lem.cpp
+        src/terrain/landform_stats.cpp
         src/terrain/preset.cpp
 )
 target_include_directories(terrain_gen PUBLIC src)
