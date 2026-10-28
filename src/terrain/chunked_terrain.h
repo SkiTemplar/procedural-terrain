@@ -35,7 +35,7 @@ public:
     const std::vector<const render::Mesh*>& visible_meshes() const { return visible_; }
     int total_chunks() const { return static_cast<int>(chunks_.size()); }
     void bind_detail_textures(const render::Shader& shader, bool enabled,
-                              float intensity) const;
+                              float intensity);
 
     static constexpr float kUltraDistance = 250.0f;  // m → nivel 0
     static constexpr float kFineDistance = 600.0f;   // m → nivel 1

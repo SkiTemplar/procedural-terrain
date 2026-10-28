@@ -1,5 +1,7 @@
 #pragma once
 
+#include "render/terrain_shader_constants.h"
+
 namespace render {
 
 // Trozo GLSL compartido: cielo analítico + niebla con altura (C4-L4, sol fijo).
@@ -91,9 +93,12 @@ uniform float u_smooth_blend; // 1 = mezclar a suave en distancia; 0 = solo flat
 uniform int u_detail_enabled;
 uniform float u_detail_intensity;
 uniform float u_terrain_half;
-uniform sampler2DArray u_detail_albedo;
-uniform sampler2DArray u_detail_normal;
-uniform usampler2D u_material_grid;
+// Unidades fijas (render/terrain_shader_constants.h). La vegetación comparte
+// este fragment: con binding explícito los tres samplers nunca caen en la
+// unidad 0 (fondo marino del agua) ni comparten unidad con otro tipo.
+layout(binding = )glsl" PT_GLSL_STR(PT_DETAIL_ALBEDO_UNIT) R"glsl() uniform sampler2DArray u_detail_albedo;
+layout(binding = )glsl" PT_GLSL_STR(PT_DETAIL_NORMAL_UNIT) R"glsl() uniform sampler2DArray u_detail_normal;
+layout(binding = )glsl" PT_GLSL_STR(PT_MATERIAL_GRID_UNIT) R"glsl() uniform usampler2D u_material_grid;
 uniform float u_layer_size[10];
 uniform vec3 u_layer_mean[10];
 
@@ -116,86 +121,194 @@ float vnoise(vec2 p) {
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-// Texturas PBR cercanas. El caso comun (un material, planar) hace 4 lecturas
-// R8UI + 2 albedo + 2 normal = 8. Peor caso (4 materiales, triplanar):
-// 4 + 4 * (2 escalas * 2 mapas * 3 ejes) = 52 lecturas, limitado a roca
-// escarpada dentro del radio de detalle.
+// Réplica exacta de terrain::hash01 / terrain::value_noise (mesher.cpp): la
+// aritmética uint de GLSL es módulo 2^32 igual que la de C++, así que el warp
+// de material del shader coincide con el de la malla.
+float hash01_int(ivec2 c) {
+    uint h = uint(c.x) * 374761393u + uint(c.y) * 668265263u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    return float(h & 0xFFFFFFu) / 16777216.0;
+}
+
+float value_noise(vec2 p) {
+    vec2 fl = floor(p);
+    ivec2 i = ivec2(fl);
+    vec2 t = p - fl;
+    t = t * t * (3.0 - 2.0 * t);
+    float a = hash01_int(i);
+    float b = hash01_int(i + ivec2(1, 0));
+    float c = hash01_int(i + ivec2(0, 1));
+    float d = hash01_int(i + ivec2(1, 1));
+    return mix(mix(a, b, t.x), mix(c, d, t.x), t.y);
+}
+
+// Espejo de terrain::material_warp (chunked_terrain.cpp), mismas constantes.
+vec2 material_warp(vec2 w) {
+    const float f = )glsl" PT_GLSL_STR(PT_MATERIAL_WARP_FREQ) R"glsl(;
+    const float k = )glsl" PT_GLSL_STR(PT_MATERIAL_WARP_AMP) R"glsl(;
+    float nx = value_noise(vec2(
+        w.x * f + )glsl" PT_GLSL_STR(PT_MATERIAL_WARP_X_OFFSET_X) R"glsl(,
+        w.y * f + )glsl" PT_GLSL_STR(PT_MATERIAL_WARP_X_OFFSET_Z) R"glsl()) - 0.5;
+    float nz = value_noise(vec2(
+        w.x * f + )glsl" PT_GLSL_STR(PT_MATERIAL_WARP_Z_OFFSET_X) R"glsl(,
+        w.y * f + )glsl" PT_GLSL_STR(PT_MATERIAL_WARP_Z_OFFSET_Z) R"glsl()) - 0.5;
+    return vec2(nx, nz) * 2.0 * k;
+}
+
+// Texturas PBR cercanas. Coste en lecturas de textura por fragmento:
+// - caso común (un material, planar): 4 texelFetch R8UI + 2 albedo + 2 normal
+//   = 8 (donde el peso antitiling es 0 o 1 solo se hace una de las dos
+//   lecturas de cada mapa: 6);
+// - peor caso (4 materiales distintos, los 4 de roca triplanar):
+//   4 + 4 * (3 ejes * 2 mapas * 2 escalas) = 52, solo en roca escarpada dentro
+//   del radio de detalle.
+// Todas las lecturas condicionales usan textureGrad con gradientes de mundo
+// calculados en flujo uniforme al principio de main: dentro de ramas no
+// uniformes las derivadas implícitas de texture() están indefinidas.
 const float kDetailFadeStartM = 150.0;
 const float kDetailFadeEndM = 400.0;
 const int kRockLayer = 4;
+const int kLastLayer = 9;
+const float kTriplanarMaxUp = 0.72;      // |n.y| por debajo => triplanar (roca)
 
-vec2 rotate_detail(vec2 p) {
-    const mat2 r = mat2(0.819152, 0.573576, -0.573576, 0.819152);
-    return r * p;
+// Antitiling: segunda lectura a otra escala y rotada 35 grados, mezclada por
+// ruido.
+const mat2 kAntitileRot = mat2(0.819152, 0.573576, -0.573576, 0.819152);
+const float kAntitileScale = 0.713;
+const vec2 kAntitileOffset = vec2(19.7, 7.3);
+const float kAntitileNoiseFreq = 0.17;   // ciclos por tile
+
+struct UvGrad {
+    vec2 uv;
+    vec2 dx;
+    vec2 dy;
+};
+
+UvGrad antitile_uv(UvGrad g) {
+    return UvGrad(kAntitileRot * (g.uv * kAntitileScale) + kAntitileOffset,
+                  kAntitileRot * (g.dx * kAntitileScale),
+                  kAntitileRot * (g.dy * kAntitileScale));
 }
 
-vec4 detail_pair(sampler2DArray maps, vec2 uv, int layer) {
-    float mix_k = 0.35 + 0.30 * vnoise(uv * 0.17 + vec2(layer));
-    vec4 a = texture(maps, vec3(uv, float(layer)));
-    vec4 b = texture(maps, vec3(rotate_detail(uv * 0.713) + 19.7,
-                                float(layer)));
-    return mix(a, b, mix_k);
+// Peso de la segunda lectura con contraste: amplias zonas con peso 0 o 1 y
+// transiciones cortas, en lugar de un 50 % casi constante.
+float antitile_weight(vec2 uv, int layer) {
+    float n = vnoise(uv * kAntitileNoiseFreq + vec2(float(layer) * 7.13));
+    return smoothstep(0.30, 0.70, n);
 }
 
-vec3 axis_detail_normal(vec3 encoded, int axis, float axis_sign) {
-    vec3 d = normalize(encoded * 2.0 - 1.0);
-    if (axis == 0) return normalize(vec3(d.z * axis_sign, d.y, d.x));
-    if (axis == 1) return normalize(vec3(d.x, d.z * axis_sign, d.y));
-    return normalize(vec3(d.x, d.y, d.z * axis_sign));
+// Normalización de la mezcla lineal que conserva la varianza (Heitz y Neyret
+// 2018, aproximación de primer orden): (a-m)(1-w) + (b-m)w pierde contraste
+// en w=0.5; dividir por sqrt((1-w)^2 + w^2) lo restituye.
+float variance_norm(float w) {
+    return inversesqrt((1.0 - w) * (1.0 - w) + w * w);
 }
 
-void sample_layer_detail(int layer, vec3 base_normal,
+vec3 sample_albedo(UvGrad g, int layer) {
+    float w = antitile_weight(g.uv, layer);
+    UvGrad r = antitile_uv(g);
+    if (w >= 1.0) {
+        return textureGrad(u_detail_albedo, vec3(r.uv, float(layer)),
+                           r.dx, r.dy).rgb;
+    }
+    vec3 a = textureGrad(u_detail_albedo, vec3(g.uv, float(layer)),
+                         g.dx, g.dy).rgb;
+    if (w <= 0.0) return a;
+    vec3 b = textureGrad(u_detail_albedo, vec3(r.uv, float(layer)),
+                         r.dx, r.dy).rgb;
+    vec3 mean = u_layer_mean[layer];
+    vec3 blended = mean + ((a - mean) * (1.0 - w) + (b - mean) * w)
+                        * variance_norm(w);
+    return max(blended, vec3(0.0));
+}
+
+// Normal tangente en el marco (u, v) de la proyección. La imagen se sube sin
+// voltear (fila 0 = arriba = v pequeña) y el verde de la convención OpenGL
+// apunta hacia arriba de la imagen, es decir, hacia -v: se invierte y.
+vec3 decode_normal(vec4 texel) {
+    vec3 n = texel.xyz * 2.0 - 1.0;
+    return vec3(n.x, -n.y, n.z);
+}
+
+vec3 sample_tangent_normal(UvGrad g, int layer) {
+    float w = antitile_weight(g.uv, layer);
+    UvGrad r = antitile_uv(g);
+    // La lectura rotada perturba en su propio marco: se devuelve al marco
+    // (u, v) con la rotación inversa antes de mezclar.
+    if (w >= 1.0) {
+        vec3 b = decode_normal(textureGrad(u_detail_normal,
+                                           vec3(r.uv, float(layer)), r.dx, r.dy));
+        return normalize(vec3(transpose(kAntitileRot) * b.xy, b.z));
+    }
+    vec3 a = decode_normal(textureGrad(u_detail_normal,
+                                       vec3(g.uv, float(layer)), g.dx, g.dy));
+    if (w <= 0.0) return normalize(a);
+    vec3 b = decode_normal(textureGrad(u_detail_normal,
+                                       vec3(r.uv, float(layer)), r.dx, r.dy));
+    b.xy = transpose(kAntitileRot) * b.xy;
+    vec2 xy = (a.xy * (1.0 - w) + b.xy * w) * variance_norm(w);
+    float z = max(mix(a.z, b.z, w), 1e-3);
+    return normalize(vec3(xy, z));
+}
+
+UvGrad project_uv(vec2 p, vec2 dpdx, vec2 dpdy, float inv_tile) {
+    return UvGrad(p * inv_tile, dpdx * inv_tile, dpdy * inv_tile);
+}
+
+// Whiteout por eje (Ben Golus, "Normal Mapping for a Triplanar Shader"): la
+// normal base se reordena al marco de cada proyección (u, v, eje), se suman
+// las pendientes, la componente del eje se multiplica, y se vuelve al marco
+// de mundo con el reordenamiento inverso. abs(t.z) * base.eje toma el signo de
+// la cara, así que sirve para las dos caras de cada eje.
+vec3 whiteout_y(vec3 t, vec3 base) { // proyección XZ: u = +x, v = +z
+    return vec3(t.x + base.x, abs(t.z) * base.y, t.y + base.z);
+}
+vec3 whiteout_x(vec3 t, vec3 base) { // proyección ZY: u = +z, v = +y
+    return vec3(abs(t.z) * base.x, t.y + base.y, t.x + base.z);
+}
+vec3 whiteout_z(vec3 t, vec3 base) { // proyección XY: u = +x, v = +y
+    return vec3(t.x + base.x, t.y + base.y, abs(t.z) * base.z);
+}
+
+void sample_layer_detail(int layer, vec3 base_normal, vec3 dpdx, vec3 dpdy,
                          out vec3 ratio, out vec3 detail_normal) {
-    float tile = max(u_layer_size[layer], 0.01);
-    bool triplanar = layer == kRockLayer && abs(base_normal.y) < 0.72;
+    float inv_tile = 1.0 / max(u_layer_size[layer], 0.01);
+    vec3 inv_mean = 1.0 / max(u_layer_mean[layer], vec3(0.03));
+    vec3 p = v_world_pos;
+    bool triplanar = layer == kRockLayer && abs(base_normal.y) < kTriplanarMaxUp;
     if (!triplanar) {
-        vec2 uv = v_world_pos.xz / tile;
-        vec3 texel = detail_pair(u_detail_albedo, uv, layer).rgb;
-        ratio = texel / max(u_layer_mean[layer], vec3(0.03));
-        detail_normal = axis_detail_normal(
-            detail_pair(u_detail_normal, uv, layer).xyz, 1,
-            base_normal.y < 0.0 ? -1.0 : 1.0);
+        UvGrad gy = project_uv(p.xz, dpdx.xz, dpdy.xz, inv_tile);
+        ratio = sample_albedo(gy, layer) * inv_mean;
+        detail_normal = normalize(whiteout_y(
+            sample_tangent_normal(gy, layer), base_normal));
         return;
     }
 
     vec3 w = pow(abs(base_normal), vec3(4.0));
     w /= max(w.x + w.y + w.z, 1e-4);
-    vec3 ax = detail_pair(u_detail_albedo, v_world_pos.zy / tile, layer).rgb;
-    vec3 ay = detail_pair(u_detail_albedo, v_world_pos.xz / tile, layer).rgb;
-    vec3 az = detail_pair(u_detail_albedo, v_world_pos.xy / tile, layer).rgb;
-    ratio = (ax * w.x + ay * w.y + az * w.z)
-          / max(u_layer_mean[layer], vec3(0.03));
-    vec3 nx = axis_detail_normal(
-        detail_pair(u_detail_normal, v_world_pos.zy / tile, layer).xyz,
-        0, sign(base_normal.x));
-    vec3 ny = axis_detail_normal(
-        detail_pair(u_detail_normal, v_world_pos.xz / tile, layer).xyz,
-        1, sign(base_normal.y));
-    vec3 nz = axis_detail_normal(
-        detail_pair(u_detail_normal, v_world_pos.xy / tile, layer).xyz,
-        2, sign(base_normal.z));
-    detail_normal = normalize(nx * w.x + ny * w.y + nz * w.z);
+    UvGrad gx = project_uv(p.zy, dpdx.zy, dpdy.zy, inv_tile);
+    UvGrad gy = project_uv(p.xz, dpdx.xz, dpdy.xz, inv_tile);
+    UvGrad gz = project_uv(p.xy, dpdx.xy, dpdy.xy, inv_tile);
+    ratio = (sample_albedo(gx, layer) * w.x
+           + sample_albedo(gy, layer) * w.y
+           + sample_albedo(gz, layer) * w.z) * inv_mean;
+    detail_normal = normalize(
+        whiteout_x(sample_tangent_normal(gx, layer), base_normal) * w.x
+      + whiteout_y(sample_tangent_normal(gy, layer), base_normal) * w.y
+      + whiteout_z(sample_tangent_normal(gz, layer), base_normal) * w.z);
 }
 
-// Whiteout/UDN en coordenadas de mundo Y-up: suma las pendientes tangentes y
-// conserva la componente vertical multiplicativa para no aplanar la macro-normal.
-vec3 blend_udn(vec3 base, vec3 detail, float strength) {
-    detail = normalize(mix(vec3(0.0, 1.0, 0.0), detail, strength));
-    return normalize(vec3(base.x + detail.x,
-                          base.y * max(detail.y, 0.05),
-                          base.z + detail.z));
-}
-
-void terrain_detail(vec3 base_normal, float dist_cam,
+// dpdx/dpdy: gradientes de pantalla de la posición de mundo, calculados en
+// flujo uniforme. Las UV son lineales en la posición, así que sus gradientes
+// salen de proyectarlos igual que la propia posición.
+void terrain_detail(vec3 base_normal, float dist_cam, vec3 dpdx, vec3 dpdy,
                     out vec3 ratio, out vec3 detail_normal) {
     ratio = vec3(1.0);
     detail_normal = base_normal;
     float fade = 1.0 - smoothstep(kDetailFadeStartM, kDetailFadeEndM, dist_cam);
     if (u_detail_enabled == 0 || fade <= 0.0) return; // cero fetches lejos/fallback
 
-    vec2 warp = vec2(vnoise(v_world_pos.xz * 0.05 + vec2(13.0, -4.0)),
-                     vnoise(v_world_pos.xz * 0.05 + vec2(-8.0, 21.0)));
-    vec2 world = v_world_pos.xz + (warp - 0.5) * 10.0;
+    vec2 world = v_world_pos.xz + material_warp(v_world_pos.xz);
     ivec2 grid_size = textureSize(u_material_grid, 0);
     vec2 grid = (world / (2.0 * u_terrain_half) + 0.5)
               * vec2(grid_size - 1);
@@ -205,28 +318,32 @@ void terrain_detail(vec3 base_normal, float dist_cam,
                          texelFetch(u_material_grid, ivec2(p1.x, p0.y), 0).r,
                          texelFetch(u_material_grid, ivec2(p0.x, p1.y), 0).r,
                          texelFetch(u_material_grid, p1, 0).r);
-    vec2 f = fract(grid);
+    layers = min(layers, uvec4(kLastLayer)); // nunca fuera de los arrays
+    vec2 f = clamp(grid - vec2(p0), 0.0, 1.0);
     vec4 weights = vec4((1.0-f.x)*(1.0-f.y), f.x*(1.0-f.y),
                         (1.0-f.x)*f.y, f.x*f.y);
 
     vec3 r0, n0;
-    sample_layer_detail(int(layers.x), base_normal, r0, n0);
+    sample_layer_detail(int(layers.x), base_normal, dpdx, dpdy, r0, n0);
     vec3 mixed_ratio = r0;
     vec3 mixed_normal = n0;
     if (!all(equal(layers, uvec4(layers.x)))) {
         vec3 r1, n1, r2, n2, r3, n3;
-        sample_layer_detail(int(layers.y), base_normal, r1, n1);
-        sample_layer_detail(int(layers.z), base_normal, r2, n2);
-        sample_layer_detail(int(layers.w), base_normal, r3, n3);
+        sample_layer_detail(int(layers.y), base_normal, dpdx, dpdy, r1, n1);
+        sample_layer_detail(int(layers.z), base_normal, dpdx, dpdy, r2, n2);
+        sample_layer_detail(int(layers.w), base_normal, dpdx, dpdy, r3, n3);
         mixed_ratio = r0*weights.x + r1*weights.y
                     + r2*weights.z + r3*weights.w;
         mixed_normal = normalize(n0*weights.x + n1*weights.y
                                + n2*weights.z + n3*weights.w);
     }
-    float strength = clamp(u_detail_intensity * fade, 0.0, 1.5);
-    ratio = mix(vec3(1.0), clamp(mixed_ratio, vec3(0.25), vec3(4.0)),
-                min(strength, 1.0));
-    detail_normal = blend_udn(base_normal, mixed_normal, min(strength, 1.0));
+    // La intensidad puede pasar de 1 en el albedo (exagera el contraste); la
+    // normal se queda en [0, 1] para no extrapolar más allá del mapa.
+    float strength = clamp(u_detail_intensity, 0.0, 1.5) * fade;
+    ratio = clamp(mix(vec3(1.0), mixed_ratio, strength),
+                  vec3(0.25), vec3(4.0));
+    detail_normal = normalize(mix(base_normal, mixed_normal,
+                                  min(strength, 1.0)));
 }
 
 // Tonemapping ACES (Narkowicz): rolloff fílmico del rango alto → contraste y
@@ -247,18 +364,22 @@ void main() {
     float dist_cam = length(v_world_pos - u_camera_pos);
     float smooth_k = u_smooth_blend * clamp((dist_cam - 4.0) / 36.0, 0.0, 1.0);
 
-    vec3 n_flat = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
+    // Gradientes de pantalla en flujo uniforme: sirven a la normal plana y a
+    // todas las lecturas textureGrad del detalle (que van dentro de ramas).
+    vec3 dpdx = dFdx(v_world_pos);
+    vec3 dpdy = dFdy(v_world_pos);
+    vec3 n_flat = normalize(cross(dpdx, dpdy));
     vec3 n_soft = normalize(v_normal_smooth + vec3(1e-5));
     vec3 normal = normalize(mix(n_flat, n_soft, smooth_k));
     vec3 albedo = mix(v_color, v_color_smooth, smooth_k);
 
+    // Sin detalle (desactivado, lejos o sin assets) devuelve ratio 1 y la
+    // normal base: el resultado es idéntico al render solo-paleta.
     vec3 detail_ratio;
     vec3 detail_normal;
-    terrain_detail(normal, dist_cam, detail_ratio, detail_normal);
-    if (u_detail_enabled != 0 && dist_cam < kDetailFadeEndM) {
-        albedo *= detail_ratio;
-        normal = detail_normal;
-    }
+    terrain_detail(normal, dist_cam, dpdx, dpdy, detail_ratio, detail_normal);
+    albedo *= detail_ratio;
+    normal = detail_normal;
 
     // Iluminación de exterior: sol cálido + ambiente hemisférico (las caras
     // que miran al cielo reciben azul frío; las que miran al suelo, rebote

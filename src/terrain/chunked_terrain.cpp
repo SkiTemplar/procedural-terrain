@@ -1,6 +1,7 @@
 #include "terrain/chunked_terrain.h"
 
 #include "terrain/mesher.h"
+#include "render/terrain_shader_constants.h"
 
 #include <algorithm>
 #include <cmath>
@@ -31,10 +32,16 @@ glm::vec2 vertex_jitter(int gx, int gz, float step) {
 // rejilla de celdas, sin mezclar colores (cada material queda nítido). Solo
 // afecta al COLOR del render; la altura, la física y la vegetación usan la
 // posición real.
+// Las constantes viven en render/terrain_shader_constants.h: el fragment del
+// terreno replica este warp (mismo ruido) para que la textura de detalle se
+// alinee con el color de paleta.
 glm::vec2 material_warp(float wx, float wz) {
-    const float k = 5.0f; // amplitud del serpenteo (m)
-    const float nx = value_noise(wx * 0.05f + 13.0f, wz * 0.05f - 4.0f) - 0.5f;
-    const float nz = value_noise(wx * 0.05f - 8.0f, wz * 0.05f + 21.0f) - 0.5f;
+    const float k = PT_MATERIAL_WARP_AMP; // amplitud del serpenteo (m)
+    const float f = PT_MATERIAL_WARP_FREQ;
+    const float nx = value_noise(wx * f + PT_MATERIAL_WARP_X_OFFSET_X,
+                                 wz * f + PT_MATERIAL_WARP_X_OFFSET_Z) - 0.5f;
+    const float nz = value_noise(wx * f + PT_MATERIAL_WARP_Z_OFFSET_X,
+                                 wz * f + PT_MATERIAL_WARP_Z_OFFSET_Z) - 0.5f;
     return {nx * 2.0f * k, nz * 2.0f * k};
 }
 
@@ -150,7 +157,7 @@ ChunkedTerrain::ChunkedTerrain(const TerrainData& data, const DetailSampler& sam
 
 void ChunkedTerrain::bind_detail_textures(const render::Shader& shader,
                                           bool enabled,
-                                          float intensity) const {
+                                          float intensity) {
     detail_textures_.bind(shader, enabled, intensity);
 }
 

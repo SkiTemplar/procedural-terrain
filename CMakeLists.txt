@@ -87,6 +87,10 @@ target_link_libraries(terrain_tests PRIVATE
         glslang::glslang
         glslang::glslang-default-resource-limits
 )
+# Ruta de los assets para los tests que los usan (se saltan si no están):
+# no dependen del directorio de trabajo de ctest.
+target_compile_definitions(terrain_tests PRIVATE
+        PT_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 
 include(GoogleTest)
 gtest_discover_tests(terrain_tests)

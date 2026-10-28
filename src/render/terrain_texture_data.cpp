@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <fstream>
 #include <system_error>
 
@@ -21,17 +22,27 @@ void set_error(std::string* out, std::string value) {
 
 } // namespace
 
+float srgb_to_linear(float encoded) {
+    return encoded <= 0.04045f
+               ? encoded / 12.92f
+               : std::pow((encoded + 0.055f) / 1.055f, 2.4f);
+}
+
 glm::vec3 mean_albedo(const std::uint8_t* pixels, std::size_t pixel_count,
                       int channels) {
     if (pixels == nullptr || pixel_count == 0 || channels < 3) {
         return glm::vec3{0.0f};
     }
+    std::array<double, 256> linear{};
+    for (std::size_t v = 0; v < linear.size(); ++v) {
+        linear[v] = srgb_to_linear(static_cast<float>(v) / 255.0f);
+    }
     glm::dvec3 sum{0.0};
     for (std::size_t i = 0; i < pixel_count; ++i) {
         const auto* pixel = pixels + i * static_cast<std::size_t>(channels);
-        sum += glm::dvec3{pixel[0], pixel[1], pixel[2]};
+        sum += glm::dvec3{linear[pixel[0]], linear[pixel[1]], linear[pixel[2]]};
     }
-    return glm::vec3{sum / (255.0 * static_cast<double>(pixel_count))};
+    return glm::vec3{sum / static_cast<double>(pixel_count)};
 }
 
 std::optional<TerrainTextureSet> load_terrain_texture_set(
@@ -72,6 +83,31 @@ std::optional<TerrainTextureSet> load_terrain_texture_set(
         set_error(error, "manifest de texturas invalido: " + std::string{ex.what()});
         return std::nullopt;
     }
+}
+
+std::optional<TextureSetStamp> stamp_texture_set(
+    const std::filesystem::path& directory, const TerrainTextureSet& set) {
+    TextureSetStamp stamp;
+    stamp.directory = directory;
+    std::vector<std::filesystem::path> files{directory / "manifest.json"};
+    for (const auto& layer : set.layers) {
+        files.push_back(layer.albedo_path);
+        files.push_back(layer.normal_path);
+    }
+    for (const auto& file : files) {
+        std::error_code ec;
+        const auto time = std::filesystem::last_write_time(file, ec);
+        if (ec) {
+            return std::nullopt;
+        }
+        const auto size = std::filesystem::file_size(file, ec);
+        if (ec) {
+            return std::nullopt;
+        }
+        stamp.write_times.push_back(time);
+        stamp.sizes.push_back(size);
+    }
+    return stamp;
 }
 
 std::optional<std::filesystem::path> find_terrain_texture_directory(
