@@ -649,6 +649,8 @@ void build_deltas(Heightfield& hf, Hydrology& out,
             continue; // canal u orilla a un lado: estuario, sin lóbulo
         }
         ++built;
+        ++out.deposits.deltas;
+        ++out.deposits.delta_lobes;
         // Verificable sin volar a ciegas (mismo criterio que los lagos).
         std::cout << "  delta @ (" << static_cast<int>(hf.world_x(mx)) << ", "
                   << static_cast<int>(hf.world_z(mz)) << ")\n";
@@ -696,6 +698,11 @@ void build_deltas(Heightfield& hf, Hydrology& out,
                 // final y el río moría en seco contra su propio delta.
                 if (bed[ni] <= p.sea_level && bed[ni] > p.sea_level - 7.0f
                     && bed[ni] < target && out.flow[ni] < p.threshold) {
+                    out.deposits.delta_volume_m3 +=
+                        static_cast<double>(target - bed[ni]) * cell * cell;
+                    if (target > p.sea_level) {
+                        ++out.deposits.delta_cells;
+                    }
                     bed[ni] = target;
                 }
             }
@@ -928,6 +935,7 @@ void stamp_channel_bars(Heightfield& hf, Hydrology& out,
             if (confined) {
                 continue;
             }
+            ++out.deposits.bars;
             const int box = static_cast<int>(half_len * 2.4f) + 1;
             const int cx = static_cast<int>(c.x);
             const int cz = static_cast<int>(c.y);
@@ -963,6 +971,9 @@ void stamp_channel_bars(Heightfield& hf, Hydrology& out,
                             bed[ni] = target;
                         }
                         if (bed[ni] >= wl - 0.02f) {
+                            if (!std::isnan(out.water_level[ni])) {
+                                ++out.deposits.bar_cells; // agua → barra
+                            }
                             out.water_level[ni] = kNoWater;
                         }
                     } else if (e <= 2.4f) {
