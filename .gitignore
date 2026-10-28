@@ -13,3 +13,6 @@ vcpkg_installed/
 
 # Runtime
 imgui.ini
+
+# Assets descargados (tools/fetch_textures.py)
+assets/textures/
