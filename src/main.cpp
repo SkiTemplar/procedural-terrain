@@ -10,6 +10,8 @@
 #include "terrain/mesher.h"
 #include "terrain/palette.h"
 #include "terrain/preset.h"
+#include "terrain/water_flow.h"
+#include "terrain/water_metrics.h"
 #include "ui/debug_ui.h"
 #include "ui/field_maps.h"
 #include "veg/grass_field.h"
@@ -465,6 +467,48 @@ void write_bmp(const std::string& path, int w, int h,
             static_cast<std::streamsize>(out.size()));
 }
 
+// Agua que fluye (auditoría 2026-10 #1-#3): desembocaduras, río seco,
+// corriente y rompiente, medidos en terrain/water_metrics.
+void print_water_report(const terrain::TerrainData& data) {
+    const auto& hf = data.height;
+    const terrain::WaterReport r =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    std::cout << "--- agua que fluye ---" << std::endl;
+    std::cout << "escalon en desembocadura (lamina rio - mar): max "
+              << r.mouth_step_max << " m, p95 " << r.mouth_step_p95 << " m"
+              << std::endl;
+    for (const auto& m : r.mouths) {
+        std::cout << "  boca caudal " << m.flow << " en mundo (" << hf.world_x(m.x)
+                  << ", " << hf.world_z(m.z) << "): escalon " << m.step_m << " m"
+                  << std::endl;
+    }
+    std::cout << "rio seco (caudal>=1.5x umbral sin lamina, terreno sobre el mar): "
+              << r.dry_cells << " celdas; peor caudal " << r.dry_worst_flow;
+    if (r.dry_x >= 0) {
+        std::cout << " en mundo (" << hf.world_x(r.dry_x) << ", "
+                  << hf.world_z(r.dry_z) << ")";
+    }
+    std::cout << std::endl;
+    std::cout << "lecho de rio bajo el plano del mar: " << r.river_bed_under_sea_plane
+              << " celdas; mar encerrado tierra adentro: " << r.enclosed_sea_cells
+              << " celdas" << std::endl;
+    const auto print_angles = [](const char* label, const terrain::FlowAngleStats& s) {
+        std::cout << label << ": " << s.cells << " celdas, " << s.pct_over_60deg
+                  << " % a >60 grados del eje aguas abajo, salto mediano entre vecinas "
+                  << s.median_jump_deg << " grados" << std::endl;
+    };
+    print_angles("corriente (campo de flujo)", r.flow_field);
+    print_angles("  referencia: descenso del lecho", r.bed_descent);
+    const float pct_e = r.shallow_sea_cells > 0
+        ? 100.0f * static_cast<float>(r.shallow_sea_with_energy)
+              / static_cast<float>(r.shallow_sea_cells)
+        : 0.0f;
+    std::cout << "rompiente: mar somero (<2.4 m) con oleaje " << pct_e << " % de "
+              << r.shallow_sea_cells << " celdas; zona de rompiente " << r.surf_cells
+              << " celdas (expuesta E>0.45: " << r.surf_exposed
+              << ", abrigo E<0.16: " << r.surf_sheltered << ")" << std::endl;
+}
+
 // Dump de verificación de costa (criterio §7-A del plan): mapa de materiales
 // con lámina de agua y mapa de energía de oleaje, sin abrir ventana.
 int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
@@ -507,8 +551,10 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
 
     for (size_t i = 0; i < n; ++i) {
         const float e = data.wave_energy[i];
+        // En el mar, la energía propagada mar adentro (rompiente) en cian.
         img[i] = data.height.data()[i] <= cfg.sea_level
-                     ? glm::u8vec3{20, 30, 80}
+                     ? to8(glm::mix(glm::vec3{0.08f, 0.12f, 0.31f},
+                                    glm::vec3{0.35f, 0.85f, 1.0f}, e))
                      : to8(glm::vec3{e, e, e});
     }
     write_bmp(prefix + "-oleaje.bmp", res, res, img);
@@ -753,38 +799,7 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
                   << " con lecho a <2 m sobre el mar, " << uncontained_high
                   << " con perchado >2 m)" << std::endl;
 
-        // RÍO SECO (feedback 2026-07-13 "ríos bloqueados por terreno"): celda
-        // con caudal de río hecho pero SIN lámina pintada y en tierra firme —
-        // el cauce existe y lleva agua según el D8, pero no se dibuja nada.
-        const float dry_threshold = cfg.river_flow_threshold
-                                  * (static_cast<float>(res) * static_cast<float>(res))
-                                  / (1024.0f * 1024.0f) * 1.5f;
-        int dry = 0;
-        float worst_dry_flow = 0.0f;
-        int dx1 = -1, dz1 = -1;
-        for (int z = 0; z < res; ++z) {
-            for (int x = 0; x < res; ++x) {
-                const size_t i = at(x, z);
-                if (data.hydrology.flow[i] < dry_threshold
-                    || !std::isnan(wl[i])
-                    || hfd[i] <= cfg.sea_level + 0.3f) {
-                    continue;
-                }
-                ++dry;
-                if (data.hydrology.flow[i] > worst_dry_flow) {
-                    worst_dry_flow = data.hydrology.flow[i];
-                    dx1 = x;
-                    dz1 = z;
-                }
-            }
-        }
-        std::cout << "rio seco (caudal>=1.5x umbral sin lamina, en tierra): "
-                  << dry << " celdas; peor caudal " << worst_dry_flow;
-        if (dx1 >= 0) {
-            std::cout << " en mundo (" << data.height.world_x(dx1) << ", "
-                      << data.height.world_z(dz1) << ")";
-        }
-        std::cout << std::endl;
+        print_water_report(data);
 
         // Histograma de regímenes de orilla (espejo del log del modo ventana):
         // la calibración de marisma/arena/grava se mide aquí sin abrir GL.

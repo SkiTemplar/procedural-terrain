@@ -9,6 +9,14 @@
 
 namespace terrain {
 
+// Oleaje limitado por fetch (E ∝ F, H_s ∝ F^0.5): H_s = H_abierto·√E, con
+// H_abierto la altura significativa del mar abierto que rodea la isla. La ola
+// rompe por fondo cuando H ≥ γ·h (índice de rotura de McCowan, γ ≈ 0.78): la
+// zona de rompiente acaba en h_b = H_s / γ y su anchura sale sola de la
+// pendiente real del fondo. Lo comparten el shader del mar y el dump.
+inline constexpr float kOpenSeaWaveHeightM = 1.5f;
+inline constexpr float kBreakerIndex = 0.78f;
+
 // Exposición litoral (Agua v2, paso 8): energía de oleaje por REI/fetch y
 // aporte sedimentario de las desembocaduras, ambos suavizados a lo largo del
 // contorno de costa y propagados tierra adentro por la banda litoral. La

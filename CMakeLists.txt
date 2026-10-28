@@ -23,6 +23,8 @@ add_library(terrain_gen STATIC
         src/terrain/detail.cpp
         src/terrain/lem.cpp
         src/terrain/preset.cpp
+        src/terrain/water_flow.cpp
+        src/terrain/water_metrics.cpp
 )
 target_include_directories(terrain_gen PUBLIC src)
 target_link_libraries(terrain_gen PUBLIC glm::glm nlohmann_json::nlohmann_json)
