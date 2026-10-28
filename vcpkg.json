@@ -10,6 +10,8 @@
       "features": ["glfw-binding", "opengl3-binding"]
     },
     "nlohmann-json",
-    "gtest"
+    "gtest",
+    "stb",
+    "glslang"
   ]
 }

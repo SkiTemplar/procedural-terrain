@@ -104,7 +104,7 @@ render::Mesh build_grid_mesh(int w, int h, GetVertex&& get_vertex) {
 } // namespace
 
 ChunkedTerrain::ChunkedTerrain(const TerrainData& data, const DetailSampler& sampler)
-    : data_(&data), sampler_(&sampler), palette_(data) {
+    : data_(&data), sampler_(&sampler), palette_(data), detail_textures_(data) {
     const int cells = data.height.resolution() - 1;
     chunks_per_side_ = (cells + chunk_cells_ - 1) / chunk_cells_;
     chunks_.resize(static_cast<size_t>(chunks_per_side_) * chunks_per_side_);
@@ -146,6 +146,12 @@ ChunkedTerrain::ChunkedTerrain(const TerrainData& data, const DetailSampler& sam
     for (auto& chunk : chunks_) {
         rebuild(chunk, 4);
     }
+}
+
+void ChunkedTerrain::bind_detail_textures(const render::Shader& shader,
+                                          bool enabled,
+                                          float intensity) const {
+    detail_textures_.bind(shader, enabled, intensity);
 }
 
 int ChunkedTerrain::desired_level(const Chunk& chunk, const glm::vec3& camera_pos) const {

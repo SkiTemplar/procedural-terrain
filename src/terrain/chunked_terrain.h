@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/mesh.h"
+#include "render/terrain_textures.h"
 #include "terrain/detail.h"
 #include "terrain/generator.h"
 #include "terrain/palette.h"
@@ -33,6 +34,8 @@ public:
 
     const std::vector<const render::Mesh*>& visible_meshes() const { return visible_; }
     int total_chunks() const { return static_cast<int>(chunks_.size()); }
+    void bind_detail_textures(const render::Shader& shader, bool enabled,
+                              float intensity) const;
 
     static constexpr float kUltraDistance = 250.0f;  // m → nivel 0
     static constexpr float kFineDistance = 600.0f;   // m → nivel 1
@@ -55,6 +58,7 @@ private:
     const TerrainData* data_;
     const DetailSampler* sampler_;
     Palette palette_;
+    render::TerrainTextures detail_textures_;
     int chunk_cells_ = 64;
     int chunks_per_side_ = 0;
     std::vector<Chunk> chunks_;

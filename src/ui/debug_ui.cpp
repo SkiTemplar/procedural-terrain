@@ -59,6 +59,11 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
                            ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("dist. vegetacion", &state.veg_draw_distance, 500.0f,
                            6000.0f, "%.0f m");
+        ImGui::Checkbox("Texturas de detalle", &state.detail_textures);
+        ImGui::BeginDisabled(!state.detail_textures);
+        ImGui::SliderFloat("intensidad texturas", &state.detail_texture_intensity,
+                           0.0f, 1.5f, "%.2f");
+        ImGui::EndDisabled();
         ImGui::Checkbox("wireframe", &state.wireframe);
     }
 
