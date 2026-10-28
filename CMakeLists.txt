@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
+# CMP0184: los runtime checks de MSVC (/RTC1) pasan a ser una propiedad por
+# target (MSVC_RUNTIME_CHECKS), para poder quitarlos de terrain_gen en Debug.
+if (POLICY CMP0184)
+    cmake_policy(SET CMP0184 NEW)
+endif ()
 project(ProceduralTerrain CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -62,6 +67,11 @@ target_link_libraries(ProceduralTerrain PRIVATE
 if (MSVC)
     target_compile_options(ProceduralTerrain PRIVATE /W4)
     target_compile_options(terrain_gen PRIVATE /W4)
+    # La generación optimizada también en Debug: 4096² tardaba ~150 s. /O2 es
+    # incompatible con /RTC1, que se quita solo de este target. El resultado
+    # es bit a bit igual (mismo /fp:precise); lo vigila Golden.*.
+    set_property(TARGET terrain_gen PROPERTY MSVC_RUNTIME_CHECKS "")
+    target_compile_options(terrain_gen PRIVATE $<$<CONFIG:Debug>:/O2 /Ob2>)
 else ()
     target_compile_options(ProceduralTerrain PRIVATE -Wall -Wextra)
     target_compile_options(terrain_gen PRIVATE -Wall -Wextra)
@@ -71,7 +81,7 @@ endif ()
 enable_testing()
 find_package(GTest CONFIG REQUIRED)
 
-add_executable(terrain_tests tests/terrain_tests.cpp)
+add_executable(terrain_tests tests/terrain_tests.cpp tests/golden_tests.cpp)
 target_link_libraries(terrain_tests PRIVATE terrain_gen GTest::gtest_main)
 
 include(GoogleTest)
