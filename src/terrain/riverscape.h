@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <vector>
 
 namespace terrain {
@@ -39,17 +40,19 @@ void enforce_monotone_beds(Heightfield& hf, const Hydrology& out,
 // río, los tramos con pendiente de knickpoint se colapsan en rellano + pared
 // vertical + plunge pool (saltos grandes se parten en varios pisos); los
 // tramos de rápido reciben micro-escalones y flag whitewater para el render.
+// `channel_width_m`: anchura de cauce lleno por celda (hydraulic_geometry.h).
 void carve_cascades(Heightfield& hf, Hydrology& out,
                     const std::vector<std::size_t>& order,
                     const std::vector<std::size_t>& downstream,
-                    float river_threshold, float max_flow, int max_radius,
+                    float river_threshold, std::span<const float> channel_width_m,
                     float sea_level);
 
 // Parámetros compartidos por los pases de Agua v2 posteriores al tallado.
 struct RiverscapeParams {
     float threshold;     // caudal mínimo de río (celdas equivalentes)
-    float max_flow;      // caudal máximo del mapa (normaliza w ∝ Q^0.4)
-    int max_radius;      // radio de cauce del río mayor, en celdas
+    // Anchura de cauce lleno por celda en metros, de su caudal absoluto
+    // (hydraulic_geometry.h); 0 fuera de los ríos.
+    std::span<const float> channel_width_m;
     float sea_level;
     std::uint32_t seed;  // determinismo de deltas e islotes
 };

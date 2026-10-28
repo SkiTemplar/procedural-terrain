@@ -303,10 +303,21 @@ TEST(Generator, ElAguaDeLosRiosNoFlota) {
     ASSERT_FALSE(gaps.empty());
     std::sort(gaps.begin(), gaps.end());
     const float median = gaps[gaps.size() / 2];
-    // Límite ligado a la profundidad de diseño del cauce: protege contra
-    // flotación (junto al check de contención), no contra la profundidad
-    // legítima que crece con el contraste de caudales.
-    EXPECT_LT(median, cfg.river_max_depth_m + 2.0f);
+    // Límite ligado al calado físico del cauce mayor del mapa (thalweg 1.5·d
+    // de su caudal de cauce lleno) más el tope de lámina sobre el lecho que
+    // impone la hidrología (2.5 m, rampas de cascada): protege contra
+    // flotación (junto al check de contención). A resolución de test (celda
+    // ~23 m, pendientes de varios metros por celda) la mediana ya vivía en
+    // ese tope antes de la geometría absoluta.
+    constexpr float kMaxSheetM = 2.5f;
+    const float max_flow_cells = *std::max_element(
+        data.hydrology.flow.begin(), data.hydrology.flow.end());
+    const float cell = data.height.cell_size();
+    const float max_thalweg_m =
+        1.5f * terrain::hydraulics::regime_depth_m(
+                   terrain::hydraulics::bankfull_discharge_m3s(
+                       max_flow_cells * cell * cell));
+    EXPECT_LT(median, max_thalweg_m + kMaxSheetM);
     EXPECT_GT(median, 0.0f);
     EXPECT_GT(static_cast<float>(contained) / static_cast<float>(total), 0.97f);
 
@@ -441,6 +452,26 @@ TEST(Preset, CargarYRegenerarReproduceElMundo) {
 
     const auto regen = terrain::generate(loaded->config);
     EXPECT_EQ(terrain::heightfield_hash(regen.height), loaded->height_hash);
+}
+
+TEST(Preset, UnPresetViejoConCamposRetiradosSigueCargando) {
+    // river_max_width_m y river_max_depth_m se retiraron (la geometría del
+    // cauce sale del caudal): un preset guardado antes debe cargar igual,
+    // ignorando esos campos y conservando el resto.
+    const auto path = std::filesystem::temp_directory_path()
+                    / "pt-preset-viejo.json";
+    {
+        std::ofstream out(path);
+        out << R"({"seed": 31337, "river_flow_threshold": 1500.0,
+                   "river_max_depth_m": 5.5, "river_max_width_m": 30.0})";
+    }
+    const auto loaded = terrain::load_preset(path.string());
+    std::filesystem::remove(path);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_EQ(loaded->config.seed, 31337u);
+    EXPECT_FLOAT_EQ(loaded->config.river_flow_threshold, 1500.0f);
+    EXPECT_FALSE(terrain::preset_to_json(loaded->config)
+                     .contains("river_max_width_m"));
 }
 
 TEST(Preset, CargarFicheroCorruptoNoRevienta) {
