@@ -88,4 +88,18 @@ inline constexpr float kMinSlope = 1e-4f;
     return std::min(regime_width_m(q_m3s), slope_limited_width_m(q_m3s, slope));
 }
 
+// Llanura aluvial (PROVISIONAL hasta resolver el hallazgo #10 de la
+// auditoría): la abren los tramos con caudal de cauce lleno de al menos
+// 0.34 m³/s (cuenca ≈ 0.68 km²) en pendiente menor del 5 %. El umbral es
+// absoluto y reproduce, en la semilla de referencia 20260711 (río mayor de
+// 9.34 km²), el corte de la antigua puerta relativa (A/A_max)^0.4 > 0.35,
+// que caía en 0.338 m³/s.
+inline constexpr float kFloodplainMinBankfullQ = 0.34f;  // m³/s
+inline constexpr float kFloodplainMaxSlope = 0.05f;
+
+[[nodiscard]] inline bool opens_floodplain(float q_bf_m3s,
+                                           float slope) noexcept {
+    return q_bf_m3s >= kFloodplainMinBankfullQ && slope < kFloodplainMaxSlope;
+}
+
 } // namespace terrain::hydraulics

@@ -988,3 +988,22 @@ TEST(GeometriaHidraulica, LaPendienteEstrechaElCauce) {
     EXPECT_LT(gorge, 0.7f * flat);
     EXPECT_GT(gorge, 0.3f * flat);
 }
+
+TEST(GeometriaHidraulica, LaLlanuraAluvialDependeDelCaudalAbsoluto) {
+    // La puerta de la llanura aluvial solo mira el caudal de cauce lleno del
+    // propio tramo y su pendiente: una cuenca de 1 km² la abre en llano tanto
+    // si el río mayor de la isla tiene 3 km² como 30 km² (la puerta relativa
+    // antigua, (A/A_max)^0.4 > 0.35, la cerraba en la isla grande).
+    namespace hyd = terrain::hydraulics;
+    const float q_one_km2 = hyd::bankfull_discharge_m3s(1.0e6f);
+    const float q_tenth_km2 = hyd::bankfull_discharge_m3s(0.1e6f);
+    EXPECT_TRUE(hyd::opens_floodplain(q_one_km2, 0.01f));
+    EXPECT_FALSE(hyd::opens_floodplain(q_tenth_km2, 0.01f));
+    // En la caída no hay valle ancho, por mucho caudal que lleve.
+    EXPECT_FALSE(hyd::opens_floodplain(10.0f * q_one_km2, 0.2f));
+    // El umbral está en el caudal, no en una fracción: justo por encima abre
+    // y justo por debajo no.
+    EXPECT_TRUE(hyd::opens_floodplain(hyd::kFloodplainMinBankfullQ, 0.0f));
+    EXPECT_FALSE(
+        hyd::opens_floodplain(0.99f * hyd::kFloodplainMinBankfullQ, 0.0f));
+}

@@ -443,14 +443,6 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                 hydraulics::bankfull_width_m(bankfull_q(i), reach_slope(i));
         }
     }
-    // Legado: el caudal máximo solo alimenta la puerta del bloque de llanura
-    // aluvial (pendiente de retirar en otro trabajo); el cauce no lo usa.
-    float max_flow = threshold;
-    for (size_t i = 0; i < out.flow.size(); ++i) {
-        if (is_river(i)) {
-            max_flow = std::max(max_flow, out.flow[i]);
-        }
-    }
 
     // Los ríos nacen gradualmente: cauce y lámina crecen desde cero durante
     // el primer tramo (rampa hasta 3× el umbral — física: duplicar el área
@@ -513,9 +505,6 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
             if (out.lake[i]) {
                 continue;
             }
-            // Legado: solo para la puerta de la llanura aluvial (ver max_flow).
-            const float width_f =
-                std::pow(glm::clamp(out.flow[i] / max_flow, 0.0f, 1.0f), 0.4f);
             // El nacimiento escala TODO el cauce (profundidad y anchura), no
             // solo la lámina: sin esto el canal tallado aparecía de golpe.
             const float birth = birth_of(i);
@@ -550,8 +539,8 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
 
             // Llanura aluvial: los ríos grandes abren un valle ancho y somero
             // SOLO en terreno llano (los valles gigantes se forman abajo, no
-            // en la caída).
-            if (width_f > 0.35f && local_slope < 0.05f) {
+            // en la caída). Puerta absoluta: caudal de cauce lleno del tramo.
+            if (hydraulics::opens_floodplain(bankfull_q(i), local_slope)) {
                 const int flood_radius = radius * 4;
                 for (int dz = -flood_radius; dz <= flood_radius; ++dz) {
                     for (int dx = -flood_radius; dx <= flood_radius; ++dx) {
