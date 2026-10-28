@@ -1,4 +1,5 @@
 #include "terrain/coast.h"
+#include "terrain/coast_metrics.h"
 #include "terrain/erosion.h"
 #include "terrain/generator.h"
 #include "terrain/heightfield.h"

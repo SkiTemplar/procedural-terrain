@@ -7,6 +7,7 @@
 #include "render/terrain_shaders.h"
 #include "terrain/chunked_terrain.h"
 #include "terrain/coast.h"
+#include "terrain/coast_metrics.h"
 #include "terrain/generator.h"
 #include "terrain/mesher.h"
 #include "terrain/palette.h"
@@ -545,6 +546,19 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
             }
         }
         write_bmp(prefix + "-relieve.bmp", res, res, img);
+
+        // Litoral: el mismo relieve con el fondo marino somero coloreado por
+        // calado (0-2 m claro → plataforma de abrasión legible; >8 m oscuro).
+        for (size_t i = 0; i < n; ++i) {
+            const float depth = cfg.sea_level - data.height.data()[i];
+            if (depth < 0.0f) {
+                continue;
+            }
+            const float t = std::sqrt(glm::clamp(depth / 8.0f, 0.0f, 1.0f));
+            img[i] = to8(glm::mix(glm::vec3{0.62f, 0.92f, 0.86f},
+                                  glm::vec3{0.06f, 0.12f, 0.36f}, t));
+        }
+        write_bmp(prefix + "-litoral.bmp", res, res, img);
     }
 
     // Informe de sanidad N0 (criterios §7-N0 del plan): números que deben ser
@@ -807,13 +821,16 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
                   << ")" << std::endl;
         std::cout << "costa rocosa: " << rc.cliff_toe_cells
                   << " pies de acantilado (E p50 " << rc.toe_energy_p50
-                  << ", p90 " << rc.toe_energy_p90 << ")" << std::endl;
+                  << ", p90 " << rc.toe_energy_p90 << "); frente p50 "
+                  << rc.toe_face_deg_p50 << " grados" << std::endl;
         std::cout << "  plataforma de abrasion: " << rc.platform_cells
                   << " celdas (" << rc.platform_area_m2 / 10000.0f
                   << " ha); anchura media " << rc.mean_platform_width_m
-                  << " m; correlacion anchura-E pearson "
+                  << " m" << std::endl;
+        std::cout << "  correlacion anchura-E: en pies pearson "
                   << rc.width_energy_pearson << " spearman "
-                  << rc.width_energy_spearman << std::endl;
+                  << rc.width_energy_spearman << "; en toda la costa spearman "
+                  << rc.coast_width_energy_spearman << std::endl;
         std::cout << "  farallones (<0.5 ha a <300 m de acantilado): "
                   << rc.stacks << " (" << rc.tall_stacks
                   << " con >3 m); area media " << rc.stack_mean_area_m2
@@ -821,7 +838,8 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
     }
 
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "
-              << prefix << "-oleaje.bmp / " << prefix << "-relieve.bmp"
+              << prefix << "-oleaje.bmp / " << prefix << "-relieve.bmp / "
+              << prefix << "-litoral.bmp"
               << std::endl;
     return 0;
 }

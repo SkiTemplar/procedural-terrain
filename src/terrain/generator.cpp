@@ -1060,6 +1060,16 @@ TerrainData generate(const TerrainConfig& cfg,
     data.hydrology = compute_hydrology(data.height, cfg, noise);
     report("oleaje");
     CoastExposure coast = compute_coast_exposure(data.height, data.hydrology, cfg);
+    // Erosión marina (Sunamura): el oleaje socava la costa expuesta y sin
+    // cobertura de playa; la plataforma, el frente vertical y los farallones
+    // emergen del retroceso. La exposición se recalcula sobre la costa nueva.
+    report("abrasion costera");
+    const CliffRetreatStats abrasion =
+        erode_rocky_coast(data.height, data.hydrology, coast, data.lithology,
+                          data.litho_res, noise, cfg);
+    if (abrasion.eroded_cells > 0) {
+        coast = compute_coast_exposure(data.height, data.hydrology, cfg);
+    }
     report("materiales");
     classify_materials(data, noise, coast);
     data.wave_energy = std::move(coast.wave_energy);

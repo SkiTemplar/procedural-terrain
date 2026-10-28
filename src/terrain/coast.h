@@ -65,6 +65,9 @@ struct CliffRetreatParams {
 struct CliffRetreatStats {
     int eroded_cells = 0;
     float max_retreat_m = 0.0f;
+    // Spearman, en el frente final, entre la plataforma que cruza la ola y
+    // la fuerza F_0 que trae: la firma de Sunamura (positiva).
+    float retreat_force_spearman = 0.0f;
 };
 
 // Integra el retroceso sobre el heightfield. Determinista: cada paso evalúa
@@ -81,28 +84,5 @@ CliffRetreatStats erode_rocky_coast(Heightfield& hf, const Hydrology& hydro,
                                     const std::vector<float>& lithology,
                                     int litho_res, const Noise& noise,
                                     const TerrainConfig& cfg);
-
-// Métricas de costa rocosa para el dump de verificación.
-struct RockyCoastMetrics {
-    int coast_cells = 0;            // toda la tierra con mar en el vecindario 8
-    float coast_energy_p50 = 0.0f;
-    float coast_energy_p90 = 0.0f;
-    int cliff_toe_cells = 0;       // tierra junto al mar con ≥4 m de pared
-    int platform_cells = 0;         // −2 < h ≤ mar, pendiente < 0.05, unida a un pie
-    float platform_area_m2 = 0.0f;
-    float mean_platform_width_m = 0.0f; // media sobre pies con plataforma
-    float width_energy_pearson = 0.0f;  // anchura de plataforma vs E en el pie
-    float width_energy_spearman = 0.0f;
-    float toe_energy_p50 = 0.0f;
-    float toe_energy_p90 = 0.0f;
-    int stacks = 0;                 // islotes < kStackMaxM2 a < 300 m de costa rocosa
-    int tall_stacks = 0;            // de ellos, con más de 3 m sobre el mar
-    float stack_mean_area_m2 = 0.0f;
-    float stack_max_area_m2 = 0.0f;
-};
-
-RockyCoastMetrics measure_rocky_coast(const Heightfield& hf,
-                                      const std::vector<float>& wave_energy,
-                                      float sea_level);
 
 } // namespace terrain
