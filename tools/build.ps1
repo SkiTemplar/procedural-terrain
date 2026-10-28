@@ -6,6 +6,12 @@
 # -VcpkgInstalled reutiliza paquetes ya instalados (p. ej. desde un worktree).
 param([string]$Target = "debug", [switch]$Test, [string]$VcpkgInstalled = "")
 $ErrorActionPreference = "Stop"
+# Sin diálogos modales de Windows ("no se encontró gtest_main.dll", GPF):
+# el modo de error lo heredan ninja, cmake y los tests que lance CTest, así
+# que una DLL ausente es un test rojo en consola, no una ventana que bloquea.
+# SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX.
+Add-Type -Namespace Win32 -Name ErrMode -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint mode);'
+[void][Win32.ErrMode]::SetErrorMode(0x8003)
 $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vsPath = & $vsw -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 cmd /c "`"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" >nul 2>&1 && set" | ForEach-Object {
