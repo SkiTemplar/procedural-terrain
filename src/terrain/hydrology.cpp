@@ -520,35 +520,10 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                 std::max(std::min(bed_target, surface - 0.5f * birth),
                          bed_target - 6.0f);
 
-            // Llanura aluvial: los ríos grandes abren un valle ancho y somero
-            // SOLO en terreno llano (los valles gigantes se forman abajo, no
-            // en la caída).
-            if (width_f > 0.35f && local_slope < 0.05f) {
-                const int flood_radius = radius * 4;
-                for (int dz = -flood_radius; dz <= flood_radius; ++dz) {
-                    for (int dx = -flood_radius; dx <= flood_radius; ++dx) {
-                        const int nx = x + dx;
-                        const int nz = z + dz;
-                        if (nx < 1 || nz < 1 || nx >= res - 1 || nz >= res - 1) {
-                            continue;
-                        }
-                        const float r =
-                            std::sqrt(static_cast<float>(dx * dx + dz * dz))
-                            / static_cast<float>(flood_radius);
-                        if (r > 1.0f) {
-                            continue;
-                        }
-                        const size_t ni = idx(nx, nz);
-                        const float target =
-                            surface + 0.6f + (hf.data()[ni] - surface) * (r * r);
-                        if (hf.data()[ni] > target
-                            && hf.data()[ni] < surface + 25.0f) {
-                            hf.data()[ni] = target;
-                        }
-                    }
-                }
-            }
-
+            // Sin llanura aluvial estampada: el fondo de valle llano lo
+            // construye la sedimentación del LEM (Yuan 2019), que deposita
+            // donde cae la capacidad de transporte. Aquí solo se talla la
+            // sección del cauce.
             for (int dz = -radius - 1; dz <= radius + 1; ++dz) {
                 for (int dx = -radius - 1; dx <= radius + 1; ++dx) {
                     const int nx = x + dx;

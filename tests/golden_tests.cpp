@@ -35,8 +35,8 @@ terrain::TerrainConfig golden_config() {
     return cfg;
 }
 
-constexpr std::uint64_t kGoldenHeight = 0x2c086b2c6fc2724eull;
-constexpr std::uint64_t kGoldenMaterial = 0x114917b2fc4d5464ull;
+constexpr std::uint64_t kGoldenHeight = 0xa54f601867f23000ull;
+constexpr std::uint64_t kGoldenMaterial = 0xe4ae4167087fef9eull;
 
 } // namespace
 
