@@ -84,6 +84,7 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         ImGui::SliderFloat("anchura orillas", &cfg.shore_width_scale, 0.3f, 2.5f);
         ImGui::SliderFloat("detalle fino", &cfg.detail_amplitude_m, 0.0f, 3.0f, "%.1f m");
         ImGui::SliderFloat("linea de nieve", &cfg.snow_line_m, 300.0f, 2400.0f, "%.0f m");
+        ImGui::SliderFloat("isoterma 10 C (bosque)", &cfg.treeline_m, 100.0f, 2400.0f, "%.0f m");
 
         ImGui::BeginDisabled(state.generation_phase != nullptr);
         if (ImGui::Button("Regenerar", ImVec2(-1.0f, 0.0f))) {

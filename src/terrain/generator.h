@@ -24,6 +24,12 @@ enum class Material : std::uint8_t {
     Marsh,  // orilla abrigada con aporte fluvial: marisma
 };
 
+// Sol canónico de generación: la luz horneada y la ecología (solana/umbría)
+// usan el azimut y la altura por defecto del panel (ui::DebugState). Mantener
+// en sincronía con el default del panel si se cambia.
+inline constexpr float kSunAzimuthDeg = 135.0f;
+inline constexpr float kSunAltitudeDeg = 40.0f;
+
 // Nº de valores del enum — para histogramas indexados por material.
 inline constexpr std::size_t kMaterialCount =
     static_cast<std::size_t>(Material::Marsh) + 1;
@@ -58,6 +64,9 @@ struct TerrainData {
     std::vector<float> sky_ao;           // [0,1] visibilidad de cielo (1=abierto)
     LemStats lem_stats;                  // balance de sedimento del LEM (dump)
     int light_res = 0;
+    // Dirección HACIA la que sopla el viento dominante de la lluvia
+    // orográfica (unitaria; {0,0} = sin viento). Define barlovento/sotavento.
+    glm::vec2 wind{0.0f, 0.0f};
     TerrainConfig config;
 };
 

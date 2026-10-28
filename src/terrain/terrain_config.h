@@ -81,7 +81,14 @@ struct TerrainConfig {
     // Clasificación. La nieve sigue a las cumbres nuevas (~1.2-1.4 km):
     // con 480 m la mitad de la cordillera quedaba blanca.
     float snow_line_m = 950.0f;
-    float rock_slope = 0.85f; // pendiente (tan) a partir de la cual es roca
+    // Clima (ecología física): cota de la isoterma de 10 °C del mes cálido en
+    // una ladera neutra. Fija la temperatura a nivel del mar con el gradiente
+    // de 6.5 °C/km; el límite real del bosque varía alrededor con la
+    // radiación, la exposición al viento y la lluvia. `snow_line_m` pasa a
+    // ser la cota de referencia de la nieve estacional de la escena con
+    // precipitación media y exposición neutra (no una cota global de corte).
+    float treeline_m = 700.0f;
+    float rock_slope = 0.85f; // tanβ crítica de retención de suelo (~40°)
     float beach_band_m = 12.0f; // la arena cubre la mayor parte de la zona plana
 
     // Costa expuesta (Agua v2 paso 8): rosa de vientos del oleaje REI/fetch.

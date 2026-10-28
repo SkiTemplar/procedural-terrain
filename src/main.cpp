@@ -6,6 +6,7 @@
 #include "render/shader.h"
 #include "render/terrain_shaders.h"
 #include "terrain/chunked_terrain.h"
+#include "terrain/ecology.h"
 #include "terrain/generator.h"
 #include "terrain/mesher.h"
 #include "terrain/palette.h"
@@ -18,6 +19,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -467,6 +469,46 @@ void write_bmp(const std::string& path, int w, int h,
 
 // Dump de verificación de costa (criterio §7-A del plan): mapa de materiales
 // con lámina de agua y mapa de energía de oleaje, sin abrir ventana.
+// Métricas de ecología física (track mp/ecologia-fisica): reparto de
+// materiales, correlaciones del bosque con humedad y lluvia, y cotas del
+// límite del bosque y de la nieve por exposición.
+void print_ecology_report(const terrain::TerrainData& data) {
+    const terrain::EcologyReport r = terrain::ecology_report(data);
+    const auto pct = [&](terrain::Material m) {
+        return r.land_pct[static_cast<std::size_t>(m)];
+    };
+    std::cout << "--- ecologia ---" << std::endl;
+    std::cout << "materiales (% tierra): hierba " << pct(terrain::Material::Grass)
+              << " bosque " << pct(terrain::Material::Forest) << " roca "
+              << pct(terrain::Material::Rock) << " nieve "
+              << pct(terrain::Material::Snow) << " arena "
+              << pct(terrain::Material::Sand) << " grava "
+              << pct(terrain::Material::Gravel) << " marisma "
+              << pct(terrain::Material::Marsh) << " lecho rio "
+              << pct(terrain::Material::RiverBed) << " lecho lago "
+              << pct(terrain::Material::LakeBed) << std::endl;
+    const auto q3 = [](const std::array<float, 3>& q) {
+        return std::to_string(q[0]) + "/" + std::to_string(q[1]) + "/"
+             + std::to_string(q[2]);
+    };
+    std::cout << "campos p10/p50/p90: lluvia " << q3(r.precip_q) << " twi "
+              << q3(r.twi_q) << " denudacion " << q3(r.denudation_q) << std::endl;
+    std::cout << "spearman bosque~twi " << r.spearman_forest_twi
+              << " bosque~lluvia " << r.spearman_forest_precip << std::endl;
+    const auto group = [](const char* name, const terrain::EcologyReport::Group& g) {
+        std::cout << "  " << name << ": limite bosque " << g.treeline_m
+                  << " m, p95 bosque " << g.forest_p95_m << " m, p10 nieve "
+                  << g.snow_p10_m << " m (" << g.cells << " muestras)" << std::endl;
+    };
+    std::cout << "exposicion:" << std::endl;
+    group("barlovento", r.windward);
+    group("sotavento ", r.leeward);
+    group("solana    ", r.sunny);
+    group("umbria    ", r.shady);
+    std::cout << "roca a pendiente 0.3-0.6: convexas " << r.rock_convex_pct
+              << " % concavas " << r.rock_concave_pct << " %" << std::endl;
+}
+
 int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
     terrain::TerrainConfig cfg;
     if (seed) {
@@ -867,6 +909,8 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
         std::cout << "orillas: arena " << n_sand << " grava " << n_gravel
                   << " marisma " << n_marsh << std::endl;
     }
+
+    print_ecology_report(data);
 
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "
               << prefix << "-oleaje.bmp / " << prefix << "-relieve.bmp"

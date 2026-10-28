@@ -21,13 +21,6 @@ namespace {
 // para que los parámetros sean independientes del tamaño del mapa.
 constexpr float kWarpFreq = 0.35f;
 
-// Sol canónico de generación: el aspecto de la nieve (umbría) se hornea con el
-// azimut por defecto del panel (ui::DebugState::sun_azimuth_deg = 135°). La
-// nieve baja aguanta en la cara RESGUARDADA del sol; la solana pela. Mantener
-// en sincronía con el default del panel si se cambia.
-constexpr float kSunAzimuthDeg = 135.0f;
-constexpr float kSunAltitudeDeg = 40.0f; // == ui::DebugState default
-
 float smoothstep(float edge0, float edge1, float x) {
     const float t = glm::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
@@ -327,6 +320,7 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
     const float wind_theta =
         noise.fbm(glm::vec3{41.2f, 0.0f, -17.9f}, 1) * 6.2831853f;
     const glm::vec2 wind{std::cos(wind_theta), std::sin(wind_theta)};
+    data.wind = wind;
     const std::vector<float> macro_h =
         run_lem(uplift, lithology, macro_res, macro_cell,
                 2.0f * cfg.mountain_height_m, 150, wind, seabed,
@@ -1079,11 +1073,13 @@ TerrainData generate(const TerrainConfig& cfg,
     data.hydrology = compute_hydrology(data.height, cfg, noise);
     report("oleaje");
     CoastExposure coast = compute_coast_exposure(data.height, data.hydrology, cfg);
+    // La luz solo depende del relieve final: se hornea ANTES de clasificar
+    // porque la ecología usa la radiación (sombra arrojada + AO de cielo).
+    report("luz");
+    compute_lighting(data, cfg);
     report("materiales");
     classify_materials(data, noise, coast);
     data.wave_energy = std::move(coast.wave_energy);
-    report("luz");
-    compute_lighting(data, cfg);
 
     return data;
 }
