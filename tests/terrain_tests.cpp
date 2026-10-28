@@ -1,6 +1,7 @@
 #include "terrain/erosion.h"
 #include "terrain/generator.h"
 #include "terrain/heightfield.h"
+#include "terrain/hydraulic_geometry.h"
 #include "terrain/hydrology.h"
 #include "terrain/lem.h"
 #include "terrain/noise.h"
@@ -909,4 +910,50 @@ TEST(Erosion, ModificaElTerrenoSinRomperlo) {
         }
     }
     EXPECT_TRUE(changed);
+}
+
+TEST(GeometriaHidraulica, CuadruplicarElCaudalDuplicaLaAnchura) {
+    // Leopold & Maddock (1953): aguas abajo w ∝ Q^0.5. Dos tramos de llanura
+    // (misma pendiente tendida, fuera del techo de Finnegan) con Q2 = 4·Q1:
+    // el segundo es el doble de ancho.
+    namespace hyd = terrain::hydraulics;
+    constexpr float kGentleSlope = 0.001f;
+    for (const float q1 : {0.5f, 2.0f, 5.0f}) {
+        const float w1 = hyd::bankfull_width_m(q1, kGentleSlope);
+        const float w2 = hyd::bankfull_width_m(4.0f * q1, kGentleSlope);
+        ASSERT_GT(w1, 0.0f);
+        EXPECT_NEAR(w2 / w1, 2.0f, 2.0f * 0.15f) << "Q1 = " << q1 << " m3/s";
+        // Y el calado crece más despacio que la anchura: 4^0.4 ≈ 1.74.
+        EXPECT_NEAR(hyd::regime_depth_m(4.0f * q1) / hyd::regime_depth_m(q1),
+                    1.74f, 0.05f);
+    }
+}
+
+TEST(GeometriaHidraulica, LaAnchuraEsAbsolutaYRealista) {
+    // La anchura depende del caudal ABSOLUTO, no del río mayor del mapa: una
+    // cuenca atlántica de 20 km² da un cauce de piedemonte de 8-18 m (curvas
+    // regionales de cauce lleno), sea o no el río más grande de la isla.
+    namespace hyd = terrain::hydraulics;
+    const float q_mean = hyd::mean_discharge_m3s(20.0e6f);
+    EXPECT_NEAR(q_mean, 0.67f, 0.05f); // 1500 mm/año · 70 % sobre 20 km²
+    const float q_bf = hyd::bankfull_discharge_m3s(20.0e6f);
+    const float w = hyd::bankfull_width_m(q_bf, 0.003f);
+    EXPECT_GT(w, 8.0f);
+    EXPECT_LT(w, 18.0f);
+    const float d = hyd::regime_depth_m(q_bf);
+    EXPECT_GT(w / d, 15.0f); // cauce de grava ancho y somero
+    EXPECT_LT(w / d, 40.0f);
+}
+
+TEST(GeometriaHidraulica, LaPendienteEstrechaElCauce) {
+    // Finnegan et al. (2005): w ∝ Q^(3/8)·S^(-3/16). En garganta el cauce es
+    // más estrecho que en llanura con el mismo caudal, y nunca más ancho que
+    // la anchura de régimen.
+    namespace hyd = terrain::hydraulics;
+    constexpr float kQ = 10.0f;
+    const float flat = hyd::bankfull_width_m(kQ, 0.001f);
+    const float gorge = hyd::bankfull_width_m(kQ, 0.15f);
+    EXPECT_FLOAT_EQ(flat, hyd::regime_width_m(kQ));
+    EXPECT_LT(gorge, 0.7f * flat);
+    EXPECT_GT(gorge, 0.3f * flat);
 }
