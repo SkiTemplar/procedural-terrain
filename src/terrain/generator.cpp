@@ -1,6 +1,7 @@
 #include "terrain/generator.h"
 
 #include "terrain/coast.h"
+#include "terrain/ecology.h"
 #include "terrain/erosion.h"
 #include "terrain/lem.h"
 #include "terrain/noise.h"
@@ -1077,6 +1078,10 @@ TerrainData generate(const TerrainConfig& cfg,
     // porque la ecología usa la radiación (sombra arrojada + AO de cielo).
     report("luz");
     compute_lighting(data, cfg);
+    report("clima");
+    data.precip_res = std::min(cfg.resolution, 1024);
+    data.precipitation = orographic_precipitation(data.height, cfg.sea_level,
+                                                  data.wind, data.precip_res);
     report("materiales");
     classify_materials(data, noise, coast);
     data.wave_energy = std::move(coast.wave_energy);

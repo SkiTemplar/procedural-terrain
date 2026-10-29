@@ -491,10 +491,13 @@ void print_ecology_report(const terrain::TerrainData& data) {
         return std::to_string(q[0]) + "/" + std::to_string(q[1]) + "/"
              + std::to_string(q[2]);
     };
-    std::cout << "campos p10/p50/p90: lluvia " << q3(r.precip_q) << " twi "
+    std::cout << "campos p10/p50/p90: lluvia " << q3(r.precip_q) << " (LEM "
+              << q3(r.lem_rain_q) << ") twi "
               << q3(r.twi_q) << " denudacion " << q3(r.denudation_q) << std::endl;
     std::cout << "spearman bosque~twi " << r.spearman_forest_twi
-              << " bosque~lluvia " << r.spearman_forest_precip << std::endl;
+              << " bosque~lluvia " << r.spearman_forest_precip
+              << " (bajo 0.6*isoterma " << r.spearman_forest_precip_low << ")"
+              << std::endl;
     const auto group = [](const char* name, const terrain::EcologyReport::Group& g) {
         std::cout << "  " << name << ": limite bosque " << g.treeline_m
                   << " m, p95 bosque " << g.forest_p95_m << " m, p10 nieve "
@@ -911,6 +914,28 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
     }
 
     print_ecology_report(data);
+    // Precipitación de la ecología (gris, 0 → 2.5× la media; mar en azul).
+    if (data.precip_res >= 2) {
+        const int pr = data.precip_res;
+        std::vector<glm::u8vec3> pimg(static_cast<size_t>(pr) * static_cast<size_t>(pr));
+        for (int z = 0; z < pr; ++z) {
+            for (int x = 0; x < pr; ++x) {
+                const size_t pi = static_cast<size_t>(z) * static_cast<size_t>(pr)
+                                + static_cast<size_t>(x);
+                const float wx = -cfg.size_m * 0.5f
+                               + cfg.size_m * static_cast<float>(x) / static_cast<float>(pr - 1);
+                const float wz = -cfg.size_m * 0.5f
+                               + cfg.size_m * static_cast<float>(z) / static_cast<float>(pr - 1);
+                if (data.height.sample(wx, wz) <= cfg.sea_level) {
+                    pimg[pi] = {20, 30, 80};
+                    continue;
+                }
+                const float v = glm::clamp(data.precipitation[pi] / 2.5f, 0.0f, 1.0f);
+                pimg[pi] = to8(glm::vec3{v, v, v});
+            }
+        }
+        write_bmp(prefix + "-lluvia.bmp", pr, pr, pimg);
+    }
 
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "
               << prefix << "-oleaje.bmp / " << prefix << "-relieve.bmp"

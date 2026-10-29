@@ -68,6 +68,19 @@ inline constexpr float kMinSoilM = 0.12f;
 [[nodiscard]] EcoCell evaluate_ecology(const EcoInputs& in,
                                        const EcoClimate& climate) noexcept;
 
+// Precipitación orográfica relativa sobre el relieve final (grid gres²,
+// media 1 en tierra). Misma física que la del LEM — la masa de aire avanza
+// con el viento, se recarga sobre el mar y descarga al ascender — pero con
+// escalas en metros, independientes de la celda: lavado de fondo de ~25 km y
+// condensación e-plegada por 1.5 km de ascenso. La `rain_w` del LEM descarga
+// un 5 % POR CELDA (agota la humedad en el primer km de costa a macro 1024),
+// así que no sirve como clima. Fondo frontal del 35 % de la media y deriva de
+// hidrometeoros de ~250 m (Smith & Barstad 2004). Sin viento → todo 1.
+[[nodiscard]] std::vector<float> orographic_precipitation(const Heightfield& hf,
+                                                          float sea_level,
+                                                          glm::vec2 wind,
+                                                          int gres);
+
 // Índice topográfico de humedad (Beven & Kirkby 1979) sobre la malla fina con
 // el área drenada específica del D8 de la hidrología, suavizado ~12 m (la
 // humedad del suelo se reparte lateralmente; el D8 puro deja rayas de una
@@ -81,8 +94,9 @@ class EcoProbe {
 public:
     EcoProbe(const TerrainData& data, std::vector<float> twi);
 
-    // `n` = normal de la celda (ya calculada por quien llama). Sin jitter.
-    [[nodiscard]] EcoInputs inputs_at(int x, int z, const glm::vec3& n) const;
+    // Sin jitter ni ribera (los pone quien clasifica).
+    [[nodiscard]] EcoInputs inputs_at(int x, int z) const;
+    [[nodiscard]] glm::vec3 hillslope_normal_at(int x, int z) const;
     [[nodiscard]] float twi_at(std::size_t i) const { return twi_[i]; }
     // Componente horizontal de la normal hacia el viento / el sol (con signo):
     // wind_facing < 0 = cara de barlovento; sun_facing > 0 = solana.
@@ -90,13 +104,15 @@ public:
     [[nodiscard]] float sun_facing(const glm::vec3& n) const;
 
 private:
-    [[nodiscard]] float macro(const std::vector<float>& grid, int x, int z) const;
-    [[nodiscard]] float light(const std::vector<float>& grid, int x, int z) const;
+    [[nodiscard]] float grid_at(const std::vector<float>& grid, int gres, int x,
+                                int z, float fallback) const;
+
     [[nodiscard]] float convexity_at(int x, int z) const;
+
 
     const TerrainData* data_;
     std::vector<float> twi_;
-    std::vector<float> rain_;  // lluvia del LEM suavizada (deriva de hidrometeoros)
+    std::vector<float> denudation_;  // denudación del LEM suavizada (~20 m)
     glm::vec3 sun_{0.0f, 1.0f, 0.0f};
     float sun_sin_alt_ = 1.0f;
 };
@@ -104,12 +120,17 @@ private:
 // Métricas de ecología para el dump (antes/después de cada cambio).
 struct EcologyReport {
     std::array<double, kMaterialCount> land_pct{};  // % de la tierra emergida
-    std::array<float, 3> precip_q{};      // p10/p50/p90 en tierra
+    std::array<float, 3> precip_q{};      // p10/p50/p90 en tierra (ecología)
+    std::array<float, 3> lem_rain_q{};    // la rain_w exportada del LEM
     std::array<float, 3> twi_q{};
     std::array<float, 3> denudation_q{};
     double spearman_forest_twi = 0.0;     // sobre tierra con hierba/bosque
     double spearman_forest_precip = 0.0;
-    // Techo del bosque (cota más alta con ≥ 25 % de bosque, bandas de 25 m)
+    // Igual, pero solo bajo el piso térmico del bosque (cota < 0.6·isoterma):
+    // aísla el efecto del agua del de la temperatura.
+    double spearman_forest_precip_low = 0.0;
+    // Límite del bosque: cota más alta (bandas de 25 m) cuya cobertura de
+    // bosque llega al 25 % de la máxima del grupo;
     // y p95 de la cota de las celdas de bosque, por grupo de exposición.
     struct Group {
         float treeline_m = 0.0f;

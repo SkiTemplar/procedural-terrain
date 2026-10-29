@@ -67,6 +67,11 @@ struct TerrainData {
     // Dirección HACIA la que sopla el viento dominante de la lluvia
     // orográfica (unitaria; {0,0} = sin viento). Define barlovento/sotavento.
     glm::vec2 wind{0.0f, 0.0f};
+    // Precipitación relativa (media 1 en tierra) sobre el relieve final, grid
+    // propio precip_res² (<= 1024): advección de humedad con escalas físicas
+    // de lavado y ascenso (ecology.h). Alimenta bosque, nieve y sequedad.
+    std::vector<float> precipitation;
+    int precip_res = 0;
     TerrainConfig config;
 };
 
