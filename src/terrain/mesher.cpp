@@ -2,6 +2,7 @@
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -50,6 +51,7 @@ float value_noise(float x, float z) {
 namespace {
 
 constexpr float kWaterSink = 0.12f; // baja la lámina para no pelear con la orilla
+constexpr float kSinkFadeM = 0.5f;  // sobre el mar, el hundido crece de 0 a pleno
 const glm::vec3 kLakeColor{0.16f, 0.36f, 0.52f};
 
 } // namespace
@@ -64,6 +66,7 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
     std::vector<render::Vertex> vertices;
     std::vector<std::uint32_t> indices;
     const auto& wl = data.hydrology.water_level;
+    const float sea_level = data.config.sea_level;
 
     // Malla indexada con vértices compartidos entre celdas vecinas (~4x menos
     // memoria y ancho de banda que un quad suelto por celda).
@@ -116,7 +119,12 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
         // (El +0.04 anterior venía del fix "agua que no se pega al suelo":
         // hundirlo también lo respeta — el agua muere DENTRO de la orilla.)
         const float bank = std::min(fallback, hf.at(x, z) - 0.15f);
-        const float y = (std::isnan(own) ? bank : own) - kWaterSink;
+        // En el remanso (lámina a cota de mar) no se hunde: la cinta enrasa
+        // con el plano del mar en la boca, sin escalón de 12 cm.
+        const float sink = std::isnan(own)
+            ? kWaterSink
+            : kWaterSink * std::clamp((own - sea_level) / kSinkFadeM, 0.0f, 1.0f);
+        const float y = (std::isnan(own) ? bank : own) - sink;
         const float tint = 0.95f + 0.10f * hash01(x, z);
         vertex_of[i] = static_cast<std::uint32_t>(vertices.size());
         // C4-W1: PROFUNDIDAD REAL por vértice (lámina − lecho) en normal.y —

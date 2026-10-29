@@ -49,11 +49,16 @@ CoastExposure compute_coast_exposure(const Heightfield& hf,
     const float channel_flow = cfg.river_flow_threshold
                              * (static_cast<float>(res) * static_cast<float>(res))
                              / (1024.0f * 1024.0f);
+    // Con el remanso de desembocadura, toda celda con lámina de río (aunque su
+    // lecho quede bajo el mar) es cauce: lo pinta la malla del río, no el mar.
     std::vector<std::uint8_t> sea(n);
     for (size_t i = 0; i < n; ++i) {
         const bool submerged = hf.data()[i] <= cfg.sea_level;
-        const bool river_groove = hydro.flow[i] >= channel_flow
-                               && hf.data()[i] > cfg.sea_level - 3.5f;
+        const bool river_water =
+            !std::isnan(hydro.water_level[i]) && !hydro.lake[i];
+        const bool river_groove = river_water
+                               || (hydro.flow[i] >= channel_flow
+                                   && hf.data()[i] > cfg.sea_level - 3.5f);
         sea[i] = (submerged && !river_groove) ? 1 : 0;
     }
     std::vector<std::uint8_t> coast(n, 0);

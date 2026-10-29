@@ -80,6 +80,9 @@ struct World {
 // vértices del plano del mar (~625 m) jamás podrían resolver. Los ríos no la
 // usan: llevan su calado por vértice (la malla de agua va a resolución plena).
 struct SeabedTexture {
+    // Marca de "cauce fluvial, no mar" en el canal r (el shader descarta el
+    // plano del mar por debajo de -0.25 tras el filtrado bilineal).
+    static constexpr float kSeaClipDepth = -1.0f;
     GLuint id = 0;
 
     ~SeabedTexture() {
@@ -97,6 +100,12 @@ struct SeabedTexture {
         const auto& hf = data.height;
         const int res = hf.resolution();
         const float sea = data.config.sea_level;
+        const auto& wl = data.hydrology.water_level;
+        const auto river_water = [&](int x, int z) {
+            const size_t i = static_cast<size_t>(std::min(z, res - 1)) * res
+                           + static_cast<size_t>(std::min(x, res - 1));
+            return !std::isnan(wl[i]) && !data.hydrology.lake[i];
+        };
         std::vector<float> texels(static_cast<size_t>(kRes) * kRes * 2);
         for (int z = 0; z < kRes; ++z) {
             for (int x = 0; x < kRes; ++x) {
@@ -104,7 +113,14 @@ struct SeabedTexture {
                 const int sz = z * (res - 1) / (kRes - 1);
                 const size_t si = static_cast<size_t>(sz) * res + sx;
                 const size_t ti = (static_cast<size_t>(z) * kRes + x) * 2;
-                texels[ti] = std::max(0.0f, sea - hf.data()[si]);
+                // Cauce fluvial (huella del texel con lámina de río): calado
+                // NEGATIVO = el mar no se dibuja ahí. La malla del río, que en
+                // el remanso enrasa con el mar, es la única superficie.
+                const bool channel = river_water(sx, sz) || river_water(sx + 1, sz)
+                                  || river_water(sx, sz + 1)
+                                  || river_water(sx + 1, sz + 1);
+                texels[ti] = channel ? kSeaClipDepth
+                                     : std::max(0.0f, sea - hf.data()[si]);
                 texels[ti + 1] =
                     data.wave_energy.empty() ? 0.0f : data.wave_energy[si];
             }

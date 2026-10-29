@@ -5,6 +5,8 @@
 #include "terrain/lem.h"
 #include "terrain/noise.h"
 #include "terrain/preset.h"
+#include "terrain/water_flow.h"
+#include "terrain/water_metrics.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -737,6 +739,35 @@ TEST(Hidrologia, ElLechoDelRioNoSubeAguasAbajo) {
         }
     }
     EXPECT_EQ(dammed, 0) << dammed << " celdas de río sin salida aguas abajo";
+}
+
+TEST(Hidrologia, LaBocaDelRioEnrasaConElMar) {
+    // Remanso de desembocadura (auditoría 2026-10 #2): la lámina del río que
+    // toca el mar abierto enrasa con él — ni colgada encima ni hundida debajo
+    // (el francobordo la dejaba 0.45 m bajo el mar y el mar se metía en el
+    // cauce). Y ninguna lámina de río queda por debajo del nivel del mar.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    ASSERT_FALSE(report.mouths.empty()) << "ningún río llega al mar";
+    for (const auto& m : report.mouths) {
+        EXPECT_LT(std::abs(m.step_m), 0.2f)
+            << "boca (" << m.x << ", " << m.z << ") caudal " << m.flow
+            << ": escalón lámina-mar de " << m.step_m << " m";
+    }
+    EXPECT_LT(report.mouth_step_max, 0.2f)
+        << "escalón lámina-mar en la boca de " << report.mouth_step_max << " m";
+
+    int below_sea = 0;
+    for (size_t i = 0; i < data.hydrology.water_level.size(); ++i) {
+        const float wl = data.hydrology.water_level[i];
+        if (!std::isnan(wl) && !data.hydrology.lake[i]
+            && wl < cfg.sea_level - 1e-3f) {
+            ++below_sea;
+        }
+    }
+    EXPECT_EQ(below_sea, 0) << below_sea << " celdas de río con lámina bajo el mar";
 }
 
 TEST(Costa, EnergiaDeOleajeAcotadaYSoloLitoral) {
