@@ -24,11 +24,19 @@ add_library(terrain_gen STATIC
         src/terrain/erosion.cpp
         src/terrain/hydrology.cpp
         src/terrain/riverscape.cpp
+        src/terrain/river_mouth.cpp
         src/terrain/coast.cpp
+        src/terrain/ecology.cpp
+        src/terrain/ecology_report.cpp
         src/terrain/generator.cpp
         src/terrain/detail.cpp
         src/terrain/lem.cpp
+        src/terrain/landform_stats.cpp
+        src/terrain/rockfall.cpp
         src/terrain/preset.cpp
+        src/terrain/water_flow.cpp
+        src/terrain/water_metrics.cpp
+        src/terrain/water_surface.cpp
 )
 target_include_directories(terrain_gen PUBLIC src)
 target_link_libraries(terrain_gen PUBLIC glm::glm nlohmann_json::nlohmann_json)
@@ -90,6 +98,9 @@ find_package(glslang CONFIG REQUIRED)
 add_executable(terrain_tests
         tests/terrain_tests.cpp
         tests/golden_tests.cpp
+        tests/rockfall_tests.cpp
+        tests/ecology_tests.cpp
+        tests/water_tests.cpp
         tests/terrain_texture_tests.cpp
         src/render/terrain_texture_data.cpp
         src/render/terrain_normal_map.cpp
@@ -103,7 +114,8 @@ target_link_libraries(terrain_tests PRIVATE
 # Ruta de los assets para los tests que los usan (se saltan si no están):
 # no dependen del directorio de trabajo de ctest.
 target_compile_definitions(terrain_tests PRIVATE
-        PT_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+        PT_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+        PT_PRESET_DIR="${PROJECT_SOURCE_DIR}/presets")
 
 include(GoogleTest)
 gtest_discover_tests(terrain_tests)

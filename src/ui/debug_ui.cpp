@@ -83,13 +83,13 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         ImGui::SliderInt("gotas erosion", &cfg.erosion_droplets, 0, 600000);
         ImGui::SliderFloat("erosion fluvial", &cfg.fluvial_strength, 0.0f, 1.0f);
         ImGui::SliderFloat("umbral rios", &cfg.river_flow_threshold, 100.0f, 5000.0f, "%.0f");
-        ImGui::SliderFloat("anchura rios", &cfg.river_max_width_m, 4.0f, 30.0f, "%.0f m");
         ImGui::SliderFloat("aplanado costa", &cfg.coast_flatten_strength, 0.0f, 1.0f);
         ImGui::SliderFloat("viento dominante", &cfg.wind_dir_deg, 0.0f, 360.0f, "%.0f grados");
         ImGui::SliderFloat("focalizacion oleaje", &cfg.wind_focus, 0.0f, 1.0f);
         ImGui::SliderFloat("anchura orillas", &cfg.shore_width_scale, 0.3f, 2.5f);
         ImGui::SliderFloat("detalle fino", &cfg.detail_amplitude_m, 0.0f, 3.0f, "%.1f m");
         ImGui::SliderFloat("linea de nieve", &cfg.snow_line_m, 300.0f, 2400.0f, "%.0f m");
+        ImGui::SliderFloat("isoterma 10 C (bosque)", &cfg.treeline_m, 100.0f, 2400.0f, "%.0f m");
 
         ImGui::BeginDisabled(state.generation_phase != nullptr);
         if (ImGui::Button("Regenerar", ImVec2(-1.0f, 0.0f))) {

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <span>
 
 namespace terrain {
 
@@ -30,14 +31,10 @@ float step_dist(std::size_t a, std::size_t b, int res, float cell) {
     return cell * ((xa != xb && za != zb) ? 1.4142f : 1.0f);
 }
 
-// Radio de cauce en celdas (misma ley w ∝ Q^0.4 del tallado de canales).
-int channel_radius(const Hydrology& out, std::size_t i, float max_flow,
-                   int max_radius) {
-    return glm::clamp(
-        static_cast<int>(std::round(
-            static_cast<float>(max_radius)
-            * std::pow(glm::clamp(out.flow[i] / max_flow, 0.0f, 1.0f), 0.4f))),
-        1, std::max(1, max_radius));
+// Radio de cauce en celdas: semiancho de la anchura de cauce lleno del
+// tramo (la misma del tallado, hydraulic_geometry.h), con suelo de una celda.
+int channel_radius(std::span<const float> width_m, std::size_t i, float cell) {
+    return std::max(1, static_cast<int>(std::lround(0.5f * width_m[i] / cell)));
 }
 
 // Hash entero → [0,1): determinismo de deltas e islotes sin <random>.
@@ -179,7 +176,7 @@ namespace {
 void sculpt_fall(Heightfield& hf, Hydrology& out,
                  const std::vector<std::size_t>& trace,
                  const std::vector<float>& old_bed, int a, int b,
-                 float max_flow, int max_radius) {
+                 std::span<const float> width_m) {
     auto& bed = hf.data();
     const int res = hf.resolution();
     const int last = std::min(b + 1, static_cast<int>(trace.size()) - 1);
@@ -222,14 +219,10 @@ void sculpt_fall(Heightfield& hf, Hydrology& out,
              - static_cast<float>(segment_of(k) + 1) * step_drop;
     };
 
-    // Radio de canal por celda (misma ley w ∝ Q^0.4 del tallado).
+    // Radio de canal por celda (la anchura de cauce lleno del tallado).
+    const float cell = hf.cell_size();
     const auto radius_of = [&](std::size_t i) {
-        return glm::clamp(
-            static_cast<int>(std::round(
-                static_cast<float>(max_radius)
-                * std::pow(glm::clamp(out.flow[i] / max_flow, 0.0f, 1.0f),
-                           0.4f))),
-            1, 4);
+        return std::min(channel_radius(width_m, i, cell), 4);
     };
 
     // Pasada 1: bancos. Cada celda del piso se rebana (min) al nivel de base;
@@ -336,7 +329,7 @@ void sculpt_fall(Heightfield& hf, Hydrology& out,
 void carve_cascades(Heightfield& hf, Hydrology& out,
                     const std::vector<std::size_t>& order,
                     const std::vector<std::size_t>& downstream,
-                    float river_threshold, float max_flow, int max_radius,
+                    float river_threshold, std::span<const float> channel_width_m,
                     float sea_level) {
     const int res = hf.resolution();
     const float cell = hf.cell_size();
@@ -441,8 +434,8 @@ void carve_cascades(Heightfield& hf, Hydrology& out,
                 const float drop = prof[static_cast<std::size_t>(k)]
                                  - prof[static_cast<std::size_t>(last)];
                 if (drop >= kMinFallDrop) {
-                    sculpt_fall(hf, out, trace, prof, k, end, max_flow,
-                                max_radius);
+                    sculpt_fall(hf, out, trace, prof, k, end,
+                                channel_width_m);
                 } else {
                     for (int q = k; q <= last; ++q) {
                         const std::size_t i = trace[static_cast<std::size_t>(q)];
@@ -487,6 +480,7 @@ void smooth_confluences(Heightfield& hf, Hydrology& out,
                         const std::vector<std::size_t>& downstream,
                         const RiverscapeParams& p) {
     const int res = hf.resolution();
+    const float cell = hf.cell_size();
     auto& bed = hf.data();
 
     const auto is_axis = [&](std::size_t i) {
@@ -521,7 +515,7 @@ void smooth_confluences(Heightfield& hf, Hydrology& out,
         }
         const int x = static_cast<int>(j % static_cast<std::size_t>(res));
         const int z = static_cast<int>(j / static_cast<std::size_t>(res));
-        const int r = channel_radius(out, j, p.max_flow, p.max_radius) + 1;
+        const int r = channel_radius(p.channel_width_m, j, cell) + 1;
 
         for (int dz = -r; dz <= r; ++dz) {
             for (int dx = -r; dx <= r; ++dx) {
@@ -649,16 +643,18 @@ void build_deltas(Heightfield& hf, Hydrology& out,
             continue; // canal u orilla a un lado: estuario, sin lóbulo
         }
         ++built;
+        ++out.deposits.deltas;
+        ++out.deposits.delta_lobes;
         // Verificable sin volar a ciegas (mismo criterio que los lagos).
         std::cout << "  delta @ (" << static_cast<int>(hf.world_x(mx)) << ", "
                   << static_cast<int>(hf.world_z(mz)) << ")\n";
 
         std::uint32_t rng = p.seed ^ hash32(static_cast<std::uint32_t>(m.i));
         const glm::vec2 m0{static_cast<float>(mx), static_cast<float>(mz)};
-        const float w0_m = glm::clamp(
-            static_cast<float>(2 * channel_radius(out, m.i, p.max_flow,
-                                                  p.max_radius) + 1) * cell,
-            12.0f, 45.0f);
+        // Anchura física de la boca; el suelo de 2 celdas solo garantiza
+        // que el primer distributario sea representable en la rejilla.
+        const float w0_m =
+            glm::clamp(p.channel_width_m[m.i], 2.0f * cell, 45.0f);
         const float radius_m = glm::clamp(8.0f * w0_m, 180.0f, 520.0f);
         const float radius_c = radius_m / cell;
 
@@ -696,6 +692,11 @@ void build_deltas(Heightfield& hf, Hydrology& out,
                 // final y el río moría en seco contra su propio delta.
                 if (bed[ni] <= p.sea_level && bed[ni] > p.sea_level - 7.0f
                     && bed[ni] < target && out.flow[ni] < p.threshold) {
+                    out.deposits.delta_volume_m3 +=
+                        static_cast<double>(target - bed[ni]) * cell * cell;
+                    if (target > p.sea_level) {
+                        ++out.deposits.delta_cells;
+                    }
                     bed[ni] = target;
                 }
             }
@@ -866,8 +867,7 @@ void stamp_channel_bars(Heightfield& hf, Hydrology& out,
             if (std::isnan(wl)) {
                 continue;
             }
-            const float w_m = static_cast<float>(
-                2 * channel_radius(out, i, p.max_flow, p.max_radius) + 1) * cell;
+            const float w_m = p.channel_width_m[i]; // cauce lleno, físico
             if (w_m < 24.0f) {
                 continue; // solo tramos anchos (doc: w > 25-30 m)
             }
@@ -928,6 +928,7 @@ void stamp_channel_bars(Heightfield& hf, Hydrology& out,
             if (confined) {
                 continue;
             }
+            ++out.deposits.bars;
             const int box = static_cast<int>(half_len * 2.4f) + 1;
             const int cx = static_cast<int>(c.x);
             const int cz = static_cast<int>(c.y);
@@ -963,6 +964,9 @@ void stamp_channel_bars(Heightfield& hf, Hydrology& out,
                             bed[ni] = target;
                         }
                         if (bed[ni] >= wl - 0.02f) {
+                            if (!std::isnan(out.water_level[ni])) {
+                                ++out.deposits.bar_cells; // agua → barra
+                            }
                             out.water_level[ni] = kNoWater;
                         }
                     } else if (e <= 2.4f) {

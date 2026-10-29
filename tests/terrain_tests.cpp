@@ -1,11 +1,16 @@
 #include "render/terrain_normal_map.h"
+#include "terrain/coast.h"
+#include "terrain/coast_metrics.h"
 #include "terrain/erosion.h"
 #include "terrain/generator.h"
 #include "terrain/heightfield.h"
+#include "terrain/hydraulic_geometry.h"
 #include "terrain/hydrology.h"
 #include "terrain/lem.h"
 #include "terrain/noise.h"
 #include "terrain/preset.h"
+#include "terrain/water_flow.h"
+#include "terrain/water_metrics.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -14,6 +19,8 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <vector>
 
 namespace {
 
@@ -303,10 +310,21 @@ TEST(Generator, ElAguaDeLosRiosNoFlota) {
     ASSERT_FALSE(gaps.empty());
     std::sort(gaps.begin(), gaps.end());
     const float median = gaps[gaps.size() / 2];
-    // Límite ligado a la profundidad de diseño del cauce: protege contra
-    // flotación (junto al check de contención), no contra la profundidad
-    // legítima que crece con el contraste de caudales.
-    EXPECT_LT(median, cfg.river_max_depth_m + 2.0f);
+    // Límite ligado al calado físico del cauce mayor del mapa (thalweg 1.5·d
+    // de su caudal de cauce lleno) más el tope de lámina sobre el lecho que
+    // impone la hidrología (2.5 m, rampas de cascada): protege contra
+    // flotación (junto al check de contención). A resolución de test (celda
+    // ~23 m, pendientes de varios metros por celda) la mediana ya vivía en
+    // ese tope antes de la geometría absoluta.
+    constexpr float kMaxSheetM = 2.5f;
+    const float max_flow_cells = *std::max_element(
+        data.hydrology.flow.begin(), data.hydrology.flow.end());
+    const float cell = data.height.cell_size();
+    const float max_thalweg_m =
+        1.5f * terrain::hydraulics::regime_depth_m(
+                   terrain::hydraulics::bankfull_discharge_m3s(
+                       max_flow_cells * cell * cell));
+    EXPECT_LT(median, max_thalweg_m + kMaxSheetM);
     EXPECT_GT(median, 0.0f);
     EXPECT_GT(static_cast<float>(contained) / static_cast<float>(total), 0.97f);
 
@@ -394,6 +412,31 @@ TEST(Generator, SinMurallasVerticales) {
     EXPECT_LT(p999, 4.5f);
 }
 
+TEST(Preset, LosPresetsVersionadosUsanElClimaV2) {
+    // Revisión de mp/ecologia-fisica: snow_line_m cambió de significado
+    // (antes min(valor, 0.60·cumbre)); un preset sin migrar genera otro mundo.
+    const std::string dir = PT_PRESET_DIR;
+    const auto names = terrain::list_presets(dir);
+    ASSERT_FALSE(names.empty());
+    for (const auto& name : names) {
+        const auto p = terrain::load_preset(dir + "/" + name + ".json");
+        ASSERT_TRUE(p.has_value()) << name;
+        EXPECT_EQ(p->climate_version, terrain::kPresetClimateVersion) << name;
+        std::ifstream in(dir + "/" + name + ".json");
+        const auto j = nlohmann::json::parse(in);
+        EXPECT_TRUE(j.contains("treeline_m")) << name;
+        EXPECT_TRUE(j.contains("snow_line_m")) << name;
+    }
+    // El mundo canónico es el mismo cargado del preset o del config por
+    // defecto.
+    const auto canon = terrain::load_preset(dir + "/isla-canonica.json");
+    ASSERT_TRUE(canon.has_value());
+    const terrain::TerrainConfig def;
+    EXPECT_EQ(canon->config.seed, def.seed);
+    EXPECT_FLOAT_EQ(canon->config.snow_line_m, def.snow_line_m);
+    EXPECT_FLOAT_EQ(canon->config.treeline_m, def.treeline_m);
+}
+
 TEST(Preset, RoundTripDeConfigCompleta) {
     // Contrato C1: guardar y cargar un preset conserva TODOS los campos del
     // config (incluida la seed) — un campo olvidado en la serialización
@@ -403,6 +446,7 @@ TEST(Preset, RoundTripDeConfigCompleta) {
     cfg.coast_flood_m = 11.5f;
     cfg.wind_dir_deg = 123.0f;
     cfg.snow_line_m = 640.0f;
+    cfg.treeline_m = 430.0f;
 
     const auto path = std::filesystem::temp_directory_path()
                     / "pt-preset-roundtrip.json";
@@ -418,6 +462,8 @@ TEST(Preset, RoundTripDeConfigCompleta) {
     EXPECT_FLOAT_EQ(loaded->config.coast_flood_m, cfg.coast_flood_m);
     EXPECT_FLOAT_EQ(loaded->config.wind_dir_deg, cfg.wind_dir_deg);
     EXPECT_FLOAT_EQ(loaded->config.snow_line_m, cfg.snow_line_m);
+    EXPECT_FLOAT_EQ(loaded->config.treeline_m, cfg.treeline_m);
+    EXPECT_EQ(loaded->climate_version, terrain::kPresetClimateVersion);
     // El resto de campos, comparados por su serialización (si un campo nuevo
     // entra en el config y no en el preset, esto NO lo caza — por eso
     // save_preset serializa campo a campo y este test fija los sensibles).
@@ -441,6 +487,26 @@ TEST(Preset, CargarYRegenerarReproduceElMundo) {
 
     const auto regen = terrain::generate(loaded->config);
     EXPECT_EQ(terrain::heightfield_hash(regen.height), loaded->height_hash);
+}
+
+TEST(Preset, UnPresetViejoConCamposRetiradosSigueCargando) {
+    // river_max_width_m y river_max_depth_m se retiraron (la geometría del
+    // cauce sale del caudal): un preset guardado antes debe cargar igual,
+    // ignorando esos campos y conservando el resto.
+    const auto path = std::filesystem::temp_directory_path()
+                    / "pt-preset-viejo.json";
+    {
+        std::ofstream out(path);
+        out << R"({"seed": 31337, "river_flow_threshold": 1500.0,
+                   "river_max_depth_m": 5.5, "river_max_width_m": 30.0})";
+    }
+    const auto loaded = terrain::load_preset(path.string());
+    std::filesystem::remove(path);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_EQ(loaded->config.seed, 31337u);
+    EXPECT_FLOAT_EQ(loaded->config.river_flow_threshold, 1500.0f);
+    EXPECT_FALSE(terrain::preset_to_json(loaded->config)
+                     .contains("river_max_width_m"));
 }
 
 TEST(Preset, CargarFicheroCorruptoNoRevienta) {
@@ -742,6 +808,191 @@ TEST(Hidrologia, ElLechoDelRioNoSubeAguasAbajo) {
     EXPECT_EQ(dammed, 0) << dammed << " celdas de río sin salida aguas abajo";
 }
 
+TEST(Hidrologia, LaBocaDelRioEnrasaConElMar) {
+    // Remanso de desembocadura (auditoría 2026-10 #2): la lámina del río que
+    // toca el mar enrasa con él — ni colgada encima ni hundida debajo (el
+    // francobordo la dejaba 0.45 m bajo el mar y el mar se metía en el
+    // cauce). Ninguna lámina de río queda por debajo del nivel del mar.
+    // El salto en el tramo final (que el pin de una celda escondía una celda
+    // aguas arriba) lo cubren AguaCosta.UnaBocaColgada… y el dump del mundo
+    // de referencia: con celdas de 23.6 m este mapa tiene torrentes que bajan
+    // metros por celda de forma legítima y no discrimina.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    ASSERT_FALSE(report.mouths.empty()) << "ningún río llega al mar";
+    for (const auto& m : report.mouths) {
+        EXPECT_LT(std::abs(m.drop_to_sea_m), 0.05f)
+            << "boca (" << m.x << ", " << m.z << ") caudal " << m.flow
+            << ": lámina " << m.drop_to_sea_m << " m sobre el mar";
+    }
+    ASSERT_GT(report.mouth_cells, 0);
+
+    int below_sea = 0;
+    for (size_t i = 0; i < data.hydrology.water_level.size(); ++i) {
+        const float wl = data.hydrology.water_level[i];
+        if (!std::isnan(wl) && !data.hydrology.lake[i]
+            && wl < cfg.sea_level - 1e-3f) {
+            ++below_sea;
+        }
+    }
+    EXPECT_EQ(below_sea, 0) << below_sea << " celdas de río con lámina bajo el mar";
+}
+
+TEST(Hidrologia, NingunCauceSecoFueraDelMarAbierto) {
+    // Bloqueante #5 (auditoría 2026-10): el contador de río seco excluía todo
+    // lo que estaba bajo el mar, y el eje del estuario del río mayor quedaba
+    // sin lámina entre celdas mojadas. Todo cauce con caudal de río que no
+    // sea mar abierto lleva lámina.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    EXPECT_EQ(report.dry_cells, 0)
+        << "peor caudal " << report.dry_worst_flow << " en (" << report.dry_x
+        << ", " << report.dry_z << ")";
+}
+
+TEST(Hidrologia, ElMarRecortadoNoDejaElFondoAlAire) {
+    // Bloqueantes #1/#4/#6: donde el mar se descarta (quads de la lámina
+    // interior) ningún vértice de esa lámina con el lecho sumergido queda
+    // por debajo del mar.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    EXPECT_GT(report.sea_clip_quads, 0);
+    EXPECT_EQ(report.sea_clip_sunk_vertices, 0)
+        << "peor hundimiento " << report.sea_clip_worst_sink_m << " m";
+}
+
+TEST(Corriente, CanalRectoDaManningAguasAbajo) {
+    // Canal sintético recto hacia +x, 3 celdas de ancho, calado 1 m y lámina
+    // con pendiente S: toda la anchura corre aguas abajo (no hacia el eje) a
+    // la velocidad de Manning v = n⁻¹·R^(2/3)·S^(1/2) con la rugosidad de
+    // Jarrett (1984) n = 0.39·S^0.38·R^-0.16 (S = 0.004 > umbral de grava).
+    // Un lago no lleva corriente.
+    constexpr int kRes = 64;
+    constexpr float kSlope = 0.004f;
+    constexpr float kDepth = 1.0f;
+    terrain::TerrainData data;
+    data.height = terrain::Heightfield(kRes, 63.0f * 2.5f);
+    // Umbral efectivo = 1 celda: river_flow_threshold · 64² / 1024² = 1.
+    data.config.river_flow_threshold = 256.0f;
+    const size_t n = static_cast<size_t>(kRes) * kRes;
+    auto& hydro = data.hydrology;
+    hydro.water_level.assign(n, std::numeric_limits<float>::quiet_NaN());
+    hydro.flow.assign(n, 0.5f);
+    hydro.lake.assign(n, 0);
+    hydro.whitewater.assign(n, 0);
+    const float cell = data.height.cell_size();
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            data.height.at(x, z) = 50.0f;
+        }
+    }
+    for (int x = 0; x < kRes; ++x) {
+        for (int z = 31; z <= 33; ++z) {
+            const size_t i = static_cast<size_t>(z) * kRes + x;
+            data.height.at(x, z) = 10.0f - kSlope * cell * static_cast<float>(x);
+            hydro.water_level[i] = data.height.at(x, z) + kDepth;
+            if (z == 32) {
+                hydro.flow[i] = 10.0f + static_cast<float>(x); // eje
+            }
+        }
+    }
+    // Lago aparte (sin conexión): lámina plana, sin corriente.
+    for (int z = 5; z < 10; ++z) {
+        for (int x = 5; x < 10; ++x) {
+            const size_t i = static_cast<size_t>(z) * kRes + x;
+            hydro.water_level[i] = 60.0f;
+            hydro.lake[i] = 1;
+        }
+    }
+
+    const auto field = terrain::compute_river_flow(data);
+    const float n_jarrett =
+        0.39f * std::pow(kSlope, 0.38f) * std::pow(kDepth, -0.16f);
+    ASSERT_GT(n_jarrett, terrain::kManningGravel);
+    const float expected =
+        std::pow(kDepth, 2.0f / 3.0f) * std::sqrt(kSlope) / n_jarrett;
+    for (int x = 8; x < kRes - 8; x += 7) {
+        for (int z = 31; z <= 33; ++z) {
+            const glm::vec2 v = field.at(static_cast<size_t>(z) * kRes + x);
+            EXPECT_NEAR(glm::length(v), expected, 0.01f * expected)
+                << "módulo en (" << x << ", " << z << ")";
+            EXPECT_GT(v.x, 0.9999f * glm::length(v))
+                << "dirección en (" << x << ", " << z << "): (" << v.x << ", " << v.y << ")";
+        }
+    }
+    EXPECT_EQ(glm::length(field.at(static_cast<size_t>(7) * kRes + 7)), 0.0f);
+}
+
+TEST(Corriente, LaRugosidadCreceConLaPendiente) {
+    // Bloqueantes #3/#7: con n de grava constante (0.035) un torrente de
+    // S = 0.04 y R = 0.86 m daba 5.2 m/s (techo). Con Jarrett, ~1.5 m/s; en
+    // llanura (S < 0.0015) manda el suelo de grava.
+    EXPECT_FLOAT_EQ(terrain::manning_n(0.0005f, 1.0f), terrain::kManningGravel);
+    EXPECT_NEAR(terrain::manning_n(0.04f, 0.86f), 0.1177f, 0.002f);
+    EXPECT_NEAR(terrain::manning_speed(0.04f, 0.86f), 1.54f, 0.05f);
+    EXPECT_LT(terrain::manning_speed(0.04f, 0.86f), 0.5f * terrain::kMaxRiverSpeed);
+    EXPECT_EQ(terrain::manning_speed(0.04f, 0.0f), 0.0f);
+    // Monótona en el calado y en la pendiente (con R fijo).
+    EXPECT_LT(terrain::manning_speed(0.01f, 0.5f), terrain::manning_speed(0.01f, 1.5f));
+    EXPECT_LT(terrain::manning_speed(0.005f, 1.0f), terrain::manning_speed(0.05f, 1.0f));
+}
+
+TEST(Corriente, LaVelocidadDelMundoNoVaAlTecho) {
+    // Bloqueantes #3/#7: un tercio de la lámina (44 % del eje) iba a 5 m/s.
+    // La ley, no la cota, fija la velocidad: casi nada en el techo. (La
+    // mediana de 0.5-2.5 m/s se comprueba en el dump del mundo de referencia:
+    // este mapa, con montañas de 1000 m en 3 km y celdas de 23.6 m, es todo
+    // torrente con la lámina al tope de calado.)
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    ASSERT_GT(report.speed_wet.cells, 0);
+    EXPECT_LT(report.speed_wet.pct_at_cap, 2.0f);
+    EXPECT_LT(report.speed_axis.pct_at_cap, 2.0f);
+    EXPECT_GT(report.speed_wet.p50, 0.5f);
+}
+
+TEST(Corriente, LosRiosDelMundoCorrenAguasAbajoSinSaltos) {
+    // Auditoría 2026-10 #1: con el descenso del lecho tallado la corriente
+    // apuntaba al eje desde las orillas y saltaba 45° entre vértices. El campo
+    // de corriente sigue el cauce aguas abajo y varía suave.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    ASSERT_GT(report.flow_field.cells, 0);
+    EXPECT_LT(report.flow_field.pct_over_60deg, 5.0f);
+    EXPECT_LT(report.flow_field.median_jump_deg, 15.0f);
+    EXPECT_LT(report.flow_field.pct_over_60deg, report.bed_descent.pct_over_60deg);
+}
+
+TEST(Costa, ElOleajeLlegaALaRompiente) {
+    // Auditoría 2026-10 #3: la energía de oleaje solo existía en tierra y la
+    // espuma de rompiente salía al 20 % uniforme. Ahora el mar somero (donde
+    // rompe la ola) conoce la energía que le llega desde mar adentro, acotada
+    // en [0, 1], y la zona de rompiente (calado < H_s/γ) no está vacía.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    for (const float e : data.wave_energy) {
+        ASSERT_GE(e, 0.0f);
+        ASSERT_LE(e, 1.0f);
+    }
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    ASSERT_GT(report.shallow_sea_cells, 0);
+    const float pct = 100.0f * static_cast<float>(report.shallow_sea_with_energy)
+                    / static_cast<float>(report.shallow_sea_cells);
+    EXPECT_GT(pct, 90.0f) << "mar somero con oleaje: " << pct << " %";
+    EXPECT_GT(report.surf_cells, 0);
+}
+
 TEST(Costa, EnergiaDeOleajeAcotadaYSoloLitoral) {
     // Contrato Agua v2 (paso 8): la energía REI/fetch está en [0,1] y solo
     // vive en la banda litoral — toda celda con energía debe tener mar a
@@ -1021,5 +1272,352 @@ TEST(ScharrNormal, NormalMapParaleloYDecodificadoSnorm16) {
             EXPECT_NEAR(decoded.y, expected.y, 1e-3f) << "x=" << x << " z=" << z;
             EXPECT_NEAR(decoded.z, expected.z, 1e-3f) << "x=" << x << " z=" << z;
         }
+    }
+}
+
+TEST(GeometriaHidraulica, CuadruplicarElCaudalDuplicaLaAnchura) {
+    // Leopold & Maddock (1953): aguas abajo w ∝ Q^0.5. Dos tramos de llanura
+    // (misma pendiente tendida, fuera del techo de Finnegan) con Q2 = 4·Q1:
+    // el segundo es el doble de ancho.
+    namespace hyd = terrain::hydraulics;
+    constexpr float kGentleSlope = 0.001f;
+    for (const float q1 : {0.5f, 2.0f, 5.0f}) {
+        const float w1 = hyd::bankfull_width_m(q1, kGentleSlope);
+        const float w2 = hyd::bankfull_width_m(4.0f * q1, kGentleSlope);
+        ASSERT_GT(w1, 0.0f);
+        EXPECT_NEAR(w2 / w1, 2.0f, 2.0f * 0.15f) << "Q1 = " << q1 << " m3/s";
+        // Y el calado crece más despacio que la anchura: 4^0.4 ≈ 1.74.
+        EXPECT_NEAR(hyd::regime_depth_m(4.0f * q1) / hyd::regime_depth_m(q1),
+                    1.74f, 0.05f);
+    }
+}
+
+TEST(GeometriaHidraulica, LaAnchuraEsAbsolutaYRealista) {
+    // La anchura depende del caudal ABSOLUTO, no del río mayor del mapa: una
+    // cuenca atlántica de 20 km² da un cauce de piedemonte de 8-18 m (curvas
+    // regionales de cauce lleno), sea o no el río más grande de la isla.
+    namespace hyd = terrain::hydraulics;
+    const float q_mean = hyd::mean_discharge_m3s(20.0e6f);
+    EXPECT_NEAR(q_mean, 0.67f, 0.05f); // 1500 mm/año · 70 % sobre 20 km²
+    const float q_bf = hyd::bankfull_discharge_m3s(20.0e6f);
+    const float w = hyd::bankfull_width_m(q_bf, 0.003f);
+    EXPECT_GT(w, 8.0f);
+    EXPECT_LT(w, 18.0f);
+    const float d = hyd::regime_depth_m(q_bf);
+    EXPECT_GT(w / d, 15.0f); // cauce de grava ancho y somero
+    EXPECT_LT(w / d, 40.0f);
+}
+
+TEST(GeometriaHidraulica, LaPendienteEstrechaElCauce) {
+    // Finnegan et al. (2005): w ∝ Q^(3/8)·S^(-3/16). En garganta el cauce es
+    // más estrecho que en llanura con el mismo caudal, y nunca más ancho que
+    // la anchura de régimen.
+    namespace hyd = terrain::hydraulics;
+    constexpr float kQ = 10.0f;
+    const float flat = hyd::bankfull_width_m(kQ, 0.001f);
+    const float gorge = hyd::bankfull_width_m(kQ, 0.15f);
+    EXPECT_FLOAT_EQ(flat, hyd::regime_width_m(kQ));
+    EXPECT_LT(gorge, 0.7f * flat);
+    EXPECT_GT(gorge, 0.3f * flat);
+}
+
+TEST(GeometriaHidraulica, LaLlanuraAluvialDependeDelCaudalAbsoluto) {
+    // La puerta de la llanura aluvial solo mira el caudal de cauce lleno del
+    // propio tramo y su pendiente: una cuenca de 1 km² la abre en llano tanto
+    // si el río mayor de la isla tiene 3 km² como 30 km² (la puerta relativa
+    // antigua, (A/A_max)^0.4 > 0.35, la cerraba en la isla grande).
+    namespace hyd = terrain::hydraulics;
+    const float q_one_km2 = hyd::bankfull_discharge_m3s(1.0e6f);
+    const float q_tenth_km2 = hyd::bankfull_discharge_m3s(0.1e6f);
+    EXPECT_TRUE(hyd::opens_floodplain(q_one_km2, 0.01f));
+    EXPECT_FALSE(hyd::opens_floodplain(q_tenth_km2, 0.01f));
+    // En la caída no hay valle ancho, por mucho caudal que lleve.
+    EXPECT_FALSE(hyd::opens_floodplain(10.0f * q_one_km2, 0.2f));
+    // El umbral está en el caudal, no en una fracción: justo por encima abre
+    // y justo por debajo no.
+    EXPECT_TRUE(hyd::opens_floodplain(hyd::kFloodplainMinBankfullQ, 0.0f));
+    EXPECT_FALSE(
+        hyd::opens_floodplain(0.99f * hyd::kFloodplainMinBankfullQ, 0.0f));
+}
+
+// --- Erosión marina de la costa rocosa (Sunamura) ---
+
+namespace {
+
+// Costa recta sintética: mar a −5 m en x < kShoreX y acantilado de 10 m que
+// sube suave tierra adentro. Celda de 2.5 m (escala del mundo real).
+constexpr int kCoastRes = 160;
+constexpr int kShoreX = 20;
+constexpr float kCoastCell = 2.5f;
+
+terrain::Heightfield straight_cliff_coast() {
+    terrain::Heightfield hf(kCoastRes, kCoastCell * (kCoastRes - 1));
+    for (int z = 0; z < kCoastRes; ++z) {
+        for (int x = 0; x < kCoastRes; ++x) {
+            hf.at(x, z) = x < kShoreX
+                              ? -5.0f
+                              : 10.0f + 0.02f * static_cast<float>(x - kShoreX)
+                                            * kCoastCell;
+        }
+    }
+    return hf;
+}
+
+std::vector<std::uint8_t> sea_of(const terrain::Heightfield& hf) {
+    std::vector<std::uint8_t> sea(hf.data().size());
+    for (size_t i = 0; i < sea.size(); ++i) {
+        sea[i] = hf.data()[i] <= 0.0f ? 1 : 0;
+    }
+    return sea;
+}
+
+// Retroceso de la fila z: distancia de la costa original a la primera celda
+// que sigue en pie.
+float retreat_of_row(const terrain::Heightfield& hf, int z) {
+    for (int x = kShoreX; x < kCoastRes; ++x) {
+        if (hf.at(x, z) > 0.0f) {
+            return static_cast<float>(x - kShoreX) * kCoastCell;
+        }
+    }
+    return static_cast<float>(kCoastRes - kShoreX) * kCoastCell;
+}
+
+float mean_retreat(const terrain::Heightfield& hf, int z0, int z1) {
+    float sum = 0.0f;
+    for (int z = z0; z < z1; ++z) {
+        sum += retreat_of_row(hf, z);
+    }
+    return sum / static_cast<float>(z1 - z0);
+}
+
+} // namespace
+
+TEST(Costa, LaRocaDuraRetrocedeMenosQueLaBlanda) {
+    // Energía de oleaje uniforme y una franja de roca dura (z ∈ [60, 100)):
+    // Sunamura dx/dt ∝ ln(F_w/F_r) → la franja dura retrocede menos, deja un
+    // cabo, y toda la costa socavada queda como plataforma a cota de marea
+    // con el frente vertical (la pared conserva su cota original).
+    terrain::Heightfield hf = straight_cliff_coast();
+    const auto before = hf.data();
+    terrain::CliffRetreatInput in;
+    in.sea = sea_of(hf);
+    in.wave_energy = [](std::size_t) { return 0.8f; };
+    in.resistance = [](std::size_t i) {
+        const int z = static_cast<int>(i / kCoastRes);
+        return (z >= 60 && z < 100) ? 0.5f : 0.12f;
+    };
+    const terrain::CliffRetreatStats stats =
+        terrain::retreat_cliffs(hf, in, terrain::CliffRetreatParams{});
+
+    const float soft =
+        0.5f * (mean_retreat(hf, 15, 45) + mean_retreat(hf, 115, 145));
+    const float hard = mean_retreat(hf, 70, 90);
+    printf("  retroceso: blanda %.1f m, dura %.1f m (%d celdas, max %.1f m)\n",
+           soft, hard, stats.eroded_cells, stats.max_retreat_m);
+    EXPECT_GT(hard, 0.0f) << "con E=0.8 la roca dura también debe retroceder algo";
+    EXPECT_GT(soft, hard + 40.0f);
+    EXPECT_GT(soft, 60.0f);
+    EXPECT_LT(soft, 250.0f);
+
+    for (size_t i = 0; i < before.size(); ++i) {
+        const float h = hf.data()[i];
+        if (before[i] > 0.0f && h <= 0.0f) {
+            // Plataforma de abrasión: casi horizontal, ligeramente bajo el mar.
+            EXPECT_GE(h, -2.0f - 1e-4f);
+            EXPECT_LE(h, -0.5f + 1e-4f);
+        }
+        if (before[i] > 0.0f && h > 0.0f) {
+            EXPECT_FLOAT_EQ(h, before[i]) << "la tierra en pie no se toca";
+        }
+        EXPECT_LE(h, before[i] + 1e-4f) << "la abrasión solo excava";
+    }
+    // Frente vertical: en la roca blanda, la primera celda en pie conserva
+    // su pared (>= 10 m) sobre una plataforma bajo el mar.
+    const int z = 30;
+    const int x0 =
+        kShoreX + static_cast<int>(retreat_of_row(hf, z) / kCoastCell + 0.5f);
+    ASSERT_LT(x0, kCoastRes);
+    EXPECT_GE(hf.at(x0, z), 10.0f);
+    EXPECT_LE(hf.at(x0 - 1, z), -0.5f + 1e-4f);
+}
+
+TEST(Costa, UnNucleoDuroQuedaComoFarallon) {
+    // Un núcleo de roca mucho más resistente dentro de roca blanda: su
+    // entorno retrocede y él queda en pie, aislado sobre la plataforma. No
+    // se estampa nada: solo cambia F_r en esas celdas.
+    terrain::Heightfield hf = straight_cliff_coast();
+    terrain::CliffRetreatInput in;
+    in.sea = sea_of(hf);
+    in.wave_energy = [](std::size_t) { return 0.8f; };
+    in.resistance = [](std::size_t i) {
+        const int x = static_cast<int>(i % kCoastRes);
+        const int z = static_cast<int>(i / kCoastRes);
+        const bool core = x >= 30 && x < 35 && z >= 78 && z < 83;
+        return core ? 5.0f : 0.12f;
+    };
+    terrain::retreat_cliffs(hf, in, terrain::CliffRetreatParams{});
+
+    EXPECT_GT(hf.at(32, 80), 0.0f) << "el núcleo duro debe seguir en pie";
+    EXPECT_LE(hf.at(40, 80), 0.0f) << "la roca blanda tras el núcleo retrocede";
+    EXPECT_LE(hf.at(28, 80), 0.0f) << "y la de delante también";
+
+    const std::vector<float> energy(hf.data().size(), 0.8f);
+    const terrain::RockyCoastMetrics m =
+        terrain::measure_rocky_coast(hf, energy, 0.0f);
+    printf("  farallones %d (area max %.0f m2), plataforma %d celdas\n",
+           m.stacks, m.stack_max_area_m2, m.platform_cells);
+    EXPECT_EQ(m.stacks, 1);
+    EXPECT_GT(m.platform_cells, 0);
+}
+
+TEST(Costa, LaPlataformaEsMasAnchaConMasOleaje) {
+    // Roca uniforme y energía creciente a lo largo de la costa: la anchura
+    // de la plataforma de equilibrio (L·ln(F_0/F_r)) crece con el oleaje.
+    terrain::Heightfield hf = straight_cliff_coast();
+    const auto energy_at = [](std::size_t i) {
+        const int z = static_cast<int>(i / kCoastRes);
+        return 0.1f + 0.8f * static_cast<float>(z) / (kCoastRes - 1);
+    };
+    terrain::CliffRetreatInput in;
+    in.sea = sea_of(hf);
+    in.wave_energy = energy_at;
+    in.resistance = [](std::size_t) { return 0.2f; };
+    terrain::retreat_cliffs(hf, in, terrain::CliffRetreatParams{});
+
+    EXPECT_GT(mean_retreat(hf, 120, 150), mean_retreat(hf, 10, 40) + 20.0f);
+    std::vector<float> energy(hf.data().size());
+    for (size_t i = 0; i < energy.size(); ++i) {
+        energy[i] = energy_at(i);
+    }
+    const terrain::RockyCoastMetrics m =
+        terrain::measure_rocky_coast(hf, energy, 0.0f);
+    printf("  correlacion anchura-E: pearson %.2f spearman %.2f\n",
+           m.width_energy_pearson, m.width_energy_spearman);
+    EXPECT_GT(m.width_energy_spearman, 0.5f);
+}
+
+namespace {
+
+// Parámetros de la etapa del pipeline (erode_rocky_coast).
+terrain::CliffRetreatParams pipeline_retreat_params() {
+    terrain::CliffRetreatParams p;
+    p.attenuation_m = 150.0f;
+    p.steps = 240;
+    p.rate_m = 1.5f;
+    return p;
+}
+
+} // namespace
+
+TEST(Costa, ElOleajeDeUnTramoExpuestoNoSeFiltraAlAbrigado) {
+    // Escalón de energía a lo largo de la costa: E = 0.8 en z < 80 y E = 0.01
+    // en z >= 80, roca uniforme F_r = 0.39. Con F_0 = 0.1 < F_r, Sunamura da
+    // retroceso nulo en el tramo abrigado aunque el expuesto, al retroceder,
+    // le abra un flanco: la F_0 es la de su tramo de costa, no la de la ola
+    // que socava la celda de al lado.
+    constexpr int kStepZ = 80;
+    terrain::Heightfield hf = straight_cliff_coast();
+    const auto before = hf.data();
+    terrain::CliffRetreatInput in;
+    in.sea = sea_of(hf);
+    in.wave_energy = [](std::size_t i) {
+        return static_cast<int>(i / kCoastRes) < kStepZ ? 0.8f : 0.01f;
+    };
+    in.resistance = [](std::size_t) { return 0.39f; };
+    const terrain::CliffRetreatStats stats =
+        terrain::retreat_cliffs(hf, in, pipeline_retreat_params());
+
+    const float exposed = mean_retreat(hf, 10, kStepZ - 10);
+    printf("  retroceso expuesto %.1f m (%d celdas)\n", exposed, stats.eroded_cells);
+    EXPECT_GT(exposed, 50.0f) << "el tramo expuesto debe socavarse";
+    for (int z = kStepZ; z < kCoastRes; ++z) {
+        EXPECT_EQ(retreat_of_row(hf, z), 0.0f) << "fila abrigada z=" << z;
+        for (int x = kShoreX; x < kCoastRes; ++x) {
+            const size_t i = static_cast<size_t>(z) * kCoastRes + x;
+            ASSERT_EQ(hf.data()[i], before[i]) << "tierra abrigada tocada en ("
+                                               << x << ", " << z << ")";
+        }
+    }
+}
+
+TEST(Costa, LaAbrasionNoSubeUnaHondonadaQueYaEstabaBajoLaPlataforma) {
+    // Tierra a -1.5 m (más honda que la plataforma, -0.5 m al pie) detrás
+    // del acantilado: el frente la alcanza y la socava, pero la etapa solo
+    // excava — ninguna celda acaba más alta que antes.
+    terrain::Heightfield hf = straight_cliff_coast();
+    for (int z = 75; z < 85; ++z) {
+        for (int x = kShoreX + 4; x < kShoreX + 10; ++x) {
+            hf.at(x, z) = -1.5f;
+        }
+    }
+    const auto before = hf.data();
+    terrain::CliffRetreatInput in;
+    in.sea.assign(before.size(), 0);
+    for (size_t i = 0; i < before.size(); ++i) {
+        in.sea[i] = static_cast<int>(i % kCoastRes) < kShoreX ? 1 : 0;
+    }
+    in.wave_energy = [](std::size_t) { return 0.8f; };
+    in.resistance = [](std::size_t) { return 0.12f; };
+    const terrain::CliffRetreatStats stats =
+        terrain::retreat_cliffs(hf, in, terrain::CliffRetreatParams{});
+
+    ASSERT_GT(stats.eroded_cells, 0);
+    ASSERT_GT(retreat_of_row(hf, 80), static_cast<float>(10 * kCoastCell))
+        << "el frente debe haber pasado por la hondonada";
+    for (size_t i = 0; i < before.size(); ++i) {
+        ASSERT_LE(hf.data()[i], before[i] + 1e-4f)
+            << "la abrasión subió la celda (" << i % kCoastRes << ", "
+            << i / kCoastRes << ")";
+    }
+}
+
+TEST(Costa, LaAbrasionNoSocavaElSurcoDeUnCauce) {
+    // Surco fluvial sin lámina, con el lecho bajo el nivel del mar y caudal
+    // de cauce, tras el acantilado (la hidrología lo deja así en el tramo
+    // final de algunos ríos). La etapa del pipeline no debe tocarlo: su
+    // lecho es el perfil monótono de la hidrología, y la plataforma no debe
+    // subirlo ni hacerlo remontar aguas abajo.
+    constexpr int kGrooveZ = 80;
+    constexpr int kGrooveX0 = kShoreX + 2;
+    constexpr int kGrooveX1 = kShoreX + 40;
+    terrain::Heightfield hf = straight_cliff_coast();
+    for (int x = kGrooveX0; x < kGrooveX1; ++x) {
+        // Baja hacia el mar: -0.6 m tierra adentro, -1.4 m junto a la costa.
+        const float t = static_cast<float>(x - kGrooveX0)
+                      / static_cast<float>(kGrooveX1 - 1 - kGrooveX0);
+        hf.at(x, kGrooveZ) = -1.4f + 0.8f * t;
+    }
+    const auto before = hf.data();
+    const size_t n = before.size();
+
+    terrain::TerrainConfig cfg;
+    cfg.sea_level = 0.0f;
+    cfg.river_flow_threshold = 3840.0f;
+    const float channel = cfg.river_flow_threshold
+                        * static_cast<float>(kCoastRes * kCoastRes)
+                        / (1024.0f * 1024.0f);
+    terrain::Hydrology hydro;
+    hydro.water_level.assign(n, std::numeric_limits<float>::quiet_NaN());
+    hydro.flow.assign(n, 0.0f);
+    hydro.lake.assign(n, 0);
+    for (int x = kGrooveX0; x < kGrooveX1; ++x) {
+        hydro.flow[static_cast<size_t>(kGrooveZ) * kCoastRes + x] = 4.0f * channel;
+    }
+    terrain::CoastExposure coast;
+    coast.wave_energy.assign(n, 0.8f);
+    const std::vector<float> soft_rock(4, 1.0f);
+    const terrain::Noise noise(7u);
+    const terrain::CliffRetreatStats stats = terrain::erode_rocky_coast(
+        hf, hydro, coast, soft_rock, 2, noise, cfg);
+
+    ASSERT_GT(stats.eroded_cells, 0);
+    ASSERT_GT(retreat_of_row(hf, kGrooveZ - 1), static_cast<float>(10 * kCoastCell))
+        << "el acantilado junto al surco debe retroceder";
+    for (size_t i = 0; i < n; ++i) {
+        ASSERT_LE(hf.data()[i], before[i] + 1e-4f) << "la abrasión subió una celda";
+    }
+    for (int x = kGrooveX0; x < kGrooveX1; ++x) {
+        EXPECT_EQ(hf.at(x, kGrooveZ), before[static_cast<size_t>(kGrooveZ) * kCoastRes + x])
+            << "surco tocado en x=" << x;
     }
 }

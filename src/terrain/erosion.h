@@ -4,6 +4,7 @@
 #include "terrain/terrain_config.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace terrain {
 
@@ -12,10 +13,13 @@ namespace terrain {
 // Determinista: la seed del config alimenta el RNG de las gotas.
 void erode(Heightfield& hf, const TerrainConfig& cfg);
 
-// Erosión térmica: donde la pendiente supera el ángulo de reposo (talus),
-// el material se desprende hacia el vecino más bajo. Suaviza agujas y crea
-// pedreras/faldas naturales al pie de las montañas.
-void thermal_erode(Heightfield& hf, int iterations, float talus_slope);
+// Erosión térmica de la roca: donde la pendiente a alguno de los 8 vecinos
+// supera la crítica (talus_slope × crit_scale[i], vacío = 1), el exceso se
+// reparte entre los vecinos más bajos. Iterada hasta estabilidad acotada (se
+// corta cuando una pasada mueve < 1 cm). Las pedreras con recorrido de caída
+// salen de rockfall_talus (rockfall.h), no de aquí.
+void thermal_erode(Heightfield& hf, int iterations, float talus_slope,
+                   const std::vector<float>& crit_scale = {});
 
 // Suavizado selectivo de agujas: promedia SOLO las celdas cuya pendiente a
 // algún vecino supera el umbral. Elimina picos de un píxel sin tocar el

@@ -41,12 +41,15 @@ struct TerrainConfig {
     float erosion_deposit = 0.30f;  // deposit rate
     float erosion_inertia = 0.10f;
 
-    // Erosión térmica (pedreras, faldas al pie de la montaña). Moderada:
-    // la agresiva (32 iter, 37°) planchaba el carácter del relieve original.
-    // El talus debe quedar POR ENCIMA de la pendiente de cabecera del LEM
-    // (~42°): si no, la térmica desmocha los paredones tipo Matterhorn.
-    int thermal_iterations = 3;
-    float talus_slope = 1.00f; // tan del ángulo de reposo (45°)
+    // Resistencia de la roca: pendiente crítica de la formación MEDIA (tan;
+    // la dura aguanta ×1.2 ≈ 50°, la blanda ×0.84 ≈ 40°). Por encima, la
+    // térmica de 8 vecinos la relaja (hasta estabilidad, como mucho
+    // thermal_iterations pasadas) y los desprendimientos (rockfall.h) la
+    // descargan en canchales al pie. Debe quedar POR ENCIMA de la pendiente
+    // de cabecera del LEM (~42°): si no, desmocha los paredones tipo
+    // Matterhorn. El derrubio suelto solo aguanta su reposo (33-37°).
+    int thermal_iterations = 12;
+    float talus_slope = 1.00f; // tan crítica de la roca media (45°)
 
     // Costa: comprime las alturas bajas → playas anchas y planas. 25 m:
     // con 40 la rampa arena→hierba se veía como un degradado artificial.
@@ -58,11 +61,10 @@ struct TerrainConfig {
     // Subido 1200 -> 2000 (feedback 2026-07-08): menos riachuelos y que nazcan
     // más abajo (con más cuenca acumulada), no un río brotando en la cima.
     float river_flow_threshold = 2000.0f;
-    float river_max_depth_m = 5.5f;
-    // Subido 20 -> 30 (feedback 2026-07-08 "ríos grandes"): con menos
-    // tributarios (umbral alto), el río principal cerca de la desembocadura
-    // abre un cauce ancho y se lee como un río de verdad.
-    float river_max_width_m = 30.0f;
+    // La anchura y el calado de los cauces ya no son parámetros: salen del
+    // caudal absoluto de cada tramo (terrain/hydraulic_geometry.h). Los
+    // presets viejos con river_max_width_m / river_max_depth_m siguen
+    // cargando: el lector ignora los campos que no conoce.
 
     // Erosión fluvial (stream power law, Braun & Willett 2013): talla el
     // perfil longitudinal de la red de drenaje → valles en V y cañones donde
@@ -78,10 +80,20 @@ struct TerrainConfig {
     // levantaba puntas de casi 2 m sobre celdas de 0.3 m del LOD cercano.
     float detail_amplitude_m = 0.55f;
 
-    // Clasificación. La nieve sigue a las cumbres nuevas (~1.2-1.4 km):
-    // con 480 m la mitad de la cordillera quedaba blanca.
-    float snow_line_m = 950.0f;
-    float rock_slope = 0.85f; // pendiente (tan) a partir de la cual es roca
+    // Clima (ecología física). `snow_line_m`: cota de la nieve estacional de
+    // la escena con precipitación media y exposición neutra (calibra la fecha
+    // de la escena; la línea real sube en solana y sotavento y baja en umbría
+    // y barlovento). Ya no es relativa a la cumbre (antes min(valor,
+    // 0.60·cumbre)). 875 m deja en el mundo canónico (seed 20260711) un 6-7 %
+    // de nieve, como la línea efectiva antigua (min(950, 0.6·1090) = 654 m).
+    float snow_line_m = 875.0f;
+    // Cota de la isoterma de 10 °C del mes cálido en una ladera neutra: fija
+    // la temperatura a nivel del mar con el gradiente de 6.5 °C/km. 500 m es
+    // una isla hiperoceánica de veranos frescos (Hébridas, Feroe: límite del
+    // bosque natural a 300-500 m); el límite real varía alrededor con la
+    // radiación, la exposición al viento y la lluvia.
+    float treeline_m = 500.0f;
+    float rock_slope = 0.85f; // tanβ crítica de retención de suelo (~40°)
     float beach_band_m = 12.0f; // la arena cubre la mayor parte de la zona plana
 
     // Costa expuesta (Agua v2 paso 8): rosa de vientos del oleaje REI/fetch.

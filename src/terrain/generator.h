@@ -3,6 +3,7 @@
 #include "terrain/heightfield.h"
 #include "terrain/hydrology.h"
 #include "terrain/lem.h"
+#include "terrain/rockfall.h"
 #include "terrain/terrain_config.h"
 
 #include <cstdint>
@@ -23,6 +24,12 @@ enum class Material : std::uint8_t {
     Gravel, // orilla expuesta al oleaje con pendiente: playa de grava/cantos
     Marsh,  // orilla abrigada con aporte fluvial: marisma
 };
+
+// Sol canónico de generación: la luz horneada y la ecología (solana/umbría)
+// usan el azimut y la altura por defecto del panel (ui::DebugState). Mantener
+// en sincronía con el default del panel si se cambia.
+inline constexpr float kSunAzimuthDeg = 135.0f;
+inline constexpr float kSunAltitudeDeg = 40.0f;
 
 // Nº de valores del enum — para histogramas indexados por material.
 inline constexpr std::size_t kMaterialCount =
@@ -50,14 +57,28 @@ struct TerrainData {
     // Cotas reales del mundo generado — anclas de la paleta (los gradientes
     // de color se normalizan contra ellas, nunca contra cotas absolutas).
     float max_height_m = 0.0f;  // cumbre tras erosión
-    float snow_line_m = 0.0f;   // línea efectiva: min(cfg.snow_line_m, 0.60·max_h)
+    float snow_line_m = 0.0f;   // nieve estacional de referencia (cfg.snow_line_m)
+    float treeline_m = 0.0f;    // isoterma de 10 °C de referencia (cfg.treeline_m)
     // Iluminación precomputada (sol fijo, decisión Rodrigo 2026-07-09). Grid
     // propio de resolución `light_res` (<= height res): sombra arrojada y AO de
     // cielo son de baja frecuencia y se muestrean bilinealmente por vértice.
     std::vector<float> shadow;           // [0,1] luz directa del sol (1=al sol)
     std::vector<float> sky_ao;           // [0,1] visibilidad de cielo (1=abierto)
     LemStats lem_stats;                  // balance de sedimento del LEM (dump)
+    RockfallStats rockfall_stats;        // desprendimientos y canchales (dump)
     int light_res = 0;
+    // Dirección HACIA la que sopla el viento dominante de la lluvia
+    // orográfica (unitaria; {0,0} = sin viento). Define barlovento/sotavento.
+    glm::vec2 wind{0.0f, 0.0f};
+    // Precipitación relativa (media 1 en tierra) sobre el relieve final, grid
+    // propio precip_res² (<= 1024): advección de humedad con escalas físicas
+    // de lavado y ascenso (ecology.h). Alimenta bosque, nieve y sequedad.
+    std::vector<float> precipitation;
+    int precip_res = 0;
+    // Déficit hídrico del suelo [0,1] en el mismo grid que la precipitación
+    // (1 − ET/PET del balance de Budyko con la recarga lateral del TWI):
+    // agostado de la hierba en la paleta.
+    std::vector<float> dryness;
     TerrainConfig config;
 };
 

@@ -2,12 +2,23 @@
 
 #include "terrain/heightfield.h"
 #include "terrain/hydrology.h"
+#include "terrain/noise.h"
 #include "terrain/terrain_config.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace terrain {
+
+// Oleaje limitado por fetch (E ∝ F, H_s ∝ F^0.5): H_s = H_abierto·√E, con
+// H_abierto la altura significativa del mar abierto que rodea la isla. La ola
+// rompe por fondo cuando H ≥ γ·h (índice de rotura de McCowan, γ ≈ 0.78): la
+// zona de rompiente acaba en h_b = H_s / γ y su anchura sale sola de la
+// pendiente real del fondo. Lo comparten el shader del mar y el dump.
+inline constexpr float kOpenSeaWaveHeightM = 1.5f;
+inline constexpr float kBreakerIndex = 0.78f;
 
 // Exposición litoral (Agua v2, paso 8): energía de oleaje por REI/fetch y
 // aporte sedimentario de las desembocaduras, ambos suavizados a lo largo del
@@ -25,5 +36,78 @@ struct CoastExposure {
 CoastExposure compute_coast_exposure(const Heightfield& hf,
                                      const Hydrology& hydro,
                                      const TerrainConfig& cfg);
+
+// --- Erosión marina de la costa rocosa (retroceso de acantilado) ---
+//
+// Sunamura (1977, 1992): el pie del acantilado retrocede a dx/dt ∝ ln(F_w/F_r)
+// cuando la fuerza del oleaje F_w supera la resistencia de la roca F_r, y no
+// retrocede en caso contrario. La ola llega al pie tras cruzar la plataforma
+// que el propio retroceso ha dejado y pierde fuerza en ella:
+// F_w = F_0·exp(−W/L). De ahí EMERGEN la plataforma de abrasión (anchura de
+// equilibrio W = L·ln(F_0/F_r): crece con el oleaje, decrece con la dureza),
+// los farallones (roca más resistente que se queda en pie cuando su entorno
+// ya ha retrocedido) y el frente vertical (la pared conserva la cota del
+// terreno original detrás de una plataforma a cota de marea).
+
+// Campo escalar evaluado por índice de celda (z·res + x). Se consulta una vez
+// por celda cuando la celda entra en el frente de erosión.
+using CellField = std::function<float(std::size_t)>;
+
+struct CliffRetreatInput {
+    std::vector<std::uint8_t> sea; // 1 = mar al empezar (por celda)
+    // E ∈ [0,1] que llega al pie; F_0 = √E. Se evalúa solo en la costa
+    // original (tierra con mar axial); tierra adentro, cada celda hereda la
+    // F_0 del tramo de costa más cercano (BFS 4-conexo).
+    CellField wave_energy;
+    CellField resistance;          // F_r relativa (> 0); infinito = inerosionable
+};
+
+struct CliffRetreatParams {
+    float sea_level = 0.0f;
+    int steps = 160;               // pasos de integración (edad de la costa)
+    float rate_m = 1.0f;           // retroceso por paso y unidad de ln(F_w/F_r)
+    float attenuation_m = 70.0f;   // L: amortiguación del oleaje en la plataforma
+    float toe_depth_m = 0.5f;      // cota de la plataforma al pie, bajo el mar
+    float platform_slope = 0.01f;  // pendiente mar adentro (1:100)
+    float max_depth_m = 2.0f;      // cota máxima de la plataforma bajo el mar
+    int ramp_cells = 8;            // enlace con el fondo previo (solo excava)
+};
+
+// Spearman entre la anchura de plataforma SOCAVADA delante de cada celda en
+// pie del frente final (0 si da al mar original) y la E de su tramo de costa
+// antes de la etapa, sobre `cells` celdas.
+struct CutCorrelation {
+    int cells = 0;
+    float spearman = 0.0f;
+};
+
+struct CliffRetreatStats {
+    int eroded_cells = 0;
+    float max_retreat_m = 0.0f;
+    // Firma de Sunamura (sin las celdas inerosionables). front: todo el
+    // frente final (el umbral F_0 > F_r incluido); abraded: solo donde hay
+    // plataforma socavada (anchura > 0). toe*: lo mismo restringido a pies de
+    // acantilado (pared de >= 2.5 m a menos de dos celdas, como el dump).
+    CutCorrelation front;
+    CutCorrelation abraded;
+    CutCorrelation toe;
+    CutCorrelation abraded_toe;
+};
+
+// Integra el retroceso sobre el heightfield. Determinista: cada paso evalúa
+// todo el frente con el estado del paso anterior (orden irrelevante).
+CliffRetreatStats retreat_cliffs(Heightfield& hf, const CliffRetreatInput& in,
+                                 const CliffRetreatParams& params);
+
+// Etapa del pipeline: oleaje de la exposición (con la cobertura de playa que
+// da el aporte fluvial) contra la resistencia litológica modulada por el
+// diaclasado (fbm de λ ~40 m: el ruido solo modula la resistencia). Las celdas
+// con lámina de agua dulce o caudal de cauce (el surco de la desembocadura)
+// no se erosionan.
+CliffRetreatStats erode_rocky_coast(Heightfield& hf, const Hydrology& hydro,
+                                    const CoastExposure& coast,
+                                    const std::vector<float>& lithology,
+                                    int litho_res, const Noise& noise,
+                                    const TerrainConfig& cfg);
 
 } // namespace terrain
