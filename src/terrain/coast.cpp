@@ -44,7 +44,9 @@ std::vector<int> row_indices(int res) {
 // mar creaba "costa" a ambos lados del canal — la banda litoral (BFS
 // Chebyshev, de frentes cuadrados) rodeaba la desembocadura con un RECTÁNGULO
 // de arena. El canal somero con caudal queda fuera; el fondo marino hondo
-// sigue siendo mar aunque el D8 acumule caudal por él.
+// sigue siendo mar aunque el D8 acumule caudal por él. Con el remanso de
+// desembocadura, toda celda con lámina de río (aunque su lecho quede bajo el
+// mar) es cauce: lo pinta la malla del río, no el mar.
 std::vector<std::uint8_t> sea_mask(const Heightfield& hf,
                                    const Hydrology& hydro,
                                    const TerrainConfig& cfg) {
@@ -53,11 +55,98 @@ std::vector<std::uint8_t> sea_mask(const Heightfield& hf,
     std::vector<std::uint8_t> sea(n);
     for (size_t i = 0; i < n; ++i) {
         const bool submerged = hf.data()[i] <= cfg.sea_level;
-        const bool river_groove = hydro.flow[i] >= channel_flow
-                               && hf.data()[i] > cfg.sea_level - 3.5f;
+        const bool river_water =
+            !std::isnan(hydro.water_level[i]) && !hydro.lake[i];
+        const bool river_groove = river_water
+                               || (hydro.flow[i] >= channel_flow
+                                   && hf.data()[i] > cfg.sea_level - 3.5f);
         sea[i] = (submerged && !river_groove) ? 1 : 0;
     }
     return sea;
+}
+
+// Oleaje mar adentro (auditoría 2026-10 #3): la energía solo existía en
+// tierra y la rompiente del mar no sabía qué ola le llegaba. BFS multi-fuente
+// desde el contorno de costa hacia el mar, hasta ~300 m o hasta el calado de
+// cierre (~8 m: más hondo la ola no siente el fondo y no rompe). Cada celda de
+// mar hereda la energía de su costa más cercana sin atenuarla: la ola que
+// llega a una costa viene de mar adentro (la fricción de fondo la gasta al
+// acercarse, no al alejarse). Dos pasadas de caja 3×3 borran las costuras
+// entre tramos de costa vecinos.
+constexpr float kSurfReachM = 300.0f;
+constexpr float kClosureDepthM = 8.0f;
+constexpr int kOffshoreBlurPasses = 2;
+
+void propagate_energy_offshore(const Heightfield& hf,
+                               const std::vector<std::uint8_t>& coast,
+                               const std::vector<std::uint8_t>& sea,
+                               float sea_level, std::vector<float>& energy) {
+    const int res = hf.resolution();
+    const size_t n = hf.data().size();
+    const int reach_cells = static_cast<int>(std::ceil(kSurfReachM / hf.cell_size()));
+    std::vector<std::uint8_t> reached(n, 0);
+    std::vector<std::pair<int, int>> frontier;
+    for (int z = 0; z < res; ++z) {
+        for (int x = 0; x < res; ++x) {
+            if (coast[static_cast<size_t>(z) * res + x]) {
+                frontier.emplace_back(x, z);
+            }
+        }
+    }
+    std::vector<std::pair<int, int>> next;
+    for (int step = 0; step < reach_cells && !frontier.empty(); ++step) {
+        next.clear();
+        for (const auto& [x, z] : frontier) {
+            const size_t i = static_cast<size_t>(z) * res + x;
+            for (int dz = -1; dz <= 1; ++dz) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int nx = x + dx;
+                    const int nz = z + dz;
+                    if (nx < 0 || nz < 0 || nx >= res || nz >= res) {
+                        continue;
+                    }
+                    const size_t ni = static_cast<size_t>(nz) * res + nx;
+                    if (!sea[ni] || reached[ni]
+                        || sea_level - hf.data()[ni] > kClosureDepthM) {
+                        continue;
+                    }
+                    reached[ni] = 1;
+                    energy[ni] = energy[i];
+                    next.emplace_back(nx, nz);
+                }
+            }
+        }
+        std::swap(frontier, next);
+    }
+
+    std::vector<float> tmp(energy);
+    for (int pass = 0; pass < kOffshoreBlurPasses; ++pass) {
+        for (int z = 1; z < res - 1; ++z) {
+            for (int x = 1; x < res - 1; ++x) {
+                const size_t i = static_cast<size_t>(z) * res + x;
+                if (!reached[i]) {
+                    continue;
+                }
+                float sum = 0.0f;
+                int count = 0;
+                for (int dz = -1; dz <= 1; ++dz) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const size_t ni = static_cast<size_t>(z + dz) * res + (x + dx);
+                        if (reached[ni]) {
+                            sum += energy[ni];
+                            ++count;
+                        }
+                    }
+                }
+                tmp[i] = sum / static_cast<float>(count);
+            }
+        }
+        for (size_t i = 0; i < n; ++i) {
+            if (reached[i]) {
+                energy[i] = tmp[i];
+            }
+        }
+    }
 }
 
 } // namespace
@@ -284,6 +373,7 @@ CoastExposure compute_coast_exposure(const Heightfield& hf,
         std::swap(frontier, next);
     }
 
+    propagate_energy_offshore(hf, coast, sea, cfg.sea_level, out.wave_energy);
     return out;
 }
 

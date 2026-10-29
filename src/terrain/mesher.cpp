@@ -1,7 +1,11 @@
 #include "terrain/mesher.h"
 
+#include "terrain/water_flow.h"
+#include "terrain/water_surface.h"
+
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -49,7 +53,6 @@ float value_noise(float x, float z) {
 
 namespace {
 
-constexpr float kWaterSink = 0.12f; // baja la lámina para no pelear con la orilla
 const glm::vec3 kLakeColor{0.16f, 0.36f, 0.52f};
 
 } // namespace
@@ -61,62 +64,30 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
         return static_cast<size_t>(z) * static_cast<size_t>(res) + static_cast<size_t>(x);
     };
 
-    std::vector<render::Vertex> vertices;
-    std::vector<std::uint32_t> indices;
-    const auto& wl = data.hydrology.water_level;
+    // Alturas y cobertura de la lámina (terrain/water_surface): la misma
+    // geometría que recorta el plano del mar, así que no quedan huecos.
+    const WaterSurface surface = compute_water_surface(data);
+
+    // C4-W3 (auditoría 2026-10 #1): CORRIENTE por vértice en m/s — dirección
+    // del eje del cauce suavizada a lo largo del río y módulo de Manning
+    // (terrain/water_flow). Los lagos y las orillas sin lámina llevan v = 0.
+    // El shader advecta el rizado con este vector (flow map de dos fases),
+    // sin depender de la posición absoluta.
+    const RiverFlowField flow = compute_river_flow(data);
 
     // Malla indexada con vértices compartidos entre celdas vecinas (~4x menos
     // memoria y ancho de banda que un quad suelto por celda).
     constexpr std::uint32_t kNoVertex = std::numeric_limits<std::uint32_t>::max();
     std::vector<std::uint32_t> vertex_of(static_cast<size_t>(res) * res, kNoVertex);
+    std::vector<render::Vertex> vertices;
+    std::vector<std::uint32_t> indices;
 
-    // C4-W3: dirección de CORRIENTE por vértice — el descenso más pronunciado
-    // del lecho tallado (el mismo criterio D8 de la hidrología). Los lagos no
-    // llevan corriente: su lámina es de equilibrio. El shader advecta la onda
-    // del río a lo largo de esta dirección, en vez de las dos senoidales
-    // diagonales fijas que compartía con el mar.
-    const auto flow_dir_at = [&](int x, int z) -> glm::vec2 {
-        const size_t i = sample_index(x, z);
-        if (data.hydrology.lake[i]) {
-            return {0.0f, 0.0f};
-        }
-        const float h0 = hf.at(x, z);
-        float best_slope = 0.0f;
-        glm::vec2 dir{0.0f};
-        for (int dz = -1; dz <= 1; ++dz) {
-            for (int dx = -1; dx <= 1; ++dx) {
-                if ((dx == 0 && dz == 0) || x + dx < 0 || z + dz < 0
-                    || x + dx >= res || z + dz >= res) {
-                    continue;
-                }
-                const float d = (dx != 0 && dz != 0) ? 1.4142f : 1.0f;
-                const float slope = (h0 - hf.at(x + dx, z + dz)) / d;
-                if (slope > best_slope) {
-                    best_slope = slope;
-                    dir = glm::normalize(
-                        glm::vec2{static_cast<float>(dx),
-                                  static_cast<float>(dz)});
-                }
-            }
-        }
-        return dir;
-    };
-
-    const auto get_or_create = [&](int x, int z, float fallback) {
+    const auto get_or_create = [&](int x, int z) {
         const size_t i = sample_index(x, z);
         if (vertex_of[i] != kNoVertex) {
             return vertex_of[i];
         }
-        const float own = wl[i];
-        // Vértice de orilla (sin lámina propia): se HUNDE bajo el terreno
-        // (feedback 2026-07-14, borde dentado): con el borde de la malla
-        // ENTERRADO, la línea de agua visible la dibuja la intersección
-        // z-buffer contra el talud — sub-píxel y orgánica — en vez del
-        // contorno poligonal de la cinta, que escalonaba a saltos de celda.
-        // (El +0.04 anterior venía del fix "agua que no se pega al suelo":
-        // hundirlo también lo respeta — el agua muere DENTRO de la orilla.)
-        const float bank = std::min(fallback, hf.at(x, z) - 0.15f);
-        const float y = (std::isnan(own) ? bank : own) - kWaterSink;
+        const float y = surface.vertex_y[i];
         const float tint = 0.95f + 0.10f * hash01(x, z);
         vertex_of[i] = static_cast<std::uint32_t>(vertices.size());
         // C4-W1: PROFUNDIDAD REAL por vértice (lámina − lecho) en normal.y —
@@ -124,39 +95,29 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
         // color Beer-Lambert: orillas someras claras, pozas y ejes oscuros.
         // Sin ruido: es el calado físico del cauce tallado.
         const float depth = std::max(0.0f, y - hf.at(x, z));
-        const glm::vec2 fdir = flow_dir_at(x, z);
+        const glm::vec2 vel = flow.at(i);
         // light.x lleva la marca de whitewater de la hidrología (0 = agua
-        // tranquila, 0.5 = rápidos, 1 = cascada) para la espuma del shader.
+        // tranquila, 0.5 = rápidos, 1 = cascada) para la espuma del shader;
+        // light.y = 1 en lagos (oleaje de viento por vértice, sin corriente).
         const float ww =
             static_cast<float>(data.hydrology.whitewater[i]) * 0.5f;
+        const float is_lake = data.hydrology.lake[i] ? 1.0f : 0.0f;
         vertices.push_back({{hf.world_x(x), y, hf.world_z(z)},
                             kLakeColor * tint,
-                            {fdir.x, depth, fdir.y},
-                            {ww, 1.0f}});
+                            {vel.x, depth, vel.y},
+                            {ww, is_lake}});
         return vertex_of[i];
     };
 
     for (int z = 0; z < res - 1; ++z) {
         for (int x = 0; x < res - 1; ++x) {
-            // Fallback = MÍNIMO de los niveles definidos: con el máximo la
-            // lámina se estiraba hacia arriba sobre las orillas.
-            float level = 1e9f;
-            bool any = false;
-            for (const auto [dx, dz] : {std::pair{0, 0}, {1, 0}, {0, 1}, {1, 1}}) {
-                const float v = wl[sample_index(x + dx, z + dz)];
-                if (!std::isnan(v)) {
-                    level = std::min(level, v);
-                    any = true;
-                }
-            }
-            if (!any) {
+            if (!surface.quad_covered[surface.quad_index(x, z)]) {
                 continue;
             }
-
-            const std::uint32_t v00 = get_or_create(x, z, level);
-            const std::uint32_t v10 = get_or_create(x + 1, z, level);
-            const std::uint32_t v01 = get_or_create(x, z + 1, level);
-            const std::uint32_t v11 = get_or_create(x + 1, z + 1, level);
+            const std::uint32_t v00 = get_or_create(x, z);
+            const std::uint32_t v10 = get_or_create(x + 1, z);
+            const std::uint32_t v01 = get_or_create(x, z + 1);
+            const std::uint32_t v11 = get_or_create(x + 1, z + 1);
             indices.insert(indices.end(), {v00, v01, v10, v10, v01, v11});
         }
     }
@@ -168,11 +129,11 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
 }
 
 render::Mesh build_sea_plane(float island_size_m, float sea_level) {
-    const float half = island_size_m * 2.0f;
+    const float half = sea_plane_half(island_size_m);
     const glm::vec3 sea_color{0.13f, 0.32f, 0.50f};
 
     // Subdividido para que las olas de vértice del shader se noten.
-    constexpr int kRes = 64;
+    constexpr int kRes = kSeaPlaneRes;
     std::vector<render::Vertex> vertices;
     vertices.reserve((kRes + 1) * (kRes + 1));
     for (int z = 0; z <= kRes; ++z) {

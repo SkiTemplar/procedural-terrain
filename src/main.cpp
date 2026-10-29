@@ -15,6 +15,9 @@
 #include "terrain/mesher.h"
 #include "terrain/palette.h"
 #include "terrain/preset.h"
+#include "terrain/water_flow.h"
+#include "terrain/water_metrics.h"
+#include "terrain/water_surface.h"
 #include "ui/debug_ui.h"
 #include "ui/field_maps.h"
 #include "veg/grass_field.h"
@@ -85,8 +88,14 @@ struct World {
 // color por calado (Beer-Lambert) y espuma de orilla POR PÍXEL, cosa que los
 // vértices del plano del mar (~625 m) jamás podrían resolver. Los ríos no la
 // usan: llevan su calado por vértice (la malla de agua va a resolución plena).
+//
+// Segunda textura (R8, un texel por quad del heightfield, filtro NEAREST):
+// 1 = la malla de agua interior cubre ese quad y el mar se recorta en él. Es
+// la MISMA cobertura que usa la malla (terrain/water_surface), alineada al
+// quad: el mar nunca se descarta donde no hay lámina de río que lo sustituya.
 struct SeabedTexture {
     GLuint id = 0;
+    GLuint clip_id = 0;
 
     ~SeabedTexture() {
         release();
@@ -95,6 +104,10 @@ struct SeabedTexture {
         if (id != 0) {
             glDeleteTextures(1, &id);
             id = 0;
+        }
+        if (clip_id != 0) {
+            glDeleteTextures(1, &clip_id);
+            clip_id = 0;
         }
     }
     void rebuild(const terrain::TerrainData& data) {
@@ -123,6 +136,24 @@ struct SeabedTexture {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        const terrain::WaterSurface surface = terrain::compute_water_surface(data);
+        std::vector<std::uint8_t> clip(surface.quad_covered.size());
+        for (size_t i = 0; i < clip.size(); ++i) {
+            clip[i] = surface.quad_covered[i] != 0 ? 255 : 0;
+        }
+        glGenTextures(1, &clip_id);
+        glBindTexture(GL_TEXTURE_2D, clip_id);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, res - 1, res - 1, 0, GL_RED,
+                     GL_UNSIGNED_BYTE, clip.data());
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+        constexpr float kNoClip[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, kNoClip);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 };
@@ -424,8 +455,18 @@ void run(std::optional<std::uint32_t> seed_override,
                     {-std::sin(wr), 0.0f, std::cos(wr)});
                 water_shader.set_float("u_wind_focus",
                                        world->data.config.wind_focus);
+                water_shader.set_float("u_wave_hmax", terrain::kOpenSeaWaveHeightM);
+                water_shader.set_float("u_breaker_index", terrain::kBreakerIndex);
+                water_shader.set_float("u_sea_level", world->data.config.sea_level);
+                water_shader.set_float("u_sea_half",
+                                       terrain::sea_plane_half(world->data.config.size_m));
+                water_shader.set_float("u_sea_grid",
+                                       static_cast<float>(terrain::kSeaPlaneRes));
             }
             water_shader.set_int("u_seabed", 0);
+            water_shader.set_int("u_sea_clip", 1);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, seabed_tex.clip_id);
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, seabed_tex.id);
             water_shader.set_int("u_is_sea", 1);
@@ -735,6 +776,70 @@ void print_ecology_report(const terrain::TerrainData& data) {
               << r.veg_strips_per_100_rock << " por 100 celdas de roca" << std::endl;
 }
 
+// Agua que fluye (auditoría 2026-10 #1-#3): desembocaduras, río seco,
+// corriente y rompiente, medidos en terrain/water_metrics.
+void print_water_report(const terrain::TerrainData& data) {
+    const auto& hf = data.height;
+    const terrain::WaterReport r =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    std::cout << "--- agua que fluye ---" << std::endl;
+    std::cout << "escalon en desembocadura (mayor salto de lamina boca->mar y en los "
+              << terrain::kMouthReachM << " m aguas arriba): max "
+              << r.mouth_step_max << " m, p95 " << r.mouth_step_p95 << " m"
+              << std::endl;
+    for (const auto& m : r.mouths) {
+        std::cout << "  boca caudal " << m.flow << " en mundo (" << hf.world_x(m.x)
+                  << ", " << hf.world_z(m.z) << "): salto " << m.step_m
+                  << " m (boca-mar " << m.drop_to_sea_m << " m)" << std::endl;
+    }
+    std::cout << "celdas de boca: " << r.mouth_cells << "; con salto >0.2 m: "
+              << r.mouth_cells_step_over_02 << ", >1 m: " << r.mouth_cells_step_over_1;
+    if (r.worst_mouth_cell.x >= 0) {
+        std::cout << "; peor " << r.worst_mouth_cell.step_m << " m (caudal "
+                  << r.worst_mouth_cell.flow << ") en mundo ("
+                  << hf.world_x(r.worst_mouth_cell.x) << ", "
+                  << hf.world_z(r.worst_mouth_cell.z) << ")";
+    }
+    std::cout << std::endl;
+    std::cout << "rio seco (caudal>=1.5x umbral sin lamina, fuera del mar abierto): "
+              << r.dry_cells << " celdas; peor caudal " << r.dry_worst_flow;
+    if (r.dry_x >= 0) {
+        std::cout << " en mundo (" << hf.world_x(r.dry_x) << ", "
+                  << hf.world_z(r.dry_z) << ")";
+    }
+    std::cout << std::endl;
+    std::cout << "lecho de rio bajo el plano del mar: " << r.river_bed_under_sea_plane
+              << " celdas; mar encerrado tierra adentro: " << r.enclosed_sea_cells
+              << " celdas" << std::endl;
+    std::cout << "mar recortado bajo la lamina interior: " << r.sea_clip_quads
+              << " quads; vertices con lecho sumergido por debajo del mar: "
+              << r.sea_clip_sunk_vertices << " (peor " << r.sea_clip_worst_sink_m
+              << " m)" << std::endl;
+    const auto print_angles = [](const char* label, const terrain::FlowAngleStats& s) {
+        std::cout << label << ": " << s.cells << " celdas, " << s.pct_over_60deg
+                  << " % a >60 grados del eje aguas abajo, salto mediano entre vecinas "
+                  << s.median_jump_deg << " grados" << std::endl;
+    };
+    const auto print_speed = [](const char* label, const terrain::SpeedStats& s) {
+        std::cout << label << ": " << s.cells << " celdas, p50 " << s.p50 << " m/s, p95 "
+                  << s.p95 << " m/s, max " << s.max << " m/s, en el techo ("
+                  << terrain::kMaxRiverSpeed << " m/s) " << s.pct_at_cap << " %"
+                  << std::endl;
+    };
+    print_speed("velocidad de Manning (lamina de rio)", r.speed_wet);
+    print_speed("  eje (caudal >= umbral)", r.speed_axis);
+    print_angles("corriente (campo de flujo)", r.flow_field);
+    print_angles("  referencia: descenso del lecho", r.bed_descent);
+    const float pct_e = r.shallow_sea_cells > 0
+        ? 100.0f * static_cast<float>(r.shallow_sea_with_energy)
+              / static_cast<float>(r.shallow_sea_cells)
+        : 0.0f;
+    std::cout << "rompiente: mar somero (<2.4 m) con oleaje " << pct_e << " % de "
+              << r.shallow_sea_cells << " celdas; zona de rompiente " << r.surf_cells
+              << " celdas (expuesta E>0.45: " << r.surf_exposed
+              << ", abrigo E<0.16: " << r.surf_sheltered << ")" << std::endl;
+}
+
 // Dump de verificación de costa (criterio §7-A del plan): mapa de materiales
 // con lámina de agua y mapa de energía de oleaje, sin abrir ventana.
 int dump_costa(const std::string& prefix, const terrain::TerrainConfig& cfg) {
@@ -777,8 +882,10 @@ int dump_costa(const std::string& prefix, const terrain::TerrainConfig& cfg) {
 
     for (size_t i = 0; i < n; ++i) {
         const float e = data.wave_energy[i];
+        // En el mar, la energía propagada mar adentro (rompiente) en cian.
         img[i] = data.height.data()[i] <= cfg.sea_level
-                     ? glm::u8vec3{20, 30, 80}
+                     ? to8(glm::mix(glm::vec3{0.08f, 0.12f, 0.31f},
+                                    glm::vec3{0.35f, 0.85f, 1.0f}, e))
                      : to8(glm::vec3{e, e, e});
     }
     write_bmp(prefix + "-oleaje.bmp", res, res, img);
@@ -1036,38 +1143,7 @@ int dump_costa(const std::string& prefix, const terrain::TerrainConfig& cfg) {
                   << " con lecho a <2 m sobre el mar, " << uncontained_high
                   << " con perchado >2 m)" << std::endl;
 
-        // RÍO SECO (feedback 2026-07-13 "ríos bloqueados por terreno"): celda
-        // con caudal de río hecho pero SIN lámina pintada y en tierra firme —
-        // el cauce existe y lleva agua según el D8, pero no se dibuja nada.
-        const float dry_threshold = cfg.river_flow_threshold
-                                  * (static_cast<float>(res) * static_cast<float>(res))
-                                  / (1024.0f * 1024.0f) * 1.5f;
-        int dry = 0;
-        float worst_dry_flow = 0.0f;
-        int dx1 = -1, dz1 = -1;
-        for (int z = 0; z < res; ++z) {
-            for (int x = 0; x < res; ++x) {
-                const size_t i = at(x, z);
-                if (data.hydrology.flow[i] < dry_threshold
-                    || !std::isnan(wl[i])
-                    || hfd[i] <= cfg.sea_level + 0.3f) {
-                    continue;
-                }
-                ++dry;
-                if (data.hydrology.flow[i] > worst_dry_flow) {
-                    worst_dry_flow = data.hydrology.flow[i];
-                    dx1 = x;
-                    dz1 = z;
-                }
-            }
-        }
-        std::cout << "rio seco (caudal>=1.5x umbral sin lamina, en tierra): "
-                  << dry << " celdas; peor caudal " << worst_dry_flow;
-        if (dx1 >= 0) {
-            std::cout << " en mundo (" << data.height.world_x(dx1) << ", "
-                      << data.height.world_z(dz1) << ")";
-        }
-        std::cout << std::endl;
+        print_water_report(data);
 
         // Depósito fluvial: deltas (lóbulos sobre el mar o el lago) y barras
         // (celdas de cauce que pasan de agua a barra emergida).

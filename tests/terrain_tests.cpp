@@ -9,6 +9,8 @@
 #include "terrain/lem.h"
 #include "terrain/noise.h"
 #include "terrain/preset.h"
+#include "terrain/water_flow.h"
+#include "terrain/water_metrics.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -804,6 +806,191 @@ TEST(Hidrologia, ElLechoDelRioNoSubeAguasAbajo) {
         }
     }
     EXPECT_EQ(dammed, 0) << dammed << " celdas de río sin salida aguas abajo";
+}
+
+TEST(Hidrologia, LaBocaDelRioEnrasaConElMar) {
+    // Remanso de desembocadura (auditoría 2026-10 #2): la lámina del río que
+    // toca el mar enrasa con él — ni colgada encima ni hundida debajo (el
+    // francobordo la dejaba 0.45 m bajo el mar y el mar se metía en el
+    // cauce). Ninguna lámina de río queda por debajo del nivel del mar.
+    // El salto en el tramo final (que el pin de una celda escondía una celda
+    // aguas arriba) lo cubren AguaCosta.UnaBocaColgada… y el dump del mundo
+    // de referencia: con celdas de 23.6 m este mapa tiene torrentes que bajan
+    // metros por celda de forma legítima y no discrimina.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    ASSERT_FALSE(report.mouths.empty()) << "ningún río llega al mar";
+    for (const auto& m : report.mouths) {
+        EXPECT_LT(std::abs(m.drop_to_sea_m), 0.05f)
+            << "boca (" << m.x << ", " << m.z << ") caudal " << m.flow
+            << ": lámina " << m.drop_to_sea_m << " m sobre el mar";
+    }
+    ASSERT_GT(report.mouth_cells, 0);
+
+    int below_sea = 0;
+    for (size_t i = 0; i < data.hydrology.water_level.size(); ++i) {
+        const float wl = data.hydrology.water_level[i];
+        if (!std::isnan(wl) && !data.hydrology.lake[i]
+            && wl < cfg.sea_level - 1e-3f) {
+            ++below_sea;
+        }
+    }
+    EXPECT_EQ(below_sea, 0) << below_sea << " celdas de río con lámina bajo el mar";
+}
+
+TEST(Hidrologia, NingunCauceSecoFueraDelMarAbierto) {
+    // Bloqueante #5 (auditoría 2026-10): el contador de río seco excluía todo
+    // lo que estaba bajo el mar, y el eje del estuario del río mayor quedaba
+    // sin lámina entre celdas mojadas. Todo cauce con caudal de río que no
+    // sea mar abierto lleva lámina.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    EXPECT_EQ(report.dry_cells, 0)
+        << "peor caudal " << report.dry_worst_flow << " en (" << report.dry_x
+        << ", " << report.dry_z << ")";
+}
+
+TEST(Hidrologia, ElMarRecortadoNoDejaElFondoAlAire) {
+    // Bloqueantes #1/#4/#6: donde el mar se descarta (quads de la lámina
+    // interior) ningún vértice de esa lámina con el lecho sumergido queda
+    // por debajo del mar.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    EXPECT_GT(report.sea_clip_quads, 0);
+    EXPECT_EQ(report.sea_clip_sunk_vertices, 0)
+        << "peor hundimiento " << report.sea_clip_worst_sink_m << " m";
+}
+
+TEST(Corriente, CanalRectoDaManningAguasAbajo) {
+    // Canal sintético recto hacia +x, 3 celdas de ancho, calado 1 m y lámina
+    // con pendiente S: toda la anchura corre aguas abajo (no hacia el eje) a
+    // la velocidad de Manning v = n⁻¹·R^(2/3)·S^(1/2) con la rugosidad de
+    // Jarrett (1984) n = 0.39·S^0.38·R^-0.16 (S = 0.004 > umbral de grava).
+    // Un lago no lleva corriente.
+    constexpr int kRes = 64;
+    constexpr float kSlope = 0.004f;
+    constexpr float kDepth = 1.0f;
+    terrain::TerrainData data;
+    data.height = terrain::Heightfield(kRes, 63.0f * 2.5f);
+    // Umbral efectivo = 1 celda: river_flow_threshold · 64² / 1024² = 1.
+    data.config.river_flow_threshold = 256.0f;
+    const size_t n = static_cast<size_t>(kRes) * kRes;
+    auto& hydro = data.hydrology;
+    hydro.water_level.assign(n, std::numeric_limits<float>::quiet_NaN());
+    hydro.flow.assign(n, 0.5f);
+    hydro.lake.assign(n, 0);
+    hydro.whitewater.assign(n, 0);
+    const float cell = data.height.cell_size();
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            data.height.at(x, z) = 50.0f;
+        }
+    }
+    for (int x = 0; x < kRes; ++x) {
+        for (int z = 31; z <= 33; ++z) {
+            const size_t i = static_cast<size_t>(z) * kRes + x;
+            data.height.at(x, z) = 10.0f - kSlope * cell * static_cast<float>(x);
+            hydro.water_level[i] = data.height.at(x, z) + kDepth;
+            if (z == 32) {
+                hydro.flow[i] = 10.0f + static_cast<float>(x); // eje
+            }
+        }
+    }
+    // Lago aparte (sin conexión): lámina plana, sin corriente.
+    for (int z = 5; z < 10; ++z) {
+        for (int x = 5; x < 10; ++x) {
+            const size_t i = static_cast<size_t>(z) * kRes + x;
+            hydro.water_level[i] = 60.0f;
+            hydro.lake[i] = 1;
+        }
+    }
+
+    const auto field = terrain::compute_river_flow(data);
+    const float n_jarrett =
+        0.39f * std::pow(kSlope, 0.38f) * std::pow(kDepth, -0.16f);
+    ASSERT_GT(n_jarrett, terrain::kManningGravel);
+    const float expected =
+        std::pow(kDepth, 2.0f / 3.0f) * std::sqrt(kSlope) / n_jarrett;
+    for (int x = 8; x < kRes - 8; x += 7) {
+        for (int z = 31; z <= 33; ++z) {
+            const glm::vec2 v = field.at(static_cast<size_t>(z) * kRes + x);
+            EXPECT_NEAR(glm::length(v), expected, 0.01f * expected)
+                << "módulo en (" << x << ", " << z << ")";
+            EXPECT_GT(v.x, 0.9999f * glm::length(v))
+                << "dirección en (" << x << ", " << z << "): (" << v.x << ", " << v.y << ")";
+        }
+    }
+    EXPECT_EQ(glm::length(field.at(static_cast<size_t>(7) * kRes + 7)), 0.0f);
+}
+
+TEST(Corriente, LaRugosidadCreceConLaPendiente) {
+    // Bloqueantes #3/#7: con n de grava constante (0.035) un torrente de
+    // S = 0.04 y R = 0.86 m daba 5.2 m/s (techo). Con Jarrett, ~1.5 m/s; en
+    // llanura (S < 0.0015) manda el suelo de grava.
+    EXPECT_FLOAT_EQ(terrain::manning_n(0.0005f, 1.0f), terrain::kManningGravel);
+    EXPECT_NEAR(terrain::manning_n(0.04f, 0.86f), 0.1177f, 0.002f);
+    EXPECT_NEAR(terrain::manning_speed(0.04f, 0.86f), 1.54f, 0.05f);
+    EXPECT_LT(terrain::manning_speed(0.04f, 0.86f), 0.5f * terrain::kMaxRiverSpeed);
+    EXPECT_EQ(terrain::manning_speed(0.04f, 0.0f), 0.0f);
+    // Monótona en el calado y en la pendiente (con R fijo).
+    EXPECT_LT(terrain::manning_speed(0.01f, 0.5f), terrain::manning_speed(0.01f, 1.5f));
+    EXPECT_LT(terrain::manning_speed(0.005f, 1.0f), terrain::manning_speed(0.05f, 1.0f));
+}
+
+TEST(Corriente, LaVelocidadDelMundoNoVaAlTecho) {
+    // Bloqueantes #3/#7: un tercio de la lámina (44 % del eje) iba a 5 m/s.
+    // La ley, no la cota, fija la velocidad: casi nada en el techo. (La
+    // mediana de 0.5-2.5 m/s se comprueba en el dump del mundo de referencia:
+    // este mapa, con montañas de 1000 m en 3 km y celdas de 23.6 m, es todo
+    // torrente con la lámina al tope de calado.)
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    ASSERT_GT(report.speed_wet.cells, 0);
+    EXPECT_LT(report.speed_wet.pct_at_cap, 2.0f);
+    EXPECT_LT(report.speed_axis.pct_at_cap, 2.0f);
+    EXPECT_GT(report.speed_wet.p50, 0.5f);
+}
+
+TEST(Corriente, LosRiosDelMundoCorrenAguasAbajoSinSaltos) {
+    // Auditoría 2026-10 #1: con el descenso del lecho tallado la corriente
+    // apuntaba al eje desde las orillas y saltaba 45° entre vértices. El campo
+    // de corriente sigue el cauce aguas abajo y varía suave.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    ASSERT_GT(report.flow_field.cells, 0);
+    EXPECT_LT(report.flow_field.pct_over_60deg, 5.0f);
+    EXPECT_LT(report.flow_field.median_jump_deg, 15.0f);
+    EXPECT_LT(report.flow_field.pct_over_60deg, report.bed_descent.pct_over_60deg);
+}
+
+TEST(Costa, ElOleajeLlegaALaRompiente) {
+    // Auditoría 2026-10 #3: la energía de oleaje solo existía en tierra y la
+    // espuma de rompiente salía al 20 % uniforme. Ahora el mar somero (donde
+    // rompe la ola) conoce la energía que le llega desde mar adentro, acotada
+    // en [0, 1], y la zona de rompiente (calado < H_s/γ) no está vacía.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    for (const float e : data.wave_energy) {
+        ASSERT_GE(e, 0.0f);
+        ASSERT_LE(e, 1.0f);
+    }
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    ASSERT_GT(report.shallow_sea_cells, 0);
+    const float pct = 100.0f * static_cast<float>(report.shallow_sea_with_energy)
+                    / static_cast<float>(report.shallow_sea_cells);
+    EXPECT_GT(pct, 90.0f) << "mar somero con oleaje: " << pct << " %";
+    EXPECT_GT(report.surf_cells, 0);
 }
 
 TEST(Costa, EnergiaDeOleajeAcotadaYSoloLitoral) {

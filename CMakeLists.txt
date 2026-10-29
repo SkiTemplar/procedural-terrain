@@ -24,6 +24,7 @@ add_library(terrain_gen STATIC
         src/terrain/erosion.cpp
         src/terrain/hydrology.cpp
         src/terrain/riverscape.cpp
+        src/terrain/river_mouth.cpp
         src/terrain/coast.cpp
         src/terrain/ecology.cpp
         src/terrain/ecology_report.cpp
@@ -33,6 +34,9 @@ add_library(terrain_gen STATIC
         src/terrain/landform_stats.cpp
         src/terrain/rockfall.cpp
         src/terrain/preset.cpp
+        src/terrain/water_flow.cpp
+        src/terrain/water_metrics.cpp
+        src/terrain/water_surface.cpp
 )
 target_include_directories(terrain_gen PUBLIC src)
 target_link_libraries(terrain_gen PUBLIC glm::glm nlohmann_json::nlohmann_json)
@@ -96,6 +100,7 @@ add_executable(terrain_tests
         tests/golden_tests.cpp
         tests/rockfall_tests.cpp
         tests/ecology_tests.cpp
+        tests/water_tests.cpp
         tests/terrain_texture_tests.cpp
         src/render/terrain_texture_data.cpp
         src/render/terrain_normal_map.cpp
