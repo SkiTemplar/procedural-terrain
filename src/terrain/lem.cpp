@@ -71,7 +71,7 @@ constexpr float kGSpan = 2.0f;
 // Barridos de Gauss-Seidel del término de sedimento por paso (Yuan: 2-4): el
 // flujo depende de las alturas nuevas aguas arriba, que el stack directo
 // resuelve DESPUÉS de la celda.
-constexpr int kDepositionSweeps = 3;
+constexpr int kDepositionSweeps = 10;
 
 constexpr int kDx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
 constexpr int kDz[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
@@ -439,7 +439,20 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
                 // G·Qs/A con G la media de las fuentes: Σ(e·G)/A.
                 const float dep =
                     static_cast<float>(std::max(qsg[i], 0.0) / area_geom[i]);
-                h[i] = (h_prev[i] + up + fcoef[i] * hr + dep) / (1.0f + fcoef[i]);
+                const float target =
+                    (h_prev[i] + up + fcoef[i] * hr + dep) / (1.0f + fcoef[i]);
+                if (sweep == 0) {
+                    h[i] = target;
+                } else {
+                    // Relajación 1/(1+G): sin ella el barrido NO converge con
+                    // G > 1 — una perturbación de toda una cuenca vuelve
+                    // multiplicada por ≈ −G y el resultado salta entre dos
+                    // estados (cumbre 1090 m con 3 barridos, 342 m con 10).
+                    // Las mesetas, paredes y lagos de b583495 eran eso.
+                    const double gq = qs[i] > 0.0 ? qsg[i] / qs[i] : g_src[i];
+                    const float g_mix = static_cast<float>(std::clamp(gq, 0.0, 16.0));
+                    h[i] += (target - h[i]) / (1.0f + g_mix);
+                }
             }
         }
         // Aluvión: la agradación neta lo engrosa; la erosión lo consume
