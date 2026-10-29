@@ -22,6 +22,14 @@ namespace {
 // para que los parámetros sean independientes del tamaño del mapa.
 constexpr float kWarpFreq = 0.35f;
 
+// Reparto roca/hierba dentro de la fracción de afloramiento física: ruido
+// isótropo de ~25 m de longitud de onda, nunca por debajo de 4 celdas (en
+// mallas gruesas un ruido más fino que la celda vuelve a dar peine).
+// perlin: |n| ≲ 0.7 → umbral 0.5 ± 0.4.
+constexpr float kRockDitherWaveM = 50.0f;
+constexpr float kRockDitherMinCells = 8.0f;
+constexpr float kRockDitherAmp = 0.6f;
+
 float smoothstep(float edge0, float edge1, float x) {
     const float t = glm::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
@@ -582,6 +590,8 @@ void classify_materials(TerrainData& data, const Noise& noise,
     data.treeline_m = cfg.treeline_m;
     const EcoClimate climate = make_eco_climate(cfg);
     const EcoProbe probe(data, topographic_wetness(hf, data.hydrology.flow));
+    const float rock_dither_per_km =
+        1000.0f / std::max(kRockDitherWaveM, kRockDitherMinCells * hf.cell_size());
 
     // Máscara de ribera: agua interior dilatada ~4 celdas. Los ríos y lagos
     // concentran humedad → bosque de galería a su alrededor.
@@ -725,8 +735,9 @@ void classify_materials(TerrainData& data, const Noise& noise,
                 // Ecología física (ecology.h): nieve estacional por balance
                 // temperatura-lluvia-radiación, roca donde el suelo no llega a
                 // formarse (denudación ≥ producción o pendiente sobre la
-                // crítica), bosque por temperatura, agua y suelo. El ruido
-                // solo perturba microclima y borde de bosque (≤ 10 %).
+                // crítica), bosque por temperatura, balance hídrico, viento y
+                // suelo. El ruido solo perturba microclima, borde de bosque
+                // y el reparto roca/hierba dentro de la fracción física.
                 EcoInputs in = probe.inputs_at(x, z);
                 if (riparian[i]) {
                     // Orilla de agua dulce: depósito de ribera (dique, llanura
@@ -744,7 +755,13 @@ void classify_materials(TerrainData& data, const Noise& noise,
                 const EcoCell eco = evaluate_ecology(in, climate);
                 if (eco.snow_margin_c > 0.0f) {
                     m = Material::Snow;
-                } else if (eco.soil_m < kMinSoilM) {
+                } else if (eco.rock_frac
+                           > 0.5f + kRockDitherAmp * noise.fbm(
+                                 p_km * rock_dither_per_km + glm::vec3{-51.7f, 0.0f, 23.9f},
+                                 2)) {
+                    // Afloramiento: la fracción de roca es continua; un ruido
+                    // isótropo de ~25 m reparte esa fracción en manchas (como
+                    // un pedregal con céspedes), no en rayas de una celda.
                     m = Material::Rock;
                 } else {
                     // GRADIENTE, no binario: la densidad crece suave a través

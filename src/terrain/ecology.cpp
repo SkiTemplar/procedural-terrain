@@ -1,73 +1,38 @@
 #include "terrain/ecology.h"
 
+#include "terrain/ecology_fields.h"
+
 #include <glm/glm.hpp>
 
 #include <algorithm>
-#include <cstdint>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <execution>
 #include <numeric>
 #include <utility>
 
 namespace terrain {
 
-namespace {
-
-constexpr float kPi = 3.14159265f;
-
-// Microclima del árbol (°C equivalentes sobre la isoterma): la solana gana y
-// la umbría pierde (Körner: ±100-200 m de límite entre caras); la cara de
-// barlovento y el clima nuboso de la fachada húmeda lo bajan.
-constexpr float kRadTreeC = 1.2f;   // por unidad de radiación relativa
-constexpr float kWindTreeC = 0.6f;  // cara plenamente expuesta al viento
-constexpr float kWetCoolC = 0.5f;   // por unidad de lluvia efectiva sobre 1
-constexpr float kJitterC = 0.3f;    // perturbación de microclima (±45 m)
-// Nieve estacional: la fusión depende sobre todo de la radiación directa.
-constexpr float kRadSnowC = 1.2f;
-constexpr float kSnowSlopeC = 0.6f;  // retención de nieve que cae con tanβ
-// Suelo (Heimsath et al. 1997): producción P0·exp(−H/H0) frente a la
-// denudación local; en equilibrio H = H0·ln(P0/E) y roca desnuda si E ≥ P0
-// (speed limit de Dixon & von Blanckenburg 2012). Unidades de E: denudación
-// del LEM relativa al uplift máximo por paso.
-constexpr float kSoilProdMax = 1.1f;
-constexpr float kSoilScaleM = 0.5f;  // H0
-// En laderas con suelo E ∝ −∇²z (Roering 1999): la convexidad acelera la
-// denudación de crestas; la concavidad (vaguadas) acumula coluvión.
-constexpr float kCurvGain = 0.6f;
-constexpr float kCurvLengthM = 30.0f;  // escala de normalización de ∇²z
-constexpr int kCurvStep = 8;   // celdas: curvatura de ladera a ~20 m, no de surco
-constexpr int kSlopeStep = 4;  // celdas: pendiente y normal de ladera a ~20 m
-// Humedad del suelo: TWI de ladera seca → vaguada húmeda (malla de ~2.4 m).
-constexpr float kTwiDry = 2.5f;
-constexpr float kTwiWet = 7.0f;
-constexpr float kEdgeAmp = 0.08f;  // perturbación del borde de bosque (≤ 10 %)
-constexpr float kMaxSnowSlope = 1.15f;  // ~49°: la nieve no agarra
+namespace eco_detail {
 
 float smooth01(float e0, float e1, float x) noexcept {
     const float t = glm::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
 }
 
-// Lluvia efectiva: el campo del LEM lleva el término de ascenso por celda,
-// muy contrastado; la raíz lo comprime al rango climático (0.5 → 0.71).
-float effective_precip(float precip) noexcept {
-    return std::sqrt(glm::clamp(precip, 0.3f, 3.0f));
-}
-
-std::vector<int> iota_rows(int res) {
+void box_blur(std::vector<float>& f, int res, int r, int passes) {
+    if (r < 1 || res < 2) {
+        return;
+    }
+    std::vector<float> tmp(f.size());
     std::vector<int> rows(static_cast<std::size_t>(res));
     std::iota(rows.begin(), rows.end(), 0);
-    return rows;
-}
-
-// Box blur separable de radio r (in situ, clamp en el borde).
-void box_blur(std::vector<float>& f, int res, int r, int passes) {
-    std::vector<float> tmp(f.size());
-    const auto rows = iota_rows(res);
     const auto at = [res](int x, int z) {
         return static_cast<std::size_t>(z) * static_cast<std::size_t>(res)
              + static_cast<std::size_t>(x);
     };
+    const float inv = 1.0f / static_cast<float>(2 * r + 1);
     for (int pass = 0; pass < passes; ++pass) {
         std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
             for (int x = 0; x < res; ++x) {
@@ -75,7 +40,7 @@ void box_blur(std::vector<float>& f, int res, int r, int passes) {
                 for (int d = -r; d <= r; ++d) {
                     acc += f[at(std::clamp(x + d, 0, res - 1), z)];
                 }
-                tmp[at(x, z)] = acc / static_cast<float>(2 * r + 1);
+                tmp[at(x, z)] = acc * inv;
             }
         });
         std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
@@ -84,7 +49,7 @@ void box_blur(std::vector<float>& f, int res, int r, int passes) {
                 for (int d = -r; d <= r; ++d) {
                     acc += tmp[at(x, std::clamp(z + d, 0, res - 1))];
                 }
-                f[at(x, z)] = acc / static_cast<float>(2 * r + 1);
+                f[at(x, z)] = acc * inv;
             }
         });
     }
@@ -106,71 +71,106 @@ float bilinear(const std::vector<float>& grid, int gres, float fx, float fz) {
     return std::lerp(top, bot, tz);
 }
 
-// Rangos con empates promediados (Spearman).
-std::vector<double> ranks(const std::vector<float>& v) {
-    std::vector<std::size_t> order(v.size());
-    std::iota(order.begin(), order.end(), std::size_t{0});
-    std::sort(order.begin(), order.end(),
-              [&](std::size_t a, std::size_t b) { return v[a] < v[b]; });
-    std::vector<double> r(v.size());
-    std::size_t i = 0;
-    while (i < order.size()) {
-        std::size_t j = i;
-        while (j + 1 < order.size() && v[order[j + 1]] == v[order[i]]) {
-            ++j;
-        }
-        const double avg = 0.5 * static_cast<double>(i + j);
-        for (std::size_t k = i; k <= j; ++k) {
-            r[order[k]] = avg;
-        }
-        i = j + 1;
-    }
-    return r;
+} // namespace eco_detail
+
+namespace {
+
+using eco_detail::bilinear;
+using eco_detail::box_blur;
+using eco_detail::smooth01;
+
+constexpr float kPi = 3.14159265f;
+
+// Microclima del árbol (°C equivalentes sobre la isoterma): la solana gana y
+// la umbría pierde (Körner: ±100-200 m de límite entre caras); el viento y el
+// clima nuboso de la fachada húmeda lo bajan.
+constexpr float kRadTreeC = 1.2f;   // por unidad de radiación relativa
+constexpr float kWindTreeC = 1.2f;  // sitio plenamente expuesto al viento
+constexpr float kWetCoolC = 0.5f;   // por unidad de lluvia efectiva sobre 1
+constexpr float kJitterC = 0.3f;    // perturbación de microclima (±45 m)
+// Nieve estacional: la fusión depende sobre todo de la radiación directa.
+constexpr float kRadSnowC = 1.2f;
+constexpr float kSnowSlopeC = 0.6f;  // retención de nieve que cae con tanβ
+constexpr float kMaxSnowSlope = 1.15f;  // ~49°: la nieve no agarra
+// Suelo (Heimsath et al. 1997): producción P0·exp(−H/H0) frente a la
+// denudación local; en equilibrio H = H0·ln(P0/E) y roca desnuda si E ≥ P0
+// (speed limit de Dixon & von Blanckenburg 2012). Unidades de E: denudación
+// del LEM relativa al uplift máximo por paso; con el LEM convergente la
+// mediana en tierra es ~0.4-0.55 y el p90 ~0.75-1.0.
+constexpr float kSoilProdMax = 2.0f;
+constexpr float kSoilScaleM = 0.5f;  // H0
+// En laderas con suelo E ∝ −∇²z (Roering 1999): la convexidad de ladera
+// (~50 m, no la de surco) acelera la denudación de crestas y espolones; las
+// vaguadas acumulan coluvión.
+constexpr float kCurvGain = 0.5f;
+// Afloramiento: fracción de roca continua alrededor de kMinSoilM (mitad de
+// la superficie) entre un suelo esquelético y uno que ya cubre la roca.
+constexpr float kRockSoilLoM = 0.04f;
+constexpr float kRockSoilHiM = 0.20f;
+// Balance hídrico. La radiación sube la PET (Hargreaves: ∝ radiación
+// extraterrestre). El excedente P − ET drena ladera abajo; como en TOPMODEL
+// (Beven & Kirkby 1979), la recarga lateral escala con a/tanβ = exp(TWI)
+// relativa a la mediana: una cresta cede parte de su excedente, una vaguada
+// recibe el de su cuenca.
+constexpr float kRadPet = 0.5f;
+constexpr float kTwiMid = 3.6f;        // ~mediana del TWI en tierra
+constexpr float kLateralShare = 0.5f;  // excedente que redistribuye la ladera
+constexpr float kLateralMaxGain = 5.0f;
+constexpr float kRiparianShare = 1.0f;
+// El bosque sufre por agua solo con déficit relativo alto (sotavento seco,
+// solana de suelo fino): 1 − ET/PET de 0.35 (subhúmedo) a 0.65 (semiárido).
+constexpr float kDryForestLo = 0.35f;
+constexpr float kDryForestHi = 0.65f;
+// Encharcamiento: turbera de cobertor donde el agua disponible dobla la PET
+// y el relieve converge (TWI alto); el bosque no prospera en ella.
+constexpr float kBogAridityLo = 2.0f;
+constexpr float kBogAridityHi = 3.5f;
+constexpr float kBogTwiLo = 5.0f;
+constexpr float kBogTwiHi = 7.0f;
+constexpr float kBogForest = 0.7f;
+// Viento: en las islas hiperoceánicas el árbol se refugia de la exposición
+// (Feroe, Shetland: bosque solo en barrancos abrigados).
+constexpr float kExposureForest = 0.7f;
+constexpr float kExposureLo = 0.5f;
+constexpr float kExposureHi = 0.95f;
+constexpr float kEdgeAmp = 0.08f;  // perturbación del borde de bosque (≤ 10 %)
+// Thornthwaite: corrección de duración del día (~58° N: los meses cálidos
+// tienen ~1.4× la insolación media) y forma de Fu de la curva de Budyko.
+constexpr float kDayLengthAmp = 0.4f;
+constexpr float kFuOmega = 2.6f;
+
+// Escalas de la sonda (m): relieve suavizado, pendiente y curvatura.
+constexpr float kSmoothRadiusM = 8.0f;
+constexpr float kSlopeHalfM = 12.0f;
+constexpr float kCurvHalfM = 50.0f;
+constexpr float kCurvLengthM = 100.0f;  // normalización de ∇²z
+// TOPEX (Ruel et al. 2002): ángulo del horizonte hasta ~1 km, a barlovento y
+// medio en 8 direcciones. En la isla el índice va de −2° (p10) a +19° (p90),
+// mediana +6.6°: plenamente expuesto ≤ −3°, abrigado ≥ +12°.
+constexpr int kExposureRes = 512;
+constexpr float kTopexRadiusM = 1000.0f;
+constexpr float kTopexUpShare = 0.6f;
+constexpr float kExposedDeg = -3.0f;
+constexpr float kShelterDeg = 12.0f;
+
+// Lluvia efectiva para la nubosidad y la nieve: la raíz comprime el
+// contraste del campo relativo (0.5 → 0.71).
+float effective_precip(float precip) noexcept {
+    return std::sqrt(glm::clamp(precip, 0.3f, 3.0f));
 }
 
-double pearson(const std::vector<double>& a, const std::vector<double>& b) {
-    const double n = static_cast<double>(a.size());
-    if (n < 2.0) {
-        return 0.0;
-    }
-    const double ma = std::accumulate(a.begin(), a.end(), 0.0) / n;
-    const double mb = std::accumulate(b.begin(), b.end(), 0.0) / n;
-    double sab = 0.0, saa = 0.0, sbb = 0.0;
-    for (std::size_t i = 0; i < a.size(); ++i) {
-        sab += (a[i] - ma) * (b[i] - mb);
-        saa += (a[i] - ma) * (a[i] - ma);
-        sbb += (b[i] - mb) * (b[i] - mb);
-    }
-    return (saa > 0.0 && sbb > 0.0) ? sab / std::sqrt(saa * sbb) : 0.0;
+std::vector<int> iota_rows(int res) {
+    std::vector<int> rows(static_cast<std::size_t>(res));
+    std::iota(rows.begin(), rows.end(), 0);
+    return rows;
 }
 
-double spearman(const std::vector<float>& a, const std::vector<float>& b) {
-    return pearson(ranks(a), ranks(b));
-}
-
-std::array<float, 3> quantiles(std::vector<float> v) {
-    if (v.empty()) {
-        return {};
+std::array<float, 12> month_cosines() {
+    std::array<float, 12> c{};
+    for (std::size_t m = 0; m < c.size(); ++m) {
+        c[m] = std::cos(2.0f * kPi * static_cast<float>(m) / 12.0f);
     }
-    std::array<float, 3> q{};
-    const float fr[3] = {0.10f, 0.50f, 0.90f};
-    for (int k = 0; k < 3; ++k) {
-        const auto nth = static_cast<std::ptrdiff_t>(
-            fr[k] * static_cast<float>(v.size() - 1));
-        std::nth_element(v.begin(), v.begin() + nth, v.end());
-        q[static_cast<std::size_t>(k)] = v[static_cast<std::size_t>(nth)];
-    }
-    return q;
-}
-
-float quantile(std::vector<float> v, float fr) {
-    if (v.empty()) {
-        return 0.0f;
-    }
-    const auto nth =
-        static_cast<std::ptrdiff_t>(fr * static_cast<float>(v.size() - 1));
-    std::nth_element(v.begin(), v.begin() + nth, v.end());
-    return v[static_cast<std::size_t>(nth)];
+    return c;
 }
 
 } // namespace
@@ -192,6 +192,86 @@ float ela_summer_temp_c(float precip_mm) noexcept {
     return (-296.0f + std::sqrt(std::max(disc, 0.0f))) / 18.0f;
 }
 
+float thornthwaite_pet_mm(float warm_month_c) noexcept {
+    static const std::array<float, 12> kCos = month_cosines();
+    const float mean = warm_month_c - 0.5f * kAnnualRangeC;
+    std::array<float, 12> t{};
+    float heat = 0.0f;
+    for (std::size_t m = 0; m < t.size(); ++m) {
+        t[m] = std::min(mean + 0.5f * kAnnualRangeC * kCos[m], 26.5f);
+        if (t[m] > 0.0f) {
+            heat += std::pow(t[m] / 5.0f, 1.514f);
+        }
+    }
+    if (heat <= 0.0f) {
+        return 0.0f;
+    }
+    const float a = 6.75e-7f * heat * heat * heat - 7.71e-5f * heat * heat
+                  + 1.792e-2f * heat + 0.49239f;
+    float pet = 0.0f;
+    for (std::size_t m = 0; m < t.size(); ++m) {
+        if (t[m] > 0.0f) {
+            pet += 16.0f * (1.0f + kDayLengthAmp * kCos[m])
+                 * std::pow(10.0f * t[m] / heat, a);
+        }
+    }
+    return pet;
+}
+
+float budyko_et_mm(float water_mm, float pet_mm) noexcept {
+    if (water_mm <= 0.0f || pet_mm <= 0.0f) {
+        return 0.0f;
+    }
+    const float r = pet_mm / water_mm;
+    const float ratio =
+        1.0f + r - std::pow(1.0f + std::pow(r, kFuOmega), 1.0f / kFuOmega);
+    return water_mm * glm::clamp(ratio, 0.0f, 1.0f);
+}
+
+namespace {
+
+// Espesor de suelo en equilibrio producción-denudación, retenido por la
+// pendiente, más el aluvión.
+float soil_thickness(const EcoInputs& in, const EcoClimate& climate,
+                     float t_air) noexcept {
+    // La pedogénesis se frena con el frío (piso alpino de suelo fino).
+    const float p0 =
+        kSoilProdMax * (0.45f + 0.55f * smooth01(0.0f, kTreelineIsothermC, t_air));
+    const float e = std::max(in.denudation, 0.0f)
+                  * glm::clamp(1.0f + kCurvGain * in.convexity, 0.2f, 3.0f);
+    const float regolith =
+        e < p0 ? kSoilScaleM * std::log(p0 / std::max(e, 0.01f)) : 0.0f;
+    const float retention = 1.0f - smooth01(0.75f * climate.rock_slope,
+                                            1.05f * climate.rock_slope, in.slope);
+    return (regolith + std::max(in.alluvium_m, 0.0f)) * retention;
+}
+
+// Balance hídrico anual: lluvia frente a PET (Thornthwaite, modulada por la
+// radiación); el excedente P − ET drena ladera abajo y el TWI lo reparte
+// (crestas lo ceden, vaguadas lo reciben); la ribera tiene freático.
+void water_balance(const EcoInputs& in, float t_air, EcoCell& out) noexcept {
+    const float p_mm = kMeanPrecipMm * glm::clamp(in.precip, 0.2f, 4.0f);
+    const float pet = thornthwaite_pet_mm(t_air)
+                    * glm::clamp(1.0f + kRadPet * (in.radiation - 1.0f), 0.5f, 1.5f);
+    const float surplus = std::max(p_mm - budyko_et_mm(p_mm, pet), 0.0f);
+    const float lateral =
+        std::min(std::exp(in.twi - kTwiMid), kLateralMaxGain) - 1.0f;
+    const float water = std::max(
+        p_mm + surplus * (kLateralShare * lateral + kRiparianShare * in.riparian),
+        0.0f);
+    out.pet_mm = pet;
+    out.water_mm = water;
+    out.dryness = pet > 0.0f
+                    ? glm::clamp(1.0f - budyko_et_mm(water, pet) / pet, 0.0f, 1.0f)
+                    : 0.0f;
+    const float aridity = pet > 0.0f ? water / pet : 10.0f;
+    out.waterlog = smooth01(kBogAridityLo, kBogAridityHi, aridity)
+                 * smooth01(kBogTwiLo, kBogTwiHi, in.twi)
+                 * (1.0f - glm::clamp(in.riparian, 0.0f, 1.0f));
+}
+
+} // namespace
+
 EcoCell evaluate_ecology(const EcoInputs& in, const EcoClimate& climate) noexcept {
     EcoCell out;
     const float t_air =
@@ -199,33 +279,22 @@ EcoCell evaluate_ecology(const EcoInputs& in, const EcoClimate& climate) noexcep
     const float p_eff = effective_precip(in.precip);
 
     out.tree_temp_c = t_air + kRadTreeC * (in.radiation - 1.0f)
-                    - kWindTreeC * in.windward - kWetCoolC * (p_eff - 1.0f)
+                    - kWindTreeC * in.wind_exposure - kWetCoolC * (p_eff - 1.0f)
                     + kJitterC * in.jitter;
 
-    // Suelo: la pedogénesis se frena con el frío (piso alpino de suelo fino).
-    const float p0 =
-        kSoilProdMax * (0.45f + 0.55f * smooth01(0.0f, kTreelineIsothermC, t_air));
-    const float e = std::max(in.denudation, 0.0f)
-                  * glm::clamp(1.0f + kCurvGain * in.convexity, 0.2f, 3.0f);
-    float soil = e < p0 ? kSoilScaleM * std::log(p0 / std::max(e, 0.01f)) : 0.0f;
-    const float retention = 1.0f - smooth01(0.75f * climate.rock_slope,
-                                            1.05f * climate.rock_slope, in.slope);
-    soil = (soil + std::max(in.alluvium_m, 0.0f)) * retention;
-    out.soil_m = soil;
-
-    // Agua disponible: la lluvia que cae, redistribuida por la posición
-    // topográfica (TWI: crestas la pierden, vaguadas la reciben), más el
-    // freático de ribera.
-    const float twi_n = smooth01(kTwiDry, kTwiWet, in.twi);
-    const float moist = p_eff * (0.55f + 0.9f * twi_n) + 0.35f * in.riparian;
-    out.dryness = glm::clamp(1.0f - moist / 1.1f + 0.25f * (in.radiation - 1.0f),
-                             0.0f, 1.0f);
+    out.soil_m = soil_thickness(in, climate, t_air);
+    out.rock_frac = 1.0f - smooth01(kRockSoilLoM, kRockSoilHiM, out.soil_m);
+    water_balance(in, t_air, out);
 
     const float f_t = smooth01(kTreelineIsothermC - 0.3f,
                                kTreelineIsothermC + 1.2f, out.tree_temp_c);
-    const float f_w = smooth01(0.45f, 0.85f, moist);
-    const float f_s = smooth01(kMinSoilM, 0.45f, soil);
-    out.forest = glm::clamp(f_t * f_w * f_s + kEdgeAmp * in.edge, 0.0f, 1.0f);
+    const float f_w = 1.0f - smooth01(kDryForestLo, kDryForestHi, out.dryness);
+    const float f_s = smooth01(kMinSoilM, 0.45f, out.soil_m);
+    const float f_x =
+        1.0f - kExposureForest * smooth01(kExposureLo, kExposureHi, in.wind_exposure);
+    const float f_bog = 1.0f - kBogForest * out.waterlog;
+    out.forest =
+        glm::clamp(f_t * f_w * f_s * f_x * f_bog + kEdgeAmp * in.edge, 0.0f, 1.0f);
 
     // Nieve estacional: persiste donde la temperatura de la escena (con la
     // radiación que la funde) queda bajo la temperatura de equilibrio que
@@ -365,10 +434,19 @@ EcoProbe::EcoProbe(const TerrainData& data, std::vector<float> twi)
     sun_sin_alt_ = std::sin(alt);
     denudation_ = data.lem_stats.denudation;
     if (!denudation_.empty() && data.litho_res >= 2) {
-        // El último paso del LEM es ruidoso celda a celda (barridos
-        // Gauss-Seidel): media de ~2 celdas macro.
+        // Media de ~2 celdas macro: el suelo integra la denudación de su
+        // entorno, no la de una celda de 10 m.
         box_blur(denudation_, data.litho_res, 2, 1);
     }
+
+    const Heightfield& hf = data.height;
+    const float cell = hf.cell_size();
+    smooth_h_ = hf.data();
+    box_blur(smooth_h_, hf.resolution(),
+             static_cast<int>(std::lround(kSmoothRadiusM / cell)), 2);
+    slope_step_ = std::max(1, static_cast<int>(std::lround(kSlopeHalfM / cell)));
+    curv_step_ = std::max(1, static_cast<int>(std::lround(kCurvHalfM / cell)));
+    compute_wind_exposure();
 }
 
 float EcoProbe::grid_at(const std::vector<float>& grid, int gres, int x, int z,
@@ -381,35 +459,125 @@ float EcoProbe::grid_at(const std::vector<float>& grid, int gres, int x, int z,
     return bilinear(grid, gres, static_cast<float>(x) * k, static_cast<float>(z) * k);
 }
 
+float EcoProbe::smooth_at(int x, int z) const {
+    const int res = data_->height.resolution();
+    x = std::clamp(x, 0, res - 1);
+    z = std::clamp(z, 0, res - 1);
+    return smooth_h_[static_cast<std::size_t>(z) * static_cast<std::size_t>(res)
+                     + static_cast<std::size_t>(x)];
+}
+
 float EcoProbe::convexity_at(int x, int z) const {
-    const Heightfield& hf = data_->height;
-    const int res = hf.resolution();
-    const int k = kCurvStep;
-    const float h = hf.at(x, z);
-    const float sum = hf.at(std::max(x - k, 0), z) + hf.at(std::min(x + k, res - 1), z)
-                    + hf.at(x, std::max(z - k, 0)) + hf.at(x, std::min(z + k, res - 1));
-    const float d = static_cast<float>(k) * hf.cell_size();
-    const float lap = (sum - 4.0f * h) / (d * d);
+    const int k = curv_step_;
+    const float sum = smooth_at(x - k, z) + smooth_at(x + k, z) + smooth_at(x, z - k)
+                    + smooth_at(x, z + k);
+    const float d = static_cast<float>(k) * data_->height.cell_size();
+    const float lap = (sum - 4.0f * smooth_at(x, z)) / (d * d);
     return glm::clamp(-lap * kCurvLengthM, -2.0f, 2.0f);
 }
 
-// Normal a escala de ladera (~20 m): retención de suelo y de nieve, radiación
-// y exposición las decide la ladera, no la rugosidad de un vértice (que
-// dejaba peines de roca/hierba/nieve en cada surco de las gotas de erosión).
+// Normal a escala de ladera: retención de suelo y de nieve, radiación y
+// exposición las decide la ladera, no un surco de las gotas de erosión (que
+// dejaba peines de roca/hierba/nieve de 1-3 celdas).
 glm::vec3 EcoProbe::hillslope_normal_at(int x, int z) const {
-    const Heightfield& hf = data_->height;
-    const int res = hf.resolution();
-    const int k = kSlopeStep;
+    const int res = data_->height.resolution();
+    const int k = slope_step_;
     const int x0 = std::max(x - k, 0);
     const int x1 = std::min(x + k, res - 1);
     const int z0 = std::max(z - k, 0);
     const int z1 = std::min(z + k, res - 1);
-    const float cell = hf.cell_size();
-    const float gx = (hf.at(x1, z) - hf.at(x0, z))
+    const float cell = data_->height.cell_size();
+    const float gx = (smooth_at(x1, z) - smooth_at(x0, z))
                    / (static_cast<float>(std::max(x1 - x0, 1)) * cell);
-    const float gz = (hf.at(x, z1) - hf.at(x, z0))
+    const float gz = (smooth_at(x, z1) - smooth_at(x, z0))
                    / (static_cast<float>(std::max(z1 - z0, 1)) * cell);
     return glm::normalize(glm::vec3{-gx, 1.0f, -gz});
+}
+
+// Exposición al viento por TOPEX: ángulo máximo del horizonte hasta ~1 km en
+// 8 direcciones (el mar cuenta a su nivel). La dirección de barlovento pesa
+// más: una ladera de sotavento tiene la cresta encima, una de barlovento
+// mira al vacío. Grid propio de ≤ 512² sobre el relieve suavizado.
+void EcoProbe::compute_wind_exposure() {
+    const Heightfield& hf = data_->height;
+    const int res = hf.resolution();
+    const int g = std::min(res, kExposureRes);
+    exposure_res_ = g;
+    if (g < 2) {
+        return;
+    }
+    const float sea = data_->config.sea_level;
+    const float cell = hf.size() / static_cast<float>(g - 1);
+    const float to_fine = static_cast<float>(res - 1) / static_cast<float>(g - 1);
+    const std::size_t n = static_cast<std::size_t>(g) * static_cast<std::size_t>(g);
+    std::vector<float> h(n);
+    const auto rows = iota_rows(g);
+    std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
+        for (int x = 0; x < g; ++x) {
+            h[static_cast<std::size_t>(z) * static_cast<std::size_t>(g)
+              + static_cast<std::size_t>(x)] =
+                std::max(bilinear(smooth_h_, res, static_cast<float>(x) * to_fine,
+                                  static_cast<float>(z) * to_fine),
+                         sea);
+        }
+    });
+
+    constexpr int kDirs = 8;
+    constexpr int kDx[kDirs] = {1, 1, 0, -1, -1, -1, 0, 1};
+    constexpr int kDz[kDirs] = {0, 1, 1, 1, 0, -1, -1, -1};
+    const glm::vec2 wind = data_->wind;
+    const bool has_wind = glm::length(wind) > 0.5f;
+    std::array<float, kDirs> up_w{};
+    if (has_wind) {
+        const float up = std::atan2(-wind.y, -wind.x);
+        float sum = 0.0f;
+        for (int d = 0; d < kDirs; ++d) {
+            const float a = static_cast<float>(d) * kPi * 0.25f;
+            const float diff = std::abs(std::remainder(a - up, 2.0f * kPi));
+            up_w[static_cast<std::size_t>(d)] = std::max(0.0f, 1.0f - diff / (kPi * 0.25f));
+            sum += up_w[static_cast<std::size_t>(d)];
+        }
+        for (float& w : up_w) {
+            w /= std::max(sum, 1e-6f);
+        }
+    }
+    const int steps = std::max(1, static_cast<int>(std::lround(kTopexRadiusM / cell)));
+
+    exposure_.assign(n, 0.5f);
+    std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
+        for (int x = 0; x < g; ++x) {
+            const std::size_t i = static_cast<std::size_t>(z) * static_cast<std::size_t>(g)
+                                + static_cast<std::size_t>(x);
+            float mean_deg = 0.0f;
+            float up_deg = 0.0f;
+            for (int d = 0; d < kDirs; ++d) {
+                const float step_m = cell * ((kDx[d] != 0 && kDz[d] != 0) ? 1.4142f : 1.0f);
+                float best = -1e9f;
+                for (int s = 1; s <= steps; ++s) {
+                    const int xx = x + kDx[d] * s;
+                    const int zz = z + kDz[d] * s;
+                    if (xx < 0 || zz < 0 || xx >= g || zz >= g) {
+                        break;
+                    }
+                    const float dh = h[static_cast<std::size_t>(zz) * static_cast<std::size_t>(g)
+                                       + static_cast<std::size_t>(xx)]
+                                   - h[i];
+                    best = std::max(best, dh / (static_cast<float>(s) * step_m));
+                }
+                const float deg = best > -1e8f ? std::atan(best) * 180.0f / kPi : 0.0f;
+                mean_deg += deg / static_cast<float>(kDirs);
+                up_deg += up_w[static_cast<std::size_t>(d)] * deg;
+            }
+            const float index = has_wind ? kTopexUpShare * up_deg
+                                               + (1.0f - kTopexUpShare) * mean_deg
+                                         : mean_deg;
+            exposure_[i] = 1.0f - smooth01(kExposedDeg, kShelterDeg, index);
+        }
+    });
+}
+
+float EcoProbe::wind_exposure_at(int x, int z) const {
+    return grid_at(exposure_, exposure_res_, x, z, 0.5f);
 }
 
 float EcoProbe::wind_facing(const glm::vec3& n) const {
@@ -438,153 +606,11 @@ EcoInputs EcoProbe::inputs_at(int x, int z) const {
     const float shadow = grid_at(d.shadow, d.light_res, x, z, 1.0f);
     in.radiation = 0.65f * direct * (0.5f + 0.5f * shadow)
                  + 0.35f * grid_at(d.sky_ao, d.light_res, x, z, 1.0f);
-    in.windward = glm::clamp(-2.0f * wind_facing(n), 0.0f, 1.0f);
+    in.wind_exposure = wind_exposure_at(x, z);
     in.convexity = convexity_at(x, z);
     in.denudation = grid_at(denudation_, d.litho_res, x, z, 0.0f);
     in.alluvium_m = grid_at(d.lem_stats.alluvium_m, d.litho_res, x, z, 0.0f);
     return in;
-}
-
-EcologyReport ecology_report(const TerrainData& data) {
-    EcologyReport rep;
-    const Heightfield& hf = data.height;
-    const int res = hf.resolution();
-    const float sea = data.config.sea_level;
-
-    std::array<std::size_t, kMaterialCount> counts{};
-    std::size_t land = 0;
-    for (std::size_t i = 0; i < data.material.size(); ++i) {
-        if (hf.data()[i] > sea) {
-            ++counts[static_cast<std::size_t>(data.material[i])];
-            ++land;
-        }
-    }
-    for (std::size_t m = 0; m < kMaterialCount; ++m) {
-        rep.land_pct[m] =
-            land ? 100.0 * static_cast<double>(counts[m]) / static_cast<double>(land) : 0.0;
-    }
-
-    const EcoProbe probe(data, topographic_wetness(hf, data.hydrology.flow));
-
-    constexpr int kStride = 3;
-    constexpr float kBandM = 25.0f;
-    constexpr int kBands = 160;
-    struct Acc {
-        std::array<std::size_t, kBands> veg{};
-        std::array<std::size_t, kBands> forest{};
-        std::vector<float> forest_h;
-        std::vector<float> snow_h;
-        std::size_t cells = 0;
-    };
-    Acc acc[4];  // barlovento, sotavento, solana, umbría
-    std::vector<float> f_forest, f_twi, f_precip, q_precip, q_twi, q_den, q_lem;
-    std::vector<float> l_forest, l_precip;
-    const float low_m = 0.6f * data.config.treeline_m;
-    std::size_t rock_cvx = 0, n_cvx = 0, rock_ccv = 0, n_ccv = 0;
-
-    for (int z = 1; z < res - 1; z += kStride) {
-        for (int x = 1; x < res - 1; x += kStride) {
-            const std::size_t i = static_cast<std::size_t>(z) * static_cast<std::size_t>(res)
-                                + static_cast<std::size_t>(x);
-            if (hf.data()[i] <= sea) {
-                continue;
-            }
-            const Material m = data.material[i];
-            const bool veg_domain = m == Material::Grass || m == Material::Forest
-                                 || m == Material::Rock || m == Material::Snow;
-            if (!veg_domain) {
-                continue;
-            }
-            const glm::vec3 n = probe.hillslope_normal_at(x, z);
-            const EcoInputs in = probe.inputs_at(x, z);
-            q_precip.push_back(in.precip);
-            if (!data.lem_stats.rain.empty() && data.litho_res >= 2) {
-                const float k = static_cast<float>(data.litho_res - 1)
-                              / static_cast<float>(res - 1);
-                q_lem.push_back(bilinear(data.lem_stats.rain, data.litho_res,
-                                         static_cast<float>(x) * k,
-                                         static_cast<float>(z) * k));
-            }
-            q_twi.push_back(in.twi);
-            q_den.push_back(in.denudation);
-            if (m == Material::Grass || m == Material::Forest) {
-                f_forest.push_back(data.forest_density[i]);
-                f_twi.push_back(in.twi);
-                f_precip.push_back(in.precip);
-                if (in.height_m < low_m) {
-                    l_forest.push_back(data.forest_density[i]);
-                    l_precip.push_back(in.precip);
-                }
-            }
-            if (in.slope > 0.3f && in.slope < 0.6f) {
-                if (in.convexity > 0.3f) {
-                    ++n_cvx;
-                    rock_cvx += m == Material::Rock ? 1 : 0;
-                } else if (in.convexity < -0.3f) {
-                    ++n_ccv;
-                    rock_ccv += m == Material::Rock ? 1 : 0;
-                }
-            }
-            const float wf = probe.wind_facing(n);
-            const float sf = probe.sun_facing(n);
-            const bool member[4] = {wf < -0.15f, wf > 0.15f, sf > 0.15f, sf < -0.15f};
-            const int band = std::clamp(static_cast<int>(in.height_m / kBandM), 0, kBands - 1);
-            for (int g = 0; g < 4; ++g) {
-                if (!member[g]) {
-                    continue;
-                }
-                Acc& a = acc[g];
-                ++a.cells;
-                ++a.veg[static_cast<std::size_t>(band)];
-                if (m == Material::Forest) {
-                    ++a.forest[static_cast<std::size_t>(band)];
-                    a.forest_h.push_back(in.height_m);
-                } else if (m == Material::Snow) {
-                    a.snow_h.push_back(in.height_m);
-                }
-            }
-        }
-    }
-
-    rep.precip_q = quantiles(q_precip);
-    rep.lem_rain_q = quantiles(q_lem);
-    rep.twi_q = quantiles(q_twi);
-    rep.denudation_q = quantiles(q_den);
-    rep.spearman_forest_twi = spearman(f_forest, f_twi);
-    rep.spearman_forest_precip = spearman(f_forest, f_precip);
-    rep.spearman_forest_precip_low = spearman(l_forest, l_precip);
-    rep.rock_convex_pct = n_cvx ? 100.0 * static_cast<double>(rock_cvx) / static_cast<double>(n_cvx) : 0.0;
-    rep.rock_concave_pct = n_ccv ? 100.0 * static_cast<double>(rock_ccv) / static_cast<double>(n_ccv) : 0.0;
-
-    EcologyReport::Group* groups[4] = {&rep.windward, &rep.leeward, &rep.sunny, &rep.shady};
-    for (int g = 0; g < 4; ++g) {
-        const Acc& a = acc[g];
-        EcologyReport::Group& out = *groups[g];
-        out.cells = a.cells;
-        // Umbral RELATIVO a la cobertura máxima del grupo: la sombra de
-        // lluvia baja la cobertura a todas las cotas y un 25 % absoluto
-        // confundía sequedad con límite térmico.
-        double f_max = 0.0;
-        for (int b = 0; b < kBands; ++b) {
-            const auto bi = static_cast<std::size_t>(b);
-            if (a.veg[bi] >= 50) {
-                f_max = std::max(f_max, static_cast<double>(a.forest[bi])
-                                            / static_cast<double>(a.veg[bi]));
-            }
-        }
-        for (int b = kBands - 1; b >= 0 && f_max > 0.0; --b) {
-            const auto bi = static_cast<std::size_t>(b);
-            if (a.veg[bi] >= 50
-                && static_cast<double>(a.forest[bi])
-                       >= 0.25 * f_max * static_cast<double>(a.veg[bi])) {
-                out.treeline_m = (static_cast<float>(b) + 0.5f) * kBandM;
-                break;
-            }
-        }
-        out.forest_p95_m = quantile(a.forest_h, 0.95f);
-        out.snow_p10_m = quantile(a.snow_h, 0.10f);
-    }
-    return rep;
 }
 
 } // namespace terrain

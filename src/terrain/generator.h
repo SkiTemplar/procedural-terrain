@@ -74,7 +74,8 @@ struct TerrainData {
     std::vector<float> precipitation;
     int precip_res = 0;
     // Déficit hídrico del suelo [0,1] en el mismo grid que la precipitación
-    // (lluvia × TWI × radiación): agostado de la hierba en la paleta.
+    // (1 − ET/PET del balance de Budyko con la recarga lateral del TWI):
+    // agostado de la hierba en la paleta.
     std::vector<float> dryness;
     TerrainConfig config;
 };

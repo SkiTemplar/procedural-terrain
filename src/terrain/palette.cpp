@@ -152,18 +152,20 @@ glm::vec3 Palette::ground(Material m, float forest_density, float climate,
     if (m == Material::Grass || m == Material::Forest) {
         c = glm::mix(material_color(Material::Grass),
                      material_color(Material::Forest), forest_density);
-        // Calvas agostadas donde el suelo pierde el agua (crestas, solanas,
-        // sombra de lluvia); el bosque denso protege: viven en los claros.
+        // Calvas agostadas donde el balance hídrico deja déficit (1 − ET/PET:
+        // solanas de cresta, sombra de lluvia); en el clima hiperoceánico la
+        // mediana es ~0.05, así que la escala arranca en 0.12. El bosque
+        // denso protege: viven en los claros.
         const float deficit = dryness_at(cx, cz);
         const float patch =
-            glm::smoothstep(0.40f, 0.75f, deficit) * (1.0f - 0.8f * forest_density);
+            glm::smoothstep(0.12f, 0.35f, deficit) * (1.0f - 0.8f * forest_density);
         // La hierba se agosta subiendo hacia el límite del bosque (frío).
         const float alt_dry =
             glm::clamp((y - sea_level_ - 0.30f * tree_line_)
                            / (0.70f * tree_line_),
                        0.0f, 1.0f);
         const float dryness = glm::clamp(
-            alt_dry * 0.30f + 0.15f * deficit + 0.55f * patch, 0.0f, 0.85f);
+            alt_dry * 0.30f + 0.30f * deficit + 0.55f * patch, 0.0f, 0.85f);
         c = glm::mix(c, glm::vec3{0.62f, 0.55f, 0.31f}, dryness);
     } else if (m == Material::Sand) {
         // Arena común (dorada) por defecto; la blanca caribeña solo en el

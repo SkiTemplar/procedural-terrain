@@ -25,6 +25,7 @@ add_library(terrain_gen STATIC
         src/terrain/riverscape.cpp
         src/terrain/coast.cpp
         src/terrain/ecology.cpp
+        src/terrain/ecology_report.cpp
         src/terrain/generator.cpp
         src/terrain/detail.cpp
         src/terrain/lem.cpp
@@ -85,6 +86,8 @@ find_package(GTest CONFIG REQUIRED)
 add_executable(terrain_tests tests/terrain_tests.cpp tests/golden_tests.cpp
         tests/ecology_tests.cpp)
 target_link_libraries(terrain_tests PRIVATE terrain_gen GTest::gtest_main)
+target_compile_definitions(terrain_tests PRIVATE
+        PT_PRESET_DIR="${CMAKE_SOURCE_DIR}/presets")
 
 include(GoogleTest)
 gtest_discover_tests(terrain_tests)
