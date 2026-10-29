@@ -41,12 +41,15 @@ struct TerrainConfig {
     float erosion_deposit = 0.30f;  // deposit rate
     float erosion_inertia = 0.10f;
 
-    // Erosión térmica (pedreras, faldas al pie de la montaña). Moderada:
-    // la agresiva (32 iter, 37°) planchaba el carácter del relieve original.
-    // El talus debe quedar POR ENCIMA de la pendiente de cabecera del LEM
-    // (~42°): si no, la térmica desmocha los paredones tipo Matterhorn.
-    int thermal_iterations = 3;
-    float talus_slope = 1.00f; // tan del ángulo de reposo (45°)
+    // Resistencia de la roca: pendiente crítica de la formación MEDIA (tan;
+    // la dura aguanta ×1.2 ≈ 50°, la blanda ×0.84 ≈ 40°). Por encima, la
+    // térmica de 8 vecinos la relaja (hasta estabilidad, como mucho
+    // thermal_iterations pasadas) y los desprendimientos (rockfall.h) la
+    // descargan en canchales al pie. Debe quedar POR ENCIMA de la pendiente
+    // de cabecera del LEM (~42°): si no, desmocha los paredones tipo
+    // Matterhorn. El derrubio suelto solo aguanta su reposo (33-37°).
+    int thermal_iterations = 12;
+    float talus_slope = 1.00f; // tan crítica de la roca media (45°)
 
     // Costa: comprime las alturas bajas → playas anchas y planas. 25 m:
     // con 40 la rampa arena→hierba se veía como un degradado artificial.

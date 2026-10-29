@@ -564,8 +564,13 @@ void shape_coast(TerrainData& data, const TerrainConfig& cfg) {
 // la altitud (borde irregular), la pendiente (las paredes no acumulan), la
 // orientación (las umbrías conservan nieve más abajo) y parches de ruido.
 // La vegetación pierde altura por pisos: bosque → pradera alpina → roca.
+// `talus_m` (espesor de derrubio de rockfall_talus, vacío = sin canchales)
+// marca las pedreras: Gravel fuera de la banda litoral.
+constexpr float kScreeMinDepthM = 0.3f; // menos: derrubio disperso bajo suelo
+constexpr float kScreeMaxSlope = 1.0f;  // más empinado ya es la pared misma
 void classify_materials(TerrainData& data, const Noise& noise,
-                        const CoastExposure& coast) {
+                        const CoastExposure& coast,
+                        const std::vector<float>& talus_m) {
     const auto& cfg = data.config;
     const auto& hf = data.height;
     const int res = hf.resolution();
@@ -772,6 +777,12 @@ void classify_materials(TerrainData& data, const Noise& noise,
                 // agarrar, da igual la altitud.
                 if (snow_score > 0.0f && slope < 1.15f) {
                     m = Material::Snow;
+                } else if (!talus_m.empty() && talus_m[i] >= kScreeMinDepthM
+                           && slope < kScreeMaxSlope && !riparian[i]) {
+                    // Canchal: derrubio de desprendimiento al pie de la pared,
+                    // demasiado activo para que agarre suelo o vegetación. En
+                    // la ribera el río se lo lleva (y la orilla sigue de arena).
+                    m = Material::Gravel;
                 } else if (slope > cfg.rock_slope) {
                     m = Material::Rock;
                 } else if (h > treeline) {
@@ -1067,7 +1078,19 @@ TerrainData generate(const TerrainConfig& cfg,
     report("erosion hidraulica");
     erode(data.height, cfg);
     report("erosion termica");
-    thermal_erode(data.height, cfg.thermal_iterations, cfg.talus_slope);
+    // Resistencia por formación a resolución fina: la roca dura sostiene más
+    // pendiente que la blanda y su derrubio traba a más ángulo de reposo.
+    std::vector<float> rock_crit = upsample_bilinear(
+        data.lithology, data.litho_res, data.height.resolution());
+    std::vector<float> repose(rock_crit.size());
+    for (size_t i = 0; i < rock_crit.size(); ++i) {
+        repose[i] = kD8MeanSteepness * debris_repose_tan(rock_crit[i]);
+        rock_crit[i] = kD8MeanSteepness * rock_strength_factor(rock_crit[i]);
+    }
+    thermal_erode(data.height, cfg.thermal_iterations, cfg.talus_slope, rock_crit);
+    for (float& c : rock_crit) {
+        c *= cfg.talus_slope; // de factor relativo a tan crítica absoluta
+    }
     smooth_peaks(data.height, 2, 1.2f);
     sharpen_crags(data.height, noise);
     // Recorta las agujas de un vértice que dejan el LEM/sharpen (feedback
@@ -1077,10 +1100,23 @@ TerrainData generate(const TerrainConfig& cfg,
     shape_coast(data, cfg);
     report("hidrologia");
     data.hydrology = compute_hydrology(data.height, cfg, noise);
+    // Desprendimientos con la red de agua ya hecha: lo que cae a un río, a un
+    // lago o a la batida del oleaje se lo lleva el agua (no hay presas de
+    // canchal) y la lámina calculada sigue siendo válida.
+    report("desprendimientos");
+    std::vector<float> talus_m;
+    if (rock_crit.size() == data.height.data().size()) {
+        RockfallResult fall = rockfall_talus(data.height, rock_crit, repose,
+                                             data.hydrology.water_level, cfg.sea_level);
+        data.rockfall_stats = fall.stats;
+        talus_m = std::move(fall.talus_m);
+    }
+    rock_crit = {};
+    repose = {};
     report("oleaje");
     CoastExposure coast = compute_coast_exposure(data.height, data.hydrology, cfg);
     report("materiales");
-    classify_materials(data, noise, coast);
+    classify_materials(data, noise, coast, talus_m);
     data.wave_energy = std::move(coast.wave_energy);
     report("luz");
     compute_lighting(data, cfg);

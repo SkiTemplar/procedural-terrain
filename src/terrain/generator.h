@@ -3,6 +3,7 @@
 #include "terrain/heightfield.h"
 #include "terrain/hydrology.h"
 #include "terrain/lem.h"
+#include "terrain/rockfall.h"
 #include "terrain/terrain_config.h"
 
 #include <cstdint>
@@ -57,6 +58,7 @@ struct TerrainData {
     std::vector<float> shadow;           // [0,1] luz directa del sol (1=al sol)
     std::vector<float> sky_ao;           // [0,1] visibilidad de cielo (1=abierto)
     LemStats lem_stats;                  // balance de sedimento del LEM (dump)
+    RockfallStats rockfall_stats;        // desprendimientos y canchales (dump)
     int light_res = 0;
     TerrainConfig config;
 };

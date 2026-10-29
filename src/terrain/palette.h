@@ -31,8 +31,11 @@ private:
 
     float lithology_at(float wx, float wz) const;    // bilineal, grid macro
     float water_level_near(float wx, float wz) const; // NaN si no hay agua
+    bool littoral_near(float wx, float wz) const;     // banda de oleaje
+    glm::vec3 rock_base(float y, float climate, float cx, float cz) const;
     glm::vec3 rock(float y, float climate, float wx, float wz,
                    float cx, float cz) const;
+    glm::vec3 scree(float y, float climate, float cx, float cz) const;
     glm::vec3 snow(float y) const;
 };
 

@@ -494,6 +494,23 @@ void print_landform_stats(const terrain::TerrainData& data) {
               << " km2), moda de pendiente tan " << st.scree_slope_mode_tan
               << "; pie de pared " << st.wall_foot_cells << " celdas, canchal "
               << pct(st.wall_foot_scree, st.wall_foot_cells) << " %" << std::endl;
+    std::cout << "  pendiente del canchal (tan, % por bin de "
+              << terrain::LandformStats::kScreeSlopeBinTan << "):";
+    for (std::size_t b = 0; b < terrain::LandformStats::kScreeSlopeBins; ++b) {
+        const double p = pct(st.scree_slope_bins[b], st.scree_cells);
+        if (p >= 0.5) {
+            std::cout << ' ' << static_cast<float>(b) * terrain::LandformStats::kScreeSlopeBinTan
+                      << ':' << static_cast<int>(p + 0.5);
+        }
+    }
+    std::cout << std::endl;
+    std::cout << "  perfil del canchal: concavo " << pct(st.scree_concave, st.scree_cells)
+              << " %, convexo " << pct(st.scree_convex, st.scree_cells) << " %" << std::endl;
+    const terrain::RockfallStats& rf = data.rockfall_stats;
+    std::cout << "desprendimientos: " << rf.source_cells
+              << " celdas de pared en el 1er episodio, desprendido " << rf.detached_m3
+              << " m3, depositado " << rf.deposited_m3 << " m3, evacuado por el agua "
+              << rf.evacuated_m3 << " m3" << std::endl;
 }
 
 // Dump de verificación de costa (criterio §7-A del plan): mapa de materiales
@@ -503,8 +520,12 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
     if (seed) {
         cfg.seed = *seed;
     }
-    const auto data = terrain::generate(cfg, [](const char* phase) {
-        std::cout << "  " << phase << std::endl;
+    // Cada fase con el tiempo transcurrido desde el arranque: el coste de una
+    // fase es la diferencia con la siguiente.
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto data = terrain::generate(cfg, [t0](const char* phase) {
+        const std::chrono::duration<double> t = std::chrono::steady_clock::now() - t0;
+        std::cout << "  [" << t.count() << " s] " << phase << std::endl;
     });
     const int res = data.height.resolution();
     const size_t n = data.material.size();
@@ -889,10 +910,13 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
 
         // Histograma de regímenes de orilla (espejo del log del modo ventana):
         // la calibración de marisma/arena/grava se mide aquí sin abrir GL.
+        // La grava cuenta solo en la banda litoral: tierra adentro es canchal
+        // (va en la línea de pedreras).
         size_t n_sand = 0, n_gravel = 0, n_marsh = 0;
-        for (const auto mtl : data.material) {
+        for (size_t i = 0; i < data.material.size(); ++i) {
+            const auto mtl = data.material[i];
             n_sand += mtl == terrain::Material::Sand ? 1 : 0;
-            n_gravel += mtl == terrain::Material::Gravel ? 1 : 0;
+            n_gravel += mtl == terrain::Material::Gravel && data.wave_energy[i] > 0.0f ? 1 : 0;
             n_marsh += mtl == terrain::Material::Marsh ? 1 : 0;
         }
         std::cout << "orillas: arena " << n_sand << " grava " << n_gravel

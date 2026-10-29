@@ -17,8 +17,8 @@ constexpr float kTan55 = 1.4281480f;
 // Histograma fino de pendiente para percentiles por formación (tan 0..4).
 constexpr int kFineBins = 400;
 constexpr float kFineBinTan = 0.01f;
-constexpr int kScreeModeBins = 30; // tan 0..1.5 en pasos de 0.05
-constexpr float kScreeModeBinTan = 0.05f;
+constexpr int kScreeModeBins = static_cast<int>(LandformStats::kScreeSlopeBins);
+constexpr float kScreeModeBinTan = LandformStats::kScreeSlopeBinTan;
 
 struct Grid {
     const TerrainData& data;
@@ -91,13 +91,37 @@ float percentile_from_bins(const std::vector<std::size_t>& bins, std::size_t tot
     return static_cast<float>(bins.size()) * kFineBinTan;
 }
 
+constexpr int kDx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+constexpr int kDz[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+
+float neighbour_dist(int k) {
+    return (kDx[k] != 0 && kDz[k] != 0) ? 1.41421356f : 1.0f;
+}
+
+// Vecino interior de máximo descenso (caída / distancia real), -1 si no baja.
+int steepest_neighbour(const Grid& g, int x, int z) {
+    int best = -1;
+    float best_drop = 0.0f;
+    for (int k = 0; k < 8; ++k) {
+        const int nx = x + kDx[k];
+        const int nz = z + kDz[k];
+        if (nx < 1 || nz < 1 || nx >= g.res - 1 || nz >= g.res - 1) {
+            continue;
+        }
+        const float drop = (g.h(x, z) - g.h(nx, nz)) / neighbour_dist(k);
+        if (drop > best_drop) {
+            best_drop = drop;
+            best = k;
+        }
+    }
+    return best;
+}
+
 // Marca el pie de cada pared: se baja por máxima pendiente (8 vecinos,
 // distancia diagonal real) hasta kFootRunM y se marcan las celdas de tierra
 // con pendiente de no-roca. Solo lectura del relieve final.
 void mark_wall_feet(const Grid& g, const std::vector<float>& slope,
                     std::vector<std::uint8_t>& foot) {
-    static constexpr int kDx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
-    static constexpr int kDz[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
     const int res = g.res;
     for (int z = 1; z < res - 1; ++z) {
         for (int x = 1; x < res - 1; ++x) {
@@ -108,25 +132,11 @@ void mark_wall_feet(const Grid& g, const std::vector<float>& slope,
             int cz = z;
             float run = 0.0f;
             while (run < LandformStats::kFootRunM) {
-                int best = -1;
-                float best_drop = 0.0f;
-                for (int k = 0; k < 8; ++k) {
-                    const int nx = cx + kDx[k];
-                    const int nz = cz + kDz[k];
-                    if (nx < 1 || nz < 1 || nx >= res - 1 || nz >= res - 1) {
-                        continue;
-                    }
-                    const float d = (kDx[k] != 0 && kDz[k] != 0) ? 1.41421356f : 1.0f;
-                    const float drop = (g.h(cx, cz) - g.h(nx, nz)) / d;
-                    if (drop > best_drop) {
-                        best_drop = drop;
-                        best = k;
-                    }
-                }
+                const int best = steepest_neighbour(g, cx, cz);
                 if (best < 0) {
                     break;
                 }
-                run += g.cell * ((kDx[best] != 0 && kDz[best] != 0) ? 1.41421356f : 1.0f);
+                run += g.cell * neighbour_dist(best);
                 cx += kDx[best];
                 cz += kDz[best];
                 if (!g.is_land(cx, cz)) {
@@ -155,7 +165,7 @@ LandformStats compute_landform_stats(const TerrainData& data) {
     for (auto& f : fine) {
         f.assign(kFineBins, 0);
     }
-    std::vector<std::size_t> scree_bins(kScreeModeBins, 0);
+    auto& scree_bins = st.scree_slope_bins;
 
     for (int z = 1; z < res - 1; ++z) {
         for (int x = 1; x < res - 1; ++x) {
@@ -200,11 +210,21 @@ LandformStats compute_landform_stats(const TerrainData& data) {
     mark_wall_feet(g, slope, foot);
     for (int z = 1; z < res - 1; ++z) {
         for (int x = 1; x < res - 1; ++x) {
-            if (foot[g.idx(x, z)] == 0) {
+            if (foot[g.idx(x, z)] != 0) {
+                ++st.wall_foot_cells;
+                st.wall_foot_scree += g.is_scree(x, z) ? 1 : 0;
+            }
+            if (!g.is_land(x, z) || !g.is_scree(x, z)) {
                 continue;
             }
-            ++st.wall_foot_cells;
-            st.wall_foot_scree += g.is_scree(x, z) ? 1 : 0;
+            const int k = steepest_neighbour(g, x, z);
+            if (k < 0) {
+                continue;
+            }
+            const float s_here = slope[g.idx(x, z)];
+            const float s_down = slope[g.idx(x + kDx[k], z + kDz[k])];
+            st.scree_concave += s_down < s_here - LandformStats::kProfileEpsTan ? 1 : 0;
+            st.scree_convex += s_down > s_here + LandformStats::kProfileEpsTan ? 1 : 0;
         }
     }
     return st;

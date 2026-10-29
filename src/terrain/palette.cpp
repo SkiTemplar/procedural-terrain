@@ -19,6 +19,9 @@ constexpr float kSeaDepthRange = 25.0f;   // m de calado que saturan el oscureci
 constexpr float kFreshDepthRange = 10.0f; // m de calado para lechos de lago/río
 constexpr float kShoreRockBand = 8.0f;    // m sobre el mar: roca lamida, gris fregado
 constexpr float kSnowTintKeep = 0.35f;    // fracción del moteado que conserva la nieve
+constexpr glm::vec3 kScreeFresh{0.66f, 0.64f, 0.60f}; // fractura fresca de canchal
+constexpr float kScreeFreshMix = 0.35f;
+constexpr float kScreeBrighten = 1.05f;
 
 // Estratos de roca SIN coherencia global (auditoría 2026-07-09): antes un seno
 // puro de la cota en fase global pintaba las MISMAS bandas horizontales a las
@@ -114,8 +117,7 @@ float Palette::water_level_near(float wx, float wz) const {
 // notablemente MÁS OSCURA que la nieve — sin ese contraste las cumbres
 // fundían en un blanco uniforme. El matiz cálido↔frío por zonas sale de la
 // litología del LEM: formación blanda (sedimentaria) cálida, dura fría.
-glm::vec3 Palette::rock(float y, float climate, float wx, float wz,
-                        float cx, float cz) const {
+glm::vec3 Palette::rock_base(float y, float climate, float cx, float cz) const {
     const float alt_k =
         glm::clamp((y - sea_level_ - rock_low_) / rock_span_, 0.0f, 1.0f);
     glm::vec3 c = glm::mix(glm::vec3{0.53f, 0.46f, 0.36f},
@@ -123,8 +125,38 @@ glm::vec3 Palette::rock(float y, float climate, float wx, float wz,
     // El sector cálido tira a ocre; el frío se queda neutro.
     c = glm::mix(c, glm::vec3{0.56f, 0.48f, 0.36f},
                  0.22f * climate * (1.0f - alt_k));
-    c *= glm::mix(glm::vec3{0.93f, 0.98f, 1.08f},
-                  glm::vec3{1.10f, 1.00f, 0.88f}, lithology_at(cx, cz));
+    return c * glm::mix(glm::vec3{0.93f, 0.98f, 1.08f},
+                        glm::vec3{1.10f, 1.00f, 0.88f}, lithology_at(cx, cz));
+}
+
+// Canchal de montaña: derrubio de la pared de encima, con su mismo matiz de
+// formación pero más claro (fractura fresca, sin pátina ni líquenes) y sin el
+// bandeado de estratos, que en un montón de bloques no existe.
+glm::vec3 Palette::scree(float y, float climate, float cx, float cz) const {
+    return glm::mix(rock_base(y, climate, cx, cz), kScreeFresh, kScreeFreshMix)
+         * kScreeBrighten;
+}
+
+bool Palette::littoral_near(float wx, float wz) const {
+    const auto& hf = data_->height;
+    const auto& wave = data_->wave_energy;
+    if (wave.size() != hf.data().size()) {
+        return false;
+    }
+    const int res = hf.resolution();
+    const float half = hf.size() * 0.5f;
+    const float inv_cell = 1.0f / hf.cell_size();
+    const int x = std::clamp(
+        static_cast<int>(std::round((wx + half) * inv_cell)), 0, res - 1);
+    const int z = std::clamp(
+        static_cast<int>(std::round((wz + half) * inv_cell)), 0, res - 1);
+    return wave[static_cast<size_t>(z) * static_cast<size_t>(res)
+                + static_cast<size_t>(x)] > 0.0f;
+}
+
+glm::vec3 Palette::rock(float y, float climate, float wx, float wz,
+                        float cx, float cz) const {
+    glm::vec3 c = rock_base(y, climate, cx, cz);
     // Banda de salpicadura: la roca lamida por el oleaje queda gris fregado,
     // sin tinte cálido ni formación — ahí no se deposita nada (misma regla
     // física que el clasificador de orilla), y el dithering roca↔grava de la
@@ -169,6 +201,9 @@ glm::vec3 Palette::ground(Material m, float forest_density, float climate,
                      glm::vec3{0.94f, 0.90f, 0.74f}, climate * climate);
     } else if (m == Material::Rock) {
         c = rock(y, climate, wx, wz, cx, cz);
+    } else if (m == Material::Gravel && !littoral_near(wx, wz)) {
+        c = scree(y, climate, cx, cz); // la grava de playa conserva su color
+
     } else if (m == Material::Snow) {
         c = snow(y);
     } else if (m == Material::Seabed) {

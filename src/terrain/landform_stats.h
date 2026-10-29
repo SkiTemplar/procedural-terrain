@@ -46,6 +46,16 @@ struct LandformStats {
     float scree_slope_mode_tan = 0.0f;
     std::size_t wall_foot_cells = 0;
     std::size_t wall_foot_scree = 0;
+    // Histograma de pendiente del canchal (tan, bins de 0.05 desde 0) y su
+    // perfil: cóncavo si la pendiente baja al pasar a la celda de aguas abajo
+    // (> kProfileEpsTan), convexo si sube. Un canchal real es cóncavo: los
+    // bloques grandes ruedan más lejos y tienden la base.
+    static constexpr std::size_t kScreeSlopeBins = 30;
+    static constexpr float kScreeSlopeBinTan = 0.05f;
+    static constexpr float kProfileEpsTan = 0.02f;
+    std::array<std::size_t, kScreeSlopeBins> scree_slope_bins{};
+    std::size_t scree_concave = 0;
+    std::size_t scree_convex = 0;
 };
 
 [[nodiscard]] LandformStats compute_landform_stats(const TerrainData& data);

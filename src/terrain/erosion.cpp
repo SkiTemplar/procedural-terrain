@@ -1,5 +1,7 @@
 #include "terrain/erosion.h"
 
+#include "terrain/rockfall.h"
+
 #include <glm/glm.hpp>
 
 #include <algorithm>
@@ -138,55 +140,19 @@ void erode(Heightfield& hf, const TerrainConfig& cfg) {
     }
 }
 
-void thermal_erode(Heightfield& hf, int iterations, float talus_slope) {
-    const int res = hf.resolution();
-    const float max_diff = talus_slope * hf.cell_size();
-    constexpr float kTransfer = 0.5f; // fracción del exceso que se desprende
-
-    std::vector<float> delta(static_cast<size_t>(res) * static_cast<size_t>(res));
-    const auto idx = [res](int x, int z) {
-        return static_cast<size_t>(z) * static_cast<size_t>(res) + static_cast<size_t>(x);
-    };
-
-    for (int it = 0; it < iterations; ++it) {
-        std::fill(delta.begin(), delta.end(), 0.0f);
-
-        for (int z = 1; z < res - 1; ++z) {
-            for (int x = 1; x < res - 1; ++x) {
-                const float h = hf.at(x, z);
-                // Reparto entre TODOS los vecinos que exceden el talus,
-                // proporcional al exceso: relaja paredes grandes mucho más
-                // rápido que verter solo al vecino más bajo.
-                float total_excess = 0.0f;
-                float excess[4] = {};
-                const std::pair<int, int> dirs[4] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
-                for (int n = 0; n < 4; ++n) {
-                    const float diff = h - hf.at(x + dirs[n].first, z + dirs[n].second);
-                    if (diff > max_diff) {
-                        excess[n] = diff - max_diff;
-                        total_excess += excess[n];
-                    }
-                }
-                if (total_excess <= 0.0f) {
-                    continue;
-                }
-                // Nunca mover más de la mitad del mayor exceso (estabilidad).
-                const float moved = kTransfer * 0.5f
-                    * std::max({excess[0], excess[1], excess[2], excess[3]});
-                delta[idx(x, z)] -= moved;
-                for (int n = 0; n < 4; ++n) {
-                    if (excess[n] > 0.0f) {
-                        delta[idx(x + dirs[n].first, z + dirs[n].second)] +=
-                            moved * excess[n] / total_excess;
-                    }
-                }
-            }
-        }
-
-        for (size_t i = 0; i < delta.size(); ++i) {
-            hf.data()[i] += delta[i];
+void thermal_erode(Heightfield& hf, int iterations, float talus_slope,
+                   const std::vector<float>& crit_scale) {
+    // 8 vecinos con distancia diagonal real (con 4 vecinos una pared diagonal
+    // aguantaba √2 veces más que una alineada con la rejilla) y pendiente
+    // crítica por celda: la roca dura sostiene más que la blanda.
+    std::vector<float> crit(hf.data().size(), talus_slope);
+    if (crit_scale.size() == crit.size()) {
+        for (size_t i = 0; i < crit.size(); ++i) {
+            crit[i] *= crit_scale[i];
         }
     }
+    constexpr float kStableEpsM = 0.01f; // pasada que mueve < 1 cm: estable
+    relax_slopes(hf, crit, iterations, kStableEpsM);
 }
 
 void smooth_peaks(Heightfield& hf, int passes, float slope_threshold) {

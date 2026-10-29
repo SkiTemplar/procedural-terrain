@@ -28,6 +28,7 @@ add_library(terrain_gen STATIC
         src/terrain/detail.cpp
         src/terrain/lem.cpp
         src/terrain/landform_stats.cpp
+        src/terrain/rockfall.cpp
         src/terrain/preset.cpp
 )
 target_include_directories(terrain_gen PUBLIC src)
@@ -82,7 +83,8 @@ endif ()
 enable_testing()
 find_package(GTest CONFIG REQUIRED)
 
-add_executable(terrain_tests tests/terrain_tests.cpp tests/golden_tests.cpp)
+add_executable(terrain_tests tests/terrain_tests.cpp tests/golden_tests.cpp
+        tests/rockfall_tests.cpp)
 target_link_libraries(terrain_tests PRIVATE terrain_gen GTest::gtest_main)
 
 include(GoogleTest)
