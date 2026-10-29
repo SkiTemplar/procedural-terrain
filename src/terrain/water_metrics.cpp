@@ -81,19 +81,21 @@ float angle_deg(const glm::vec2& a, const glm::vec2& b) {
 }
 
 // Ángulo de cada celda de río respecto a la dirección aguas abajo de su eje
-// más cercano (receptora D8 cruda del eje, propagada por BFS) y salto angular
-// entre vecinas. `dir_of(i)` da la corriente evaluada (vec2 nulo = sin dato).
+// más cercano y salto angular entre vecinas. La referencia del eje es la
+// CUERDA de 4 pasos D8 aguas abajo (no la receptora cruda, cuantizada a 45°:
+// en un cauce en escalera alterna E/S y no es la dirección del río), y se
+// propaga a la anchura mojada por BFS. `dir_of(i)` da la corriente evaluada
+// (vec2 nulo = sin dato).
 template <typename DirOf>
 FlowAngleStats angle_stats(const TerrainData& data, const Grid& g, float threshold,
                            const DirOf& dir_of) {
+    constexpr int kChordSteps = 4;
     const auto& hydro = data.hydrology;
     const size_t n = hydro.flow.size();
     const auto wet = [&](size_t i) {
         return !std::isnan(hydro.water_level[i]) && !hydro.lake[i];
     };
-    std::vector<glm::vec2> ref(n, glm::vec2{0.0f});
-    std::vector<std::uint8_t> seen(n, 0);
-    std::deque<size_t> queue;
+    std::vector<std::int8_t> receiver(n, -1);
     for (size_t i = 0; i < n; ++i) {
         if (!wet(i) || hydro.flow[i] < threshold) {
             continue;
@@ -101,19 +103,34 @@ FlowAngleStats angle_stats(const TerrainData& data, const Grid& g, float thresho
         const int x = static_cast<int>(i % static_cast<size_t>(g.res));
         const int z = static_cast<int>(i / static_cast<size_t>(g.res));
         float best_flow = hydro.flow[i];
-        int best = -1;
         for (int d = 0; d < 8; ++d) {
             if (g.inside(x + kDx[d], z + kDz[d])
                 && hydro.flow[g.at(x + kDx[d], z + kDz[d])] > best_flow) {
                 best_flow = hydro.flow[g.at(x + kDx[d], z + kDz[d])];
-                best = d;
+                receiver[i] = static_cast<std::int8_t>(d);
             }
         }
-        if (best >= 0) {
-            ref[i] = glm::vec2{static_cast<float>(kDx[best]), static_cast<float>(kDz[best])};
-            seen[i] = 1;
-            queue.push_back(i);
+    }
+    std::vector<glm::vec2> ref(n, glm::vec2{0.0f});
+    std::vector<std::uint8_t> seen(n, 0);
+    std::deque<size_t> queue;
+    for (size_t i = 0; i < n; ++i) {
+        if (receiver[i] < 0) {
+            continue;
         }
+        glm::ivec2 p{static_cast<int>(i % static_cast<size_t>(g.res)),
+                     static_cast<int>(i / static_cast<size_t>(g.res))};
+        const glm::ivec2 start = p;
+        for (int k = 0; k < kChordSteps; ++k) {
+            const std::int8_t d = receiver[g.at(p.x, p.y)];
+            if (d < 0) {
+                break;
+            }
+            p += glm::ivec2{kDx[d], kDz[d]};
+        }
+        ref[i] = glm::vec2(p - start);
+        seen[i] = 1;
+        queue.push_back(i);
     }
     while (!queue.empty()) {
         const size_t i = queue.front();

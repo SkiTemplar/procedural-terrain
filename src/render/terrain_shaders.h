@@ -313,18 +313,19 @@ constexpr const char* kWaterVert = R"glsl(
 #version 460 core
 layout (location = 0) in vec3 a_pos;
 layout (location = 1) in vec3 a_color;
-layout (location = 2) in vec3 a_normal; // ríos: (flujo.x, calado, flujo.z)
-layout (location = 3) in vec2 a_light;  // ríos: x = whitewater (0/0.5/1)
+layout (location = 2) in vec3 a_normal; // ríos: (v.x m/s, calado m, v.z m/s)
+layout (location = 3) in vec2 a_light;  // x = whitewater (0/0.5/1), y = 1 en lagos
 
 uniform mat4 u_view;
 uniform mat4 u_proj;
 uniform float u_time;
 uniform vec3 u_camera_pos;
 uniform vec3 u_wave_dir; // xz = dirección de VIAJE del oleaje dominante
+uniform int u_is_sea;    // 1 = plano del mar, 0 = malla de ríos/lagos
 
 out vec3 v_world_pos;
 flat out vec3 v_color;
-out vec3 v_river; // (flujo.x, calado, flujo.z) interpolado
+out vec3 v_river; // (velocidad.x, calado, velocidad.z) interpolado
 out float v_ww;   // whitewater interpolado
 
 void main() {
@@ -334,15 +335,11 @@ void main() {
     // fresnel del mar lejano frente al océano analítico del pase de cielo).
     float dist = length(a_pos.xz - u_camera_pos.xz);
     float wave_k = clamp(1.0 - (dist - 2000.0) / 2000.0, 0.0, 1.0);
-    vec2 fdir = a_normal.xz;
-    float flen = length(fdir);
-    if (flen > 0.001) {
-        // C4-W3: el RÍO ondula A LO LARGO de su corriente (onda viajera aguas
-        // abajo), no con las senoidales diagonales del mar.
-        fdir /= flen;
-        p.y += wave_k * 0.035
-             * sin(dot(a_pos.xz, fdir) * 0.9 - u_time * 2.4);
-    } else {
+    // Los RÍOS no ondulan por vértice (auditoría 2026-10 #1): la fase
+    // dot(pos, dir) con direcciones distintas en vértices vecinos daba alturas
+    // sin correlación (la lámina "vibraba"). Su movimiento lo pone el flow map
+    // del fragment shader. Mar y lagos (a_light.y = 1) llevan oleaje de viento.
+    if (u_is_sea == 1 || a_light.y > 0.5) {
         // C4-W4: el mar de fondo VIAJA con la rosa de vientos (dos trenes,
         // el secundario sesgado ~20°), no con senoidales diagonales fijas.
         vec2 wd = normalize(u_wave_dir.xz + vec2(1e-5, 0.0));
@@ -393,6 +390,44 @@ float w_vnoise(vec2 p) {
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
+// Ruido de valor con derivadas analíticas: (valor, d/dx, d/dz).
+vec3 w_vnoise_d(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    vec2 du = 6.0 * f * (1.0 - f);
+    float a = w_hash12(i);
+    float b = w_hash12(i + vec2(1.0, 0.0));
+    float c = w_hash12(i + vec2(0.0, 1.0));
+    float d = w_hash12(i + vec2(1.0, 1.0));
+    float k1 = b - a;
+    float k2 = c - a;
+    float k3 = a - b - c + d;
+    return vec3(a + k1 * u.x + k2 * u.y + k3 * u.x * u.y,
+                du.x * (k1 + k3 * u.y),
+                du.y * (k2 + k3 * u.x));
+}
+
+// Pendiente del rizado de corriente (dos octavas, ~0.8 m y ~0.3 m).
+vec2 ripple_slope(vec2 p) {
+    vec3 n1 = w_vnoise_d(p * 1.3);
+    vec3 n2 = w_vnoise_d(p * 3.1 + vec2(17.3, -9.1));
+    return n1.yz * (1.3 * 0.030) + n2.yz * (3.1 * 0.012);
+}
+
+// FLOW MAP de dos fases (Vlachos 2010): el patrón se desplaza con la
+// corriente −v·φ·T y dos capas desfasadas medio periodo se cruzan con peso
+// |1 − 2φ0|, de modo que cada capa se reinicia cuando su peso es nulo. No
+// depende de la posición absoluta ni de una dirección interpolada: el rizado
+// viaja a la velocidad física, es rápido en los rápidos y nulo en lagos.
+const float kFlowPeriod = 1.6; // s
+vec3 flow_phases(vec2 pos) {
+    // Desfase espacial lento: los reinicios no laten en sincronía.
+    float t = u_time / kFlowPeriod + w_vnoise(pos * 0.04);
+    float ph0 = fract(t);
+    return vec3(ph0, fract(t + 0.5), abs(1.0 - 2.0 * ph0));
+}
+
 void main() {
     float dist = length(v_world_pos - u_camera_pos);
     vec3 view_dir = normalize(u_camera_pos - v_world_pos);
@@ -400,8 +435,8 @@ void main() {
 
     vec3 normal;
     float wall_k = 0.0; // 1 = "pared de agua" del borde de la cinta del río
-    vec2 fdir = v_river.xz;
-    float flen = length(fdir);
+    vec2 vel = v_river.xz;
+    float speed = length(vel);
     if (u_is_sea == 1) {
         // C4-W4: normal ANALÍTICA del oleaje por píxel (independiente de la
         // rejilla de 625 m del plano del mar): tres trenes de ola alrededor
@@ -439,17 +474,17 @@ void main() {
         // declarados (whitewater), donde la cortina es real y a propósito.
         wall_k = (1.0 - smoothstep(0.30, 0.60, normal.y))
                * (1.0 - smoothstep(0.40, 0.75, v_ww));
-        // C4-W3: rizado ANALÍTICO advectado con la corriente (por píxel,
-        // independiente de la teselación): perturba la normal con la derivada
-        // de una onda corta que viaja aguas abajo — el río se LEE fluir.
-        if (flen > 0.01) {
-            fdir /= flen;
-            // Amplitudes contenidas (feedback 2026-07-13 "efectos raros"):
-            // el rizado sugiere corriente, no vibra.
-            float phase = dot(v_world_pos.xz, fdir) * 2.8 - u_time * 3.2;
-            float ripple = 0.032 * cos(phase)
-                         + 0.018 * cos(phase * 2.3 + 1.7);
-            normal = normalize(normal + vec3(-fdir.x, 0.0, -fdir.y) * ripple);
+        // C4-W3: rizado advectado por la corriente real (flow map). La
+        // rugosidad crece con la velocidad (agua lenta casi lisa, rápidos
+        // picados); con v ≈ 0 (remanso quieto) no hay rizado de corriente.
+        if (speed > 0.02) {
+            vec3 ph = flow_phases(v_world_pos.xz);
+            vec2 s0 = ripple_slope(v_world_pos.xz - vel * (ph.x * kFlowPeriod));
+            vec2 s1 = ripple_slope(v_world_pos.xz - vel * (ph.y * kFlowPeriod)
+                                   + vec2(31.7, 12.9));
+            float rough = mix(0.45, 1.0, smoothstep(0.2, 2.0, speed));
+            vec2 slope = mix(s0, s1, ph.z) * rough;
+            normal = normalize(normal + vec3(-slope.x, 0.0, -slope.y));
         }
     }
 
@@ -515,12 +550,14 @@ void main() {
                         + chop * 2.6);
         foam = clamp(band * (0.20 + 0.80 * wave_e) * (0.35 + 0.65 * pulse),
                      0.0, 1.0);
-    } else if (v_ww > 0.05 && flen > 0.01) {
-        float streak = 0.5
-            + 0.5 * sin(dot(v_world_pos.xz, fdir) * 3.5 - u_time * 5.5
-                        + sin(dot(v_world_pos.xz, vec2(-fdir.y, fdir.x)) * 2.1)
-                              * 1.3);
-        foam = clamp(v_ww * (0.45 + 0.55 * streak), 0.0, 1.0);
+    } else if (v_ww > 0.05) {
+        // Vetas de espuma arrastradas por la corriente (mismo flow map).
+        vec3 ph = flow_phases(v_world_pos.xz);
+        float f0 = w_vnoise((v_world_pos.xz - vel * (ph.x * kFlowPeriod)) * 0.9);
+        float f1 = w_vnoise((v_world_pos.xz - vel * (ph.y * kFlowPeriod)) * 0.9
+                            + vec2(7.3, -3.1));
+        float streak = smoothstep(0.30, 0.75, mix(f0, f1, ph.z));
+        foam = clamp(v_ww * (0.40 + 0.60 * streak), 0.0, 1.0);
     }
     lit = mix(lit, vec3(0.88, 0.92, 0.95), foam * 0.55);
 

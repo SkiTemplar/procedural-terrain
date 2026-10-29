@@ -22,6 +22,7 @@ constexpr int kAxisSmoothPasses = 2;
 constexpr float kSameRiverFlowRatio = 2.0f;
 // Costuras entre ramas al propagar el eje a la anchura mojada.
 constexpr int kWetBlurPasses = 2;
+constexpr float kBlurMinCos = 0.0f; // vecinas a menos de 90°
 constexpr float kMinSurfaceSlope = 1e-4f;
 constexpr float kMaxSurfaceSlope = 0.3f;
 
@@ -210,7 +211,11 @@ RiverFlowField compute_river_flow(const TerrainData& data) {
                         continue;
                     }
                     const std::uint32_t kn = field.wet_id[idx(nx, nz)];
-                    if (kn != RiverFlowField::kDry && source[kn] != kNoSource) {
+                    // Solo vecinas que corren en el mismo sentido: dos brazos
+                    // enfrentados (meandro cerrado, afluente que choca) no se
+                    // promedian en una corriente lateral inventada.
+                    if (kn != RiverFlowField::kDry && source[kn] != kNoSource
+                        && glm::dot(dir[kn], dir[k]) > kBlurMinCos) {
                         sum += dir[kn];
                     }
                 }

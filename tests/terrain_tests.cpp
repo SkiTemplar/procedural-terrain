@@ -770,6 +770,78 @@ TEST(Hidrologia, LaBocaDelRioEnrasaConElMar) {
     EXPECT_EQ(below_sea, 0) << below_sea << " celdas de río con lámina bajo el mar";
 }
 
+TEST(Corriente, CanalRectoDaManningAguasAbajo) {
+    // Canal sintético recto hacia +x, 3 celdas de ancho, calado 1 m y lámina
+    // con pendiente S: toda la anchura corre aguas abajo (no hacia el eje) a
+    // la velocidad de Manning v = n⁻¹·R^(2/3)·S^(1/2). Un lago no lleva
+    // corriente.
+    constexpr int kRes = 64;
+    constexpr float kSlope = 0.004f;
+    constexpr float kDepth = 1.0f;
+    terrain::TerrainData data;
+    data.height = terrain::Heightfield(kRes, 63.0f * 2.5f);
+    // Umbral efectivo = 1 celda: river_flow_threshold · 64² / 1024² = 1.
+    data.config.river_flow_threshold = 256.0f;
+    const size_t n = static_cast<size_t>(kRes) * kRes;
+    auto& hydro = data.hydrology;
+    hydro.water_level.assign(n, std::numeric_limits<float>::quiet_NaN());
+    hydro.flow.assign(n, 0.5f);
+    hydro.lake.assign(n, 0);
+    hydro.whitewater.assign(n, 0);
+    const float cell = data.height.cell_size();
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            data.height.at(x, z) = 50.0f;
+        }
+    }
+    for (int x = 0; x < kRes; ++x) {
+        for (int z = 31; z <= 33; ++z) {
+            const size_t i = static_cast<size_t>(z) * kRes + x;
+            data.height.at(x, z) = 10.0f - kSlope * cell * static_cast<float>(x);
+            hydro.water_level[i] = data.height.at(x, z) + kDepth;
+            if (z == 32) {
+                hydro.flow[i] = 10.0f + static_cast<float>(x); // eje
+            }
+        }
+    }
+    // Lago aparte (sin conexión): lámina plana, sin corriente.
+    for (int z = 5; z < 10; ++z) {
+        for (int x = 5; x < 10; ++x) {
+            const size_t i = static_cast<size_t>(z) * kRes + x;
+            hydro.water_level[i] = 60.0f;
+            hydro.lake[i] = 1;
+        }
+    }
+
+    const auto field = terrain::compute_river_flow(data);
+    const float expected =
+        std::pow(kDepth, 2.0f / 3.0f) * std::sqrt(kSlope) / terrain::kManningGravel;
+    for (int x = 8; x < kRes - 8; x += 7) {
+        for (int z = 31; z <= 33; ++z) {
+            const glm::vec2 v = field.at(static_cast<size_t>(z) * kRes + x);
+            EXPECT_NEAR(glm::length(v), expected, 0.01f * expected)
+                << "módulo en (" << x << ", " << z << ")";
+            EXPECT_GT(v.x, 0.9999f * glm::length(v))
+                << "dirección en (" << x << ", " << z << "): (" << v.x << ", " << v.y << ")";
+        }
+    }
+    EXPECT_EQ(glm::length(field.at(static_cast<size_t>(7) * kRes + 7)), 0.0f);
+}
+
+TEST(Corriente, LosRiosDelMundoCorrenAguasAbajoSinSaltos) {
+    // Auditoría 2026-10 #1: con el descenso del lecho tallado la corriente
+    // apuntaba al eje desde las orillas y saltaba 45° entre vértices. El campo
+    // de corriente sigue el cauce aguas abajo y varía suave.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    ASSERT_GT(report.flow_field.cells, 0);
+    EXPECT_LT(report.flow_field.pct_over_60deg, 5.0f);
+    EXPECT_LT(report.flow_field.median_jump_deg, 15.0f);
+    EXPECT_LT(report.flow_field.pct_over_60deg, report.bed_descent.pct_over_60deg);
+}
+
 TEST(Costa, EnergiaDeOleajeAcotadaYSoloLitoral) {
     // Contrato Agua v2 (paso 8): la energía REI/fetch está en [0,1] y solo
     // vive en la banda litoral — toda celda con energía debe tener mar a
