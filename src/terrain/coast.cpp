@@ -24,6 +24,14 @@ constexpr int kContourBlurPasses = 4;
 // costa. Con σ=400 m el aporte se nota ~1,2 km a cada lado de la boca.
 constexpr float kMouthSigmaM = 400.0f;
 
+// Caudal mínimo de cauce en la rejilla de trabajo (el umbral se expresa en
+// celdas equivalentes de un mapa 1024²).
+float channel_flow_threshold(const TerrainConfig& cfg, int res) {
+    return cfg.river_flow_threshold
+         * (static_cast<float>(res) * static_cast<float>(res))
+         / (1024.0f * 1024.0f);
+}
+
 std::vector<int> row_indices(int res) {
     std::vector<int> rows(static_cast<size_t>(res));
     std::iota(rows.begin(), rows.end(), 0);
@@ -40,10 +48,7 @@ std::vector<int> row_indices(int res) {
 std::vector<std::uint8_t> sea_mask(const Heightfield& hf,
                                    const Hydrology& hydro,
                                    const TerrainConfig& cfg) {
-    const int res = hf.resolution();
-    const float channel_flow = cfg.river_flow_threshold
-                             * (static_cast<float>(res) * static_cast<float>(res))
-                             / (1024.0f * 1024.0f);
+    const float channel_flow = channel_flow_threshold(cfg, hf.resolution());
     const size_t n = hf.data().size();
     std::vector<std::uint8_t> sea(n);
     for (size_t i = 0; i < n; ++i) {
@@ -157,9 +162,7 @@ CoastExposure compute_coast_exposure(const Heightfield& hf,
     });
 
     // --- Desembocaduras: última celda de tierra de cada río ---
-    const float threshold_flow = cfg.river_flow_threshold
-                               * (static_cast<float>(res) * static_cast<float>(res))
-                               / (1024.0f * 1024.0f);
+    const float threshold_flow = channel_flow_threshold(cfg, res);
     std::vector<std::pair<int, int>> mouths;
     for (int z = 0; z < res; ++z) {
         for (int x = 0; x < res; ++x) {
@@ -321,7 +324,8 @@ bool is_open(std::uint8_t s) {
 
 // Rebaja las celdas erosionadas a la plataforma: cota de marea al pie de la
 // pared y pendiente suave mar adentro (distancia en saltos a la tierra que
-// queda en pie).
+// queda en pie). min(): la abrasión solo excava; una celda que ya estaba
+// más honda que la plataforma (un surco) conserva su cota.
 void lower_to_platform(Heightfield& hf, std::vector<std::uint8_t>& state,
                        std::vector<float>& depth, const CliffRetreatParams& p) {
     const int res = hf.resolution();
@@ -350,7 +354,7 @@ void lower_to_platform(Heightfield& hf, std::vector<std::uint8_t>& state,
             p.max_depth_m);
         for (const std::uint32_t i : cur) {
             depth[i] = d;
-            h[i] = p.sea_level - d;
+            h[i] = std::min(h[i], p.sea_level - d);
             for (const auto& nb : kNeighbors8) {
                 const long long ni = neighbor_index(res, i, nb);
                 if (ni >= 0 && state[static_cast<size_t>(ni)] == kEroded) {
@@ -366,7 +370,7 @@ void lower_to_platform(Heightfield& hf, std::vector<std::uint8_t>& state,
         if (state[i] == kEroded) {
             state[i] = kPlatformed;
             depth[i] = p.max_depth_m;
-            h[i] = p.sea_level - p.max_depth_m;
+            h[i] = std::min(h[i], p.sea_level - p.max_depth_m);
         }
     }
 }
@@ -578,9 +582,7 @@ std::vector<RiverMouth> find_river_mouths(const std::vector<std::uint8_t>& sea,
                                           const TerrainConfig& cfg, int res,
                                           float cell, float sigma_m,
                                           float max_sigma_m) {
-    const float threshold = cfg.river_flow_threshold
-                          * (static_cast<float>(res) * static_cast<float>(res))
-                          / (1024.0f * 1024.0f);
+    const float threshold = channel_flow_threshold(cfg, res);
     std::vector<RiverMouth> mouths;
     for (size_t i = 0; i < sea.size(); ++i) {
         if (sea[i] || hydro.flow[i] < threshold) {
@@ -689,10 +691,13 @@ CliffRetreatStats erode_rocky_coast(Heightfield& hf, const Hydrology& hydro,
         const float pass = 1.0f - kBeachCover * sand;
         return coast.wave_energy[i] * pass * pass;
     };
+    const float channel_flow = channel_flow_threshold(cfg, res);
     in.resistance = [&](std::size_t i) {
         // El agua dulce (cauces y lagos) no se socava: su lámina ya está
-        // calculada y el mar no debe abrir el cauce desde el lado.
-        if (!std::isnan(hydro.water_level[i])) {
+        // calculada y el mar no debe abrir el cauce desde el lado. Tampoco
+        // el surco de la desembocadura (caudal de cauce sin lámina, bajo el
+        // nivel del mar): su lecho es el perfil monótono de la hidrología.
+        if (!std::isnan(hydro.water_level[i]) || hydro.flow[i] >= channel_flow) {
             return std::numeric_limits<float>::infinity();
         }
         const int x = static_cast<int>(i % static_cast<size_t>(res));

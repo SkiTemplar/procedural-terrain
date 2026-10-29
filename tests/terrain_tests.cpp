@@ -15,6 +15,8 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <vector>
 
 namespace {
 
@@ -1067,4 +1069,86 @@ TEST(Costa, LaPlataformaEsMasAnchaConMasOleaje) {
     printf("  correlacion anchura-E: pearson %.2f spearman %.2f\n",
            m.width_energy_pearson, m.width_energy_spearman);
     EXPECT_GT(m.width_energy_spearman, 0.5f);
+}
+
+TEST(Costa, LaAbrasionNoSubeUnaHondonadaQueYaEstabaBajoLaPlataforma) {
+    // Tierra a -1.5 m (más honda que la plataforma, -0.5 m al pie) detrás
+    // del acantilado: el frente la alcanza y la socava, pero la etapa solo
+    // excava — ninguna celda acaba más alta que antes.
+    terrain::Heightfield hf = straight_cliff_coast();
+    for (int z = 75; z < 85; ++z) {
+        for (int x = kShoreX + 4; x < kShoreX + 10; ++x) {
+            hf.at(x, z) = -1.5f;
+        }
+    }
+    const auto before = hf.data();
+    terrain::CliffRetreatInput in;
+    in.sea.assign(before.size(), 0);
+    for (size_t i = 0; i < before.size(); ++i) {
+        in.sea[i] = static_cast<int>(i % kCoastRes) < kShoreX ? 1 : 0;
+    }
+    in.wave_energy = [](std::size_t) { return 0.8f; };
+    in.resistance = [](std::size_t) { return 0.12f; };
+    const terrain::CliffRetreatStats stats =
+        terrain::retreat_cliffs(hf, in, terrain::CliffRetreatParams{});
+
+    ASSERT_GT(stats.eroded_cells, 0);
+    ASSERT_GT(retreat_of_row(hf, 80), static_cast<float>(10 * kCoastCell))
+        << "el frente debe haber pasado por la hondonada";
+    for (size_t i = 0; i < before.size(); ++i) {
+        ASSERT_LE(hf.data()[i], before[i] + 1e-4f)
+            << "la abrasión subió la celda (" << i % kCoastRes << ", "
+            << i / kCoastRes << ")";
+    }
+}
+
+TEST(Costa, LaAbrasionNoSocavaElSurcoDeUnCauce) {
+    // Surco fluvial sin lámina, con el lecho bajo el nivel del mar y caudal
+    // de cauce, tras el acantilado (la hidrología lo deja así en el tramo
+    // final de algunos ríos). La etapa del pipeline no debe tocarlo: su
+    // lecho es el perfil monótono de la hidrología, y la plataforma no debe
+    // subirlo ni hacerlo remontar aguas abajo.
+    constexpr int kGrooveZ = 80;
+    constexpr int kGrooveX0 = kShoreX + 2;
+    constexpr int kGrooveX1 = kShoreX + 40;
+    terrain::Heightfield hf = straight_cliff_coast();
+    for (int x = kGrooveX0; x < kGrooveX1; ++x) {
+        // Baja hacia el mar: -0.6 m tierra adentro, -1.4 m junto a la costa.
+        const float t = static_cast<float>(x - kGrooveX0)
+                      / static_cast<float>(kGrooveX1 - 1 - kGrooveX0);
+        hf.at(x, kGrooveZ) = -1.4f + 0.8f * t;
+    }
+    const auto before = hf.data();
+    const size_t n = before.size();
+
+    terrain::TerrainConfig cfg;
+    cfg.sea_level = 0.0f;
+    cfg.river_flow_threshold = 3840.0f;
+    const float channel = cfg.river_flow_threshold
+                        * static_cast<float>(kCoastRes * kCoastRes)
+                        / (1024.0f * 1024.0f);
+    terrain::Hydrology hydro;
+    hydro.water_level.assign(n, std::numeric_limits<float>::quiet_NaN());
+    hydro.flow.assign(n, 0.0f);
+    hydro.lake.assign(n, 0);
+    for (int x = kGrooveX0; x < kGrooveX1; ++x) {
+        hydro.flow[static_cast<size_t>(kGrooveZ) * kCoastRes + x] = 4.0f * channel;
+    }
+    terrain::CoastExposure coast;
+    coast.wave_energy.assign(n, 0.8f);
+    const std::vector<float> soft_rock(4, 1.0f);
+    const terrain::Noise noise(7u);
+    const terrain::CliffRetreatStats stats = terrain::erode_rocky_coast(
+        hf, hydro, coast, soft_rock, 2, noise, cfg);
+
+    ASSERT_GT(stats.eroded_cells, 0);
+    ASSERT_GT(retreat_of_row(hf, kGrooveZ - 1), static_cast<float>(10 * kCoastCell))
+        << "el acantilado junto al surco debe retroceder";
+    for (size_t i = 0; i < n; ++i) {
+        ASSERT_LE(hf.data()[i], before[i] + 1e-4f) << "la abrasión subió una celda";
+    }
+    for (int x = kGrooveX0; x < kGrooveX1; ++x) {
+        EXPECT_EQ(hf.at(x, kGrooveZ), before[static_cast<size_t>(kGrooveZ) * kCoastRes + x])
+            << "surco tocado en x=" << x;
+    }
 }
