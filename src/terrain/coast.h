@@ -47,7 +47,10 @@ using CellField = std::function<float(std::size_t)>;
 
 struct CliffRetreatInput {
     std::vector<std::uint8_t> sea; // 1 = mar al empezar (por celda)
-    CellField wave_energy;         // E ∈ [0,1] que llega al pie; F_0 = √E
+    // E ∈ [0,1] que llega al pie; F_0 = √E. Se evalúa solo en la costa
+    // original (tierra con mar axial); tierra adentro, cada celda hereda la
+    // F_0 del tramo de costa más cercano (BFS 4-conexo).
+    CellField wave_energy;
     CellField resistance;          // F_r relativa (> 0); infinito = inerosionable
 };
 
@@ -62,12 +65,25 @@ struct CliffRetreatParams {
     int ramp_cells = 8;            // enlace con el fondo previo (solo excava)
 };
 
+// Spearman entre la anchura de plataforma SOCAVADA delante de cada celda en
+// pie del frente final (0 si da al mar original) y la E de su tramo de costa
+// antes de la etapa, sobre `cells` celdas.
+struct CutCorrelation {
+    int cells = 0;
+    float spearman = 0.0f;
+};
+
 struct CliffRetreatStats {
     int eroded_cells = 0;
     float max_retreat_m = 0.0f;
-    // Spearman, en el frente final, entre la plataforma que cruza la ola y
-    // la fuerza F_0 que trae: la firma de Sunamura (positiva).
-    float retreat_force_spearman = 0.0f;
+    // Firma de Sunamura (sin las celdas inerosionables). front: todo el
+    // frente final (el umbral F_0 > F_r incluido); abraded: solo donde hay
+    // plataforma socavada (anchura > 0). toe*: lo mismo restringido a pies de
+    // acantilado (pared de >= 2.5 m a menos de dos celdas, como el dump).
+    CutCorrelation front;
+    CutCorrelation abraded;
+    CutCorrelation toe;
+    CutCorrelation abraded_toe;
 };
 
 // Integra el retroceso sobre el heightfield. Determinista: cada paso evalúa
@@ -78,7 +94,8 @@ CliffRetreatStats retreat_cliffs(Heightfield& hf, const CliffRetreatInput& in,
 // Etapa del pipeline: oleaje de la exposición (con la cobertura de playa que
 // da el aporte fluvial) contra la resistencia litológica modulada por el
 // diaclasado (fbm de λ ~40 m: el ruido solo modula la resistencia). Las celdas
-// con lámina de agua dulce no se erosionan.
+// con lámina de agua dulce o caudal de cauce (el surco de la desembocadura)
+// no se erosionan.
 CliffRetreatStats erode_rocky_coast(Heightfield& hf, const Hydrology& hydro,
                                     const CoastExposure& coast,
                                     const std::vector<float>& lithology,

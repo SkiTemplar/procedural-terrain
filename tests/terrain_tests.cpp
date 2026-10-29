@@ -1071,6 +1071,50 @@ TEST(Costa, LaPlataformaEsMasAnchaConMasOleaje) {
     EXPECT_GT(m.width_energy_spearman, 0.5f);
 }
 
+namespace {
+
+// Parámetros de la etapa del pipeline (erode_rocky_coast).
+terrain::CliffRetreatParams pipeline_retreat_params() {
+    terrain::CliffRetreatParams p;
+    p.attenuation_m = 150.0f;
+    p.steps = 240;
+    p.rate_m = 1.5f;
+    return p;
+}
+
+} // namespace
+
+TEST(Costa, ElOleajeDeUnTramoExpuestoNoSeFiltraAlAbrigado) {
+    // Escalón de energía a lo largo de la costa: E = 0.8 en z < 80 y E = 0.01
+    // en z >= 80, roca uniforme F_r = 0.39. Con F_0 = 0.1 < F_r, Sunamura da
+    // retroceso nulo en el tramo abrigado aunque el expuesto, al retroceder,
+    // le abra un flanco: la F_0 es la de su tramo de costa, no la de la ola
+    // que socava la celda de al lado.
+    constexpr int kStepZ = 80;
+    terrain::Heightfield hf = straight_cliff_coast();
+    const auto before = hf.data();
+    terrain::CliffRetreatInput in;
+    in.sea = sea_of(hf);
+    in.wave_energy = [](std::size_t i) {
+        return static_cast<int>(i / kCoastRes) < kStepZ ? 0.8f : 0.01f;
+    };
+    in.resistance = [](std::size_t) { return 0.39f; };
+    const terrain::CliffRetreatStats stats =
+        terrain::retreat_cliffs(hf, in, pipeline_retreat_params());
+
+    const float exposed = mean_retreat(hf, 10, kStepZ - 10);
+    printf("  retroceso expuesto %.1f m (%d celdas)\n", exposed, stats.eroded_cells);
+    EXPECT_GT(exposed, 50.0f) << "el tramo expuesto debe socavarse";
+    for (int z = kStepZ; z < kCoastRes; ++z) {
+        EXPECT_EQ(retreat_of_row(hf, z), 0.0f) << "fila abrigada z=" << z;
+        for (int x = kShoreX; x < kCoastRes; ++x) {
+            const size_t i = static_cast<size_t>(z) * kCoastRes + x;
+            ASSERT_EQ(hf.data()[i], before[i]) << "tierra abrigada tocada en ("
+                                               << x << ", " << z << ")";
+        }
+    }
+}
+
 TEST(Costa, LaAbrasionNoSubeUnaHondonadaQueYaEstabaBajoLaPlataforma) {
     // Tierra a -1.5 m (más honda que la plataforma, -0.5 m al pie) detrás
     // del acantilado: el frente la alcanza y la socava, pero la etapa solo

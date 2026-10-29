@@ -304,7 +304,7 @@ enum CellState : std::uint8_t {
 
 struct FrontCell {
     std::uint32_t idx;
-    float own_force;  // F_0 = √E propio de la celda
+    float own_force;  // F_0 = √E del tramo de costa original que la ataca
     float resistance; // F_r
     float progress;   // metros de retroceso acumulados en la celda
 };
@@ -312,8 +312,11 @@ struct FrontCell {
 struct Erosion {
     std::uint32_t idx;
     float width; // anchura de plataforma que cruzó la ola (m)
-    float force; // F_0 que trae la ola
 };
+
+// Marcas de force_ durante la herencia de F_0 (valores válidos >= 0).
+constexpr float kUnlabelled = -1.0f;
+constexpr float kPending = -2.0f;
 
 using grid::kNeighbors8;
 using grid::neighbor_index;
@@ -421,11 +424,12 @@ void ramp_into_seabed(Heightfield& hf, std::vector<std::uint8_t>& state,
 }
 
 // Ola que alcanza una celda del frente: la plataforma más corta que ha
-// cruzado (por la vecina abierta más cercana), la F_0 mayor que trae y las
-// caras expuestas (vecinas axiales abiertas).
+// cruzado (por la vecina abierta más cercana) y las caras expuestas (vecinas
+// axiales abiertas). La F_0 no viaja con la ola: es la del tramo de costa
+// original de la celda, así que el oleaje de un cabo no se filtra de lado a
+// las calas abrigadas a través de la plataforma.
 struct WaveAtToe {
     float width = std::numeric_limits<float>::infinity();
-    float force = 0.0f;
     int exposed_faces = 0;
 };
 
@@ -434,14 +438,19 @@ class CliffFront {
 public:
     CliffFront(int res, float cell, const CliffRetreatInput& in)
         : res_(res), cell_(cell), in_(in), state_(in.sea.size()),
-          width_(in.sea.size(), 0.0f), force_(in.sea.size(), 0.0f) {
+          width_(in.sea.size(), 0.0f), force_(in.sea.size(), kUnlabelled) {
         for (size_t i = 0; i < state_.size(); ++i) {
             state_[i] = in.sea[i] ? kSea : kLand;
         }
+        std::vector<std::uint32_t> coast;
         for (size_t i = 0; i < state_.size(); ++i) {
             if (state_[i] == kLand && touches(i, kSea)) {
-                enlist(i);
+                coast.push_back(static_cast<std::uint32_t>(i));
             }
+        }
+        inherit_tract_force(coast);
+        for (const std::uint32_t i : coast) {
+            enlist(i);
         }
     }
 
@@ -456,7 +465,7 @@ public:
             if (wave.exposed_faces == 0) {
                 continue;
             }
-            const float fw = wave.force * std::exp(-wave.width / p.attenuation_m);
+            const float fw = fc.own_force * std::exp(-wave.width / p.attenuation_m);
             if (!(fw > fc.resistance)) {
                 continue; // Sunamura: sin retroceso si F_w <= F_r
             }
@@ -467,7 +476,7 @@ public:
             fc.progress += p.rate_m * std::log(fw / fc.resistance)
                          * std::sqrt(static_cast<float>(wave.exposed_faces));
             if (fc.progress >= cell_) {
-                eroding_.push_back({fc.idx, wave.width, wave.force});
+                eroding_.push_back({fc.idx, wave.width});
             }
         }
         if (!eroding_.empty()) {
@@ -475,19 +484,42 @@ public:
         }
     }
 
-    // Diagnóstico: en el frente final, plataforma cruzada por la ola frente
-    // a la fuerza que trae (Sunamura: debe ser positiva).
-    [[nodiscard]] float retreat_force_spearman() const {
-        std::vector<float> w;
-        std::vector<float> f;
+    // Plataforma de abrasión frente al oleaje, en el frente final: anchura
+    // socavada delante de cada celda en pie (0 si da al mar original) frente
+    // a la E de su tramo de costa previa a la etapa. Solo cuenta lo que ha
+    // creado el retroceso, no la batimetría somera natural. Se llama antes
+    // de rebajar la plataforma (la tierra en pie no cambia de cota).
+    void measure_cut(const std::vector<float>& h, float sea_level,
+                     CliffRetreatStats& stats) const {
+        Samples all;
+        Samples cut;
+        Samples toe;
+        Samples cut_toe;
         for (const FrontCell& fc : front_) {
-            const WaveAtToe wave = wave_at(fc);
-            if (std::isfinite(wave.width)) {
-                w.push_back(wave.width);
-                f.push_back(wave.force);
+            if (!std::isfinite(fc.resistance)) {
+                continue; // inerosionable por construcción (agua dulce)
+            }
+            const float w = cut_width(fc.idx);
+            if (!std::isfinite(w)) {
+                continue;
+            }
+            const float e = fc.own_force * fc.own_force;
+            const bool is_toe = has_wall(h, sea_level, fc.idx);
+            all.add(w, e);
+            if (is_toe) {
+                toe.add(w, e);
+            }
+            if (w > 0.0f) {
+                cut.add(w, e);
+                if (is_toe) {
+                    cut_toe.add(w, e);
+                }
             }
         }
-        return grid::spearman(w, f);
+        stats.front = all.correlation();
+        stats.abraded = cut.correlation();
+        stats.toe = toe.correlation();
+        stats.abraded_toe = cut_toe.correlation();
     }
 
     std::vector<std::uint8_t>& state() { return state_; }
@@ -506,14 +538,114 @@ private:
 
     void enlist(size_t i) {
         state_[i] = kFront;
-        const float e = std::clamp(in_.wave_energy(i), 0.0f, 1.0f);
-        front_.push_back({static_cast<std::uint32_t>(i), std::sqrt(e),
+        front_.push_back({static_cast<std::uint32_t>(i), std::max(force_[i], 0.0f),
                           in_.resistance(i), 0.0f});
+    }
+
+    struct Samples {
+        std::vector<float> width;
+        std::vector<float> energy;
+        void add(float w, float e) {
+            width.push_back(w);
+            energy.push_back(e);
+        }
+        [[nodiscard]] CutCorrelation correlation() const {
+            return {static_cast<int>(width.size()), grid::spearman(width, energy)};
+        }
+    };
+
+    // Plataforma socavada delante de la celda: la menor anchura que ha
+    // cruzado la ola hasta una vecina abierta (0 junto al mar original).
+    [[nodiscard]] float cut_width(std::uint32_t i) const {
+        float w = std::numeric_limits<float>::infinity();
+        for (const auto& nb : kNeighbors8) {
+            const long long sni = neighbor_index(res_, i, nb);
+            if (sni >= 0 && is_open(state_[static_cast<size_t>(sni)])) {
+                w = std::min(w, width_[static_cast<size_t>(sni)]);
+            }
+        }
+        return w;
+    }
+
+    // Pie de acantilado con la definición del dump (measure_rocky_coast):
+    // pared de >= 2.5 m sobre el mar a menos de dos celdas. Solo cuenta la
+    // tierra en pie: las celdas socavadas aún conservan su cota original.
+    [[nodiscard]] bool has_wall(const std::vector<float>& h, float sea_level,
+                                std::uint32_t i) const {
+        const int x = static_cast<int>(i % static_cast<std::uint32_t>(res_));
+        const int z = static_cast<int>(i / static_cast<std::uint32_t>(res_));
+        const int r = rocky_detail::kCliffRadius;
+        for (int dz = -r; dz <= r; ++dz) {
+            for (int dx = -r; dx <= r; ++dx) {
+                const int nx = x + dx;
+                const int nz = z + dz;
+                if (nx < 0 || nz < 0 || nx >= res_ || nz >= res_) {
+                    continue;
+                }
+                const size_t ni = static_cast<size_t>(nz) * static_cast<size_t>(res_)
+                                + static_cast<size_t>(nx);
+                const bool standing = state_[ni] == kLand || state_[ni] == kFront;
+                if (standing && h[ni] >= sea_level + rocky_detail::kCliffReliefM) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // F_0 de cada celda de tierra: la del tramo de costa original que la
+    // ataca. BFS 4-conexo desde la costa original; cada nivel promedia la
+    // F_0 de sus vecinas del nivel anterior. Con la métrica de Manhattan,
+    // en una costa recta cada celda hereda de la orilla que tiene enfrente,
+    // y el resultado no depende del orden de recorrido.
+    void inherit_tract_force(const std::vector<std::uint32_t>& coast) {
+        for (const std::uint32_t i : coast) {
+            force_[i] = std::sqrt(std::clamp(in_.wave_energy(i), 0.0f, 1.0f));
+        }
+        std::vector<std::uint32_t> cur = coast;
+        std::vector<std::uint32_t> nxt;
+        std::vector<float> value;
+        while (!cur.empty()) {
+            nxt.clear();
+            for (const std::uint32_t i : cur) {
+                for (int k = 0; k < 4; ++k) {
+                    const long long sni = neighbor_index(res_, i, kNeighbors8[k]);
+                    if (sni < 0) {
+                        continue;
+                    }
+                    const size_t ni = static_cast<size_t>(sni);
+                    if (state_[ni] == kLand && force_[ni] == kUnlabelled) {
+                        force_[ni] = kPending;
+                        nxt.push_back(static_cast<std::uint32_t>(ni));
+                    }
+                }
+            }
+            value.assign(nxt.size(), 0.0f);
+            for (size_t j = 0; j < nxt.size(); ++j) {
+                value[j] = mean_labelled_neighbors(nxt[j]);
+            }
+            for (size_t j = 0; j < nxt.size(); ++j) {
+                force_[nxt[j]] = value[j];
+            }
+            std::swap(cur, nxt);
+        }
+    }
+
+    float mean_labelled_neighbors(std::uint32_t i) const {
+        float sum = 0.0f;
+        int count = 0;
+        for (int k = 0; k < 4; ++k) {
+            const long long sni = neighbor_index(res_, i, kNeighbors8[k]);
+            if (sni >= 0 && force_[static_cast<size_t>(sni)] >= 0.0f) {
+                sum += force_[static_cast<size_t>(sni)];
+                ++count;
+            }
+        }
+        return count > 0 ? sum / static_cast<float>(count) : 0.0f;
     }
 
     WaveAtToe wave_at(const FrontCell& fc) const {
         WaveAtToe wave;
-        wave.force = fc.own_force;
         for (const auto& nb : kNeighbors8) {
             const long long sni = neighbor_index(res_, fc.idx, nb);
             if (sni < 0 || !is_open(state_[static_cast<size_t>(sni)])) {
@@ -522,7 +654,6 @@ private:
             const size_t ni = static_cast<size_t>(sni);
             wave.exposed_faces += nb.axial ? 1 : 0;
             wave.width = std::min(wave.width, width_[ni] + nb.len * cell_);
-            wave.force = std::max(wave.force, force_[ni]);
         }
         return wave;
     }
@@ -533,7 +664,6 @@ private:
         for (const Erosion& e : eroding_) {
             state_[e.idx] = kEroded;
             width_[e.idx] = e.width;
-            force_[e.idx] = e.force;
             ++stats.eroded_cells;
             stats.max_retreat_m = std::max(stats.max_retreat_m, e.width);
         }
@@ -559,8 +689,8 @@ private:
     const CliffRetreatInput& in_;
     std::vector<std::uint8_t> state_;
     // Por celda abierta: plataforma que la ola ya ha cruzado al llegar a ella
-    // y F_0 que trae. El mar inicial es mar abierto (anchura 0); la fuerza la
-    // pone el pie de cada tramo de costa.
+    // (el mar inicial es mar abierto, anchura 0). Por celda de tierra: F_0
+    // de su tramo de costa original.
     std::vector<float> width_;
     std::vector<float> force_;
     std::vector<FrontCell> front_;
@@ -635,7 +765,7 @@ CliffRetreatStats retreat_cliffs(Heightfield& hf, const CliffRetreatInput& in,
     for (int step = 0; step < params.steps && !front.empty(); ++step) {
         front.step(params, stats);
     }
-    stats.retreat_force_spearman = front.retreat_force_spearman();
+    front.measure_cut(hf.data(), params.sea_level, stats);
     if (stats.eroded_cells > 0) {
         // La anchura ya no hace falta: se reutiliza como profundidad.
         lower_to_platform(hf, front.state(), front.width(), params);
@@ -720,10 +850,17 @@ CliffRetreatStats erode_rocky_coast(Heightfield& hf, const Hydrology& hydro,
     params.steps = kSteps;
     params.rate_m = kRateM;
     const CliffRetreatStats stats = retreat_cliffs(hf, in, params);
+    const auto report = [](const char* label, const CutCorrelation& c) {
+        std::cout << "    " << label << ": " << c.cells << " celdas, spearman "
+                  << c.spearman << std::endl;
+    };
     std::cout << "  abrasion costera: " << stats.eroded_cells
               << " celdas socavadas, retroceso max " << stats.max_retreat_m
-              << " m, spearman retroceso-oleaje en el frente "
-              << stats.retreat_force_spearman << std::endl;
+              << " m; anchura socavada-E previa en el frente final:" << std::endl;
+    report("todo el frente", stats.front);
+    report("tramos socavados", stats.abraded);
+    report("pies de acantilado", stats.toe);
+    report("pies con plataforma socavada", stats.abraded_toe);
     return stats;
 }
 
