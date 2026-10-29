@@ -14,7 +14,6 @@ namespace {
 // cotas de la primera pasada: roca ~210→840, nieve ~840→1230).
 constexpr float kRockLowFrac = 0.25f;   // la roca arranca al 25% de la línea de nieve
 constexpr float kSnowWhiteFrac = 0.70f; // blanco puro al 70% del snow_line→cumbre
-constexpr float kTreeLineDrop = 150.0f; // treeline = snow_line − 150 (generator.cpp)
 constexpr float kSeaDepthRange = 25.0f;   // m de calado que saturan el oscurecido marino
 constexpr float kFreshDepthRange = 10.0f; // m de calado para lechos de lago/río
 constexpr float kShoreRockBand = 8.0f;    // m sobre el mar: roca lamida, gris fregado
@@ -46,14 +45,6 @@ float ground_tint(float wx, float wz) {
     return 0.87f + 0.14f * fine + 0.10f * coarse;
 }
 
-// Parches de pradera seca (~150-400 m): rompen el verde uniforme con calvas
-// pardas de hierba agostada. Umbral alto: manchas definidas, no un degradado.
-float dry_patch(float wx, float wz) {
-    const float n = 0.65f * value_noise(wx / 380.0f, wz / 380.0f)
-                  + 0.35f * value_noise(wx / 160.0f, wz / 160.0f);
-    return glm::smoothstep(0.52f, 0.80f, n);
-}
-
 } // namespace
 
 Palette::Palette(const TerrainData& data)
@@ -61,7 +52,9 @@ Palette::Palette(const TerrainData& data)
       sea_level_(data.config.sea_level),
       snow_line_(data.snow_line_m > 0.0f ? data.snow_line_m
                                          : data.config.snow_line_m) {
-    tree_line_ = std::max(snow_line_ - kTreeLineDrop, 1.0f);
+    tree_line_ = std::max(data.treeline_m > 0.0f ? data.treeline_m
+                                                 : data.config.treeline_m,
+                          1.0f);
     snow_span_ =
         std::max((data.max_height_m - snow_line_) * kSnowWhiteFrac, 50.0f);
     rock_low_ = kRockLowFrac * snow_line_;
@@ -71,10 +64,19 @@ Palette::Palette(const TerrainData& data)
 // Litología bilineal sobre el grid macro del LEM (mismo patrón que la luz
 // precomputada). 0.5 (formación neutra) si el campo no existe.
 float Palette::lithology_at(float wx, float wz) const {
-    const int lr = data_->litho_res;
-    const auto& field = data_->lithology;
-    if (lr < 2 || field.empty()) {
-        return 0.5f;
+    return field_at(data_->lithology, data_->litho_res, wx, wz, 0.5f);
+}
+
+// Déficit hídrico del suelo de la ecología física (lluvia × TWI × radiación):
+// la hierba se agosta donde falta agua, no donde lo dicta un ruido.
+float Palette::dryness_at(float wx, float wz) const {
+    return field_at(data_->dryness, data_->precip_res, wx, wz, 0.3f);
+}
+
+float Palette::field_at(const std::vector<float>& field, int lr, float wx,
+                        float wz, float fallback) const {
+    if (lr < 2 || field.size() != static_cast<size_t>(lr) * static_cast<size_t>(lr)) {
+        return fallback;
     }
     const float size = data_->height.size();
     const float half = size * 0.5f;
@@ -150,17 +152,18 @@ glm::vec3 Palette::ground(Material m, float forest_density, float climate,
     if (m == Material::Grass || m == Material::Forest) {
         c = glm::mix(material_color(Material::Grass),
                      material_color(Material::Forest), forest_density);
-        // El bosque denso protege del agostado: los parches viven en claros.
-        const float patch = dry_patch(cx, cz) * (1.0f - 0.8f * forest_density)
-                          * (0.55f + 0.45f * climate);
-        // La hierba se agosta subiendo hacia la treeline de ESTE mundo.
+        // Calvas agostadas donde el suelo pierde el agua (crestas, solanas,
+        // sombra de lluvia); el bosque denso protege: viven en los claros.
+        const float deficit = dryness_at(cx, cz);
+        const float patch =
+            glm::smoothstep(0.40f, 0.75f, deficit) * (1.0f - 0.8f * forest_density);
+        // La hierba se agosta subiendo hacia el límite del bosque (frío).
         const float alt_dry =
             glm::clamp((y - sea_level_ - 0.30f * tree_line_)
                            / (0.70f * tree_line_),
                        0.0f, 1.0f);
         const float dryness = glm::clamp(
-            alt_dry * 0.30f + (1.0f - climate) * 0.18f + 0.55f * patch,
-            0.0f, 0.85f);
+            alt_dry * 0.30f + 0.15f * deficit + 0.55f * patch, 0.0f, 0.85f);
         c = glm::mix(c, glm::vec3{0.62f, 0.55f, 0.31f}, dryness);
     } else if (m == Material::Sand) {
         // Arena común (dorada) por defecto; la blanca caribeña solo en el

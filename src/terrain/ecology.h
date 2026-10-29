@@ -58,6 +58,8 @@ struct EcoCell {
 
 // Espesor mínimo de suelo para que haya cubierta vegetal (por debajo, roca).
 inline constexpr float kMinSoilM = 0.12f;
+// Depósito de ribera (diques, llanura de inundación) junto a agua dulce.
+inline constexpr float kBankDepositM = 0.5f;
 
 [[nodiscard]] EcoClimate make_eco_climate(const TerrainConfig& cfg) noexcept;
 

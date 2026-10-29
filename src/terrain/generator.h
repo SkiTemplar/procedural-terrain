@@ -56,7 +56,8 @@ struct TerrainData {
     // Cotas reales del mundo generado — anclas de la paleta (los gradientes
     // de color se normalizan contra ellas, nunca contra cotas absolutas).
     float max_height_m = 0.0f;  // cumbre tras erosión
-    float snow_line_m = 0.0f;   // línea efectiva: min(cfg.snow_line_m, 0.60·max_h)
+    float snow_line_m = 0.0f;   // nieve estacional de referencia (cfg.snow_line_m)
+    float treeline_m = 0.0f;    // isoterma de 10 °C de referencia (cfg.treeline_m)
     // Iluminación precomputada (sol fijo, decisión Rodrigo 2026-07-09). Grid
     // propio de resolución `light_res` (<= height res): sombra arrojada y AO de
     // cielo son de baja frecuencia y se muestrean bilinealmente por vértice.
@@ -72,6 +73,9 @@ struct TerrainData {
     // de lavado y ascenso (ecology.h). Alimenta bosque, nieve y sequedad.
     std::vector<float> precipitation;
     int precip_res = 0;
+    // Déficit hídrico del suelo [0,1] en el mismo grid que la precipitación
+    // (lluvia × TWI × radiación): agostado de la hierba en la paleta.
+    std::vector<float> dryness;
     TerrainConfig config;
 };
 

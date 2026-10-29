@@ -82,7 +82,8 @@ endif ()
 enable_testing()
 find_package(GTest CONFIG REQUIRED)
 
-add_executable(terrain_tests tests/terrain_tests.cpp tests/golden_tests.cpp)
+add_executable(terrain_tests tests/terrain_tests.cpp tests/golden_tests.cpp
+        tests/ecology_tests.cpp)
 target_link_libraries(terrain_tests PRIVATE terrain_gen GTest::gtest_main)
 
 include(GoogleTest)
