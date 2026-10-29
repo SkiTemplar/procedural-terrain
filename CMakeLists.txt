@@ -28,6 +28,8 @@ add_library(terrain_gen STATIC
         src/terrain/generator.cpp
         src/terrain/detail.cpp
         src/terrain/lem.cpp
+        src/terrain/landform_stats.cpp
+        src/terrain/rockfall.cpp
         src/terrain/preset.cpp
 )
 target_include_directories(terrain_gen PUBLIC src)
@@ -90,6 +92,7 @@ find_package(glslang CONFIG REQUIRED)
 add_executable(terrain_tests
         tests/terrain_tests.cpp
         tests/golden_tests.cpp
+        tests/rockfall_tests.cpp
         tests/terrain_texture_tests.cpp
         src/render/terrain_texture_data.cpp
         src/render/terrain_normal_map.cpp
