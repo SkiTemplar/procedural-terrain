@@ -18,6 +18,7 @@ add_library(terrain_gen STATIC
         src/terrain/erosion.cpp
         src/terrain/hydrology.cpp
         src/terrain/riverscape.cpp
+        src/terrain/river_mouth.cpp
         src/terrain/coast.cpp
         src/terrain/generator.cpp
         src/terrain/detail.cpp

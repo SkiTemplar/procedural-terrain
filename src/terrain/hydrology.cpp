@@ -1,5 +1,6 @@
 #include "terrain/hydrology.h"
 
+#include "terrain/river_mouth.h"
 #include "terrain/riverscape.h"
 
 #include <glm/common.hpp>
@@ -848,29 +849,12 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
         }
     }
 
-    // Nivel de base en la costa: una celda de río contigua al mar (vecina
-    // sumergida sin lámina propia) enrasa con él. Las pozas y bancos de una
-    // cascada que acaba en la costa la dejaban colgada sobre la boca; el
-    // socavón garantiza que la lámina sigue por encima del lecho.
-    for (int z = 1; z < res - 1; ++z) {
-        for (int x = 1; x < res - 1; ++x) {
-            const size_t i = idx(x, z);
-            const float w = out.water_level[i];
-            if (std::isnan(w) || out.lake[i] || w <= cfg.sea_level + kBackwaterPinM) {
-                continue;
-            }
-            bool touches_sea = false;
-            for (int n = 0; n < 8 && !touches_sea; ++n) {
-                const size_t ni = idx(x + kDx[n], z + kDz[n]);
-                touches_sea = std::isnan(out.water_level[ni])
-                           && hf.data()[ni] <= cfg.sea_level;
-            }
-            if (touches_sea) {
-                out.water_level[i] = cfg.sea_level;
-                hf.data()[i] = std::min(hf.data()[i], cfg.sea_level - 0.12f);
-            }
-        }
-    }
+    // Nivel de base en la costa (river_mouth): una lámina que llega colgada
+    // a la costa se rebaja a cota de mar repartiendo la caída aguas arriba
+    // (knickzone), y las bolsas sumergidas del estuario en contacto con el
+    // remanso reciben su lámina.
+    grade_coastal_knickzones(hf, out, cfg.sea_level);
+    flood_estuary_pockets(hf, out, cfg.sea_level);
 
     // Limpieza final: sin celdas de agua huérfanas (el nacimiento de un río
     // puede pintar una única celda suelta que se ve como un píxel de agua).
