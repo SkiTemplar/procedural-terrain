@@ -393,6 +393,31 @@ TEST(Generator, SinMurallasVerticales) {
     EXPECT_LT(p999, 4.5f);
 }
 
+TEST(Preset, LosPresetsVersionadosUsanElClimaV2) {
+    // Revisión de mp/ecologia-fisica: snow_line_m cambió de significado
+    // (antes min(valor, 0.60·cumbre)); un preset sin migrar genera otro mundo.
+    const std::string dir = PT_PRESET_DIR;
+    const auto names = terrain::list_presets(dir);
+    ASSERT_FALSE(names.empty());
+    for (const auto& name : names) {
+        const auto p = terrain::load_preset(dir + "/" + name + ".json");
+        ASSERT_TRUE(p.has_value()) << name;
+        EXPECT_EQ(p->climate_version, terrain::kPresetClimateVersion) << name;
+        std::ifstream in(dir + "/" + name + ".json");
+        const auto j = nlohmann::json::parse(in);
+        EXPECT_TRUE(j.contains("treeline_m")) << name;
+        EXPECT_TRUE(j.contains("snow_line_m")) << name;
+    }
+    // El mundo canónico es el mismo cargado del preset o del config por
+    // defecto.
+    const auto canon = terrain::load_preset(dir + "/isla-canonica.json");
+    ASSERT_TRUE(canon.has_value());
+    const terrain::TerrainConfig def;
+    EXPECT_EQ(canon->config.seed, def.seed);
+    EXPECT_FLOAT_EQ(canon->config.snow_line_m, def.snow_line_m);
+    EXPECT_FLOAT_EQ(canon->config.treeline_m, def.treeline_m);
+}
+
 TEST(Preset, RoundTripDeConfigCompleta) {
     // Contrato C1: guardar y cargar un preset conserva TODOS los campos del
     // config (incluida la seed) — un campo olvidado en la serialización
@@ -402,6 +427,7 @@ TEST(Preset, RoundTripDeConfigCompleta) {
     cfg.coast_flood_m = 11.5f;
     cfg.wind_dir_deg = 123.0f;
     cfg.snow_line_m = 640.0f;
+    cfg.treeline_m = 430.0f;
 
     const auto path = std::filesystem::temp_directory_path()
                     / "pt-preset-roundtrip.json";
@@ -417,6 +443,8 @@ TEST(Preset, RoundTripDeConfigCompleta) {
     EXPECT_FLOAT_EQ(loaded->config.coast_flood_m, cfg.coast_flood_m);
     EXPECT_FLOAT_EQ(loaded->config.wind_dir_deg, cfg.wind_dir_deg);
     EXPECT_FLOAT_EQ(loaded->config.snow_line_m, cfg.snow_line_m);
+    EXPECT_FLOAT_EQ(loaded->config.treeline_m, cfg.treeline_m);
+    EXPECT_EQ(loaded->climate_version, terrain::kPresetClimateVersion);
     // El resto de campos, comparados por su serialización (si un campo nuevo
     // entra en el config y no en el preset, esto NO lo caza — por eso
     // save_preset serializa campo a campo y este test fija los sensibles).

@@ -23,10 +23,12 @@
   "fluvial_strength": 0.5,
   "fluvial_iterations": 1,
   "detail_amplitude_m": 0.5,
-  "snow_line_m": 1600.0,
+  "snow_line_m": 1050.0,
+  "treeline_m": 650.0,
   "rock_slope": 0.9,
   "beach_band_m": 13.0,
   "wind_dir_deg": 180.0,
   "wind_focus": 0.55,
-  "shore_width_scale": 1.1
+  "shore_width_scale": 1.1,
+  "climate_version": 2
 }
