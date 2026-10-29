@@ -322,31 +322,60 @@ uniform float u_time;
 uniform vec3 u_camera_pos;
 uniform vec3 u_wave_dir; // xz = dirección de VIAJE del oleaje dominante
 uniform int u_is_sea;    // 1 = plano del mar, 0 = malla de ríos/lagos
+uniform float u_sea_level; // m
+uniform float u_sea_half;  // semiancho del plano del mar (m)
+uniform float u_sea_grid;  // quads por lado del plano del mar
 
 out vec3 v_world_pos;
 flat out vec3 v_color;
 out vec3 v_river; // (velocidad.x, calado, velocidad.z) interpolado
 out float v_ww;   // whitewater interpolado
+out float v_remanso; // 1 = lámina de río a cota de mar (estuario)
+
+// Ola de vértice del mar de fondo en un punto (C4-W4: viaja con la rosa de
+// vientos, dos trenes, el secundario sesgado ~20°). Se aplana con la
+// distancia: a >4 km una ola de 15 cm subtiende <0.5 px y solo aporta ruido
+// de normal a incidencia rasante.
+float swell_at(vec2 xz) {
+    float dist = length(xz - u_camera_pos.xz);
+    float wave_k = clamp(1.0 - (dist - 2000.0) / 2000.0, 0.0, 1.0);
+    vec2 wd = normalize(u_wave_dir.xz + vec2(1e-5, 0.0));
+    vec2 wd2 = normalize(wd + vec2(-wd.y, wd.x) * 0.35);
+    return wave_k * (0.15 * sin(dot(xz, wd) * 0.05 - u_time * 1.1)
+                     + 0.08 * sin(dot(xz, wd2) * 0.13 - u_time * 1.7));
+}
+
+// Altura de ola del PLANO DEL MAR en xz: la que interpola su rejilla de
+// u_sea_grid² quads (triángulos tl-bl-tr / tr-bl-br, ver build_sea_plane).
+float sea_plane_swell(vec2 xz) {
+    float cell = 2.0 * u_sea_half / u_sea_grid;
+    vec2 g = (xz + vec2(u_sea_half)) / cell;
+    vec2 q = clamp(floor(g), vec2(0.0), vec2(u_sea_grid - 1.0));
+    vec2 f = g - q;
+    vec2 o = q * cell - vec2(u_sea_half);
+    float tl = swell_at(o);
+    float tr = swell_at(o + vec2(cell, 0.0));
+    float bl = swell_at(o + vec2(0.0, cell));
+    float br = swell_at(o + vec2(cell, cell));
+    return f.x + f.y <= 1.0 ? tl + f.x * (tr - tl) + f.y * (bl - tl)
+                            : br + (1.0 - f.x) * (bl - br) + (1.0 - f.y) * (tr - br);
+}
 
 void main() {
     vec3 p = a_pos;
-    // Las olas se aplanan con la distancia: a >4 km una ola de 15 cm subtiende
-    // <0.5 px y solo aporta ruido de normal a incidencia rasante (oscurecía el
-    // fresnel del mar lejano frente al océano analítico del pase de cielo).
-    float dist = length(a_pos.xz - u_camera_pos.xz);
-    float wave_k = clamp(1.0 - (dist - 2000.0) / 2000.0, 0.0, 1.0);
     // Los RÍOS no ondulan por vértice (auditoría 2026-10 #1): la fase
     // dot(pos, dir) con direcciones distintas en vértices vecinos daba alturas
     // sin correlación (la lámina "vibraba"). Su movimiento lo pone el flow map
     // del fragment shader. Mar y lagos (a_light.y = 1) llevan oleaje de viento.
+    v_remanso = 0.0;
     if (u_is_sea == 1 || a_light.y > 0.5) {
-        // C4-W4: el mar de fondo VIAJA con la rosa de vientos (dos trenes,
-        // el secundario sesgado ~20°), no con senoidales diagonales fijas.
-        vec2 wd = normalize(u_wave_dir.xz + vec2(1e-5, 0.0));
-        vec2 wd2 = normalize(wd + vec2(-wd.y, wd.x) * 0.35);
-        p.y += wave_k * (0.15 * sin(dot(a_pos.xz, wd) * 0.05 - u_time * 1.1)
-                         + 0.08 * sin(dot(a_pos.xz, wd2) * 0.13
-                                      - u_time * 1.7));
+        p.y += swell_at(a_pos.xz);
+    } else {
+        // REMANSO DEL ESTUARIO: la lámina a cota de mar sube y baja con el
+        // plano del mar (su misma interpolación), así que en la costura las
+        // dos superficies coinciden y el recorte del mar no deja grietas.
+        v_remanso = 1.0 - smoothstep(0.05, 0.5, a_pos.y - u_sea_level);
+        p.y += v_remanso * sea_plane_swell(a_pos.xz);
     }
     v_world_pos = p;
     v_color = a_color;
@@ -362,6 +391,7 @@ in vec3 v_world_pos;
 flat in vec3 v_color;
 in vec3 v_river;
 in float v_ww;
+in float v_remanso;
 
 uniform vec3 u_camera_pos;
 uniform int u_is_sea;        // 1 = plano del mar, 0 = malla de ríos/lagos
@@ -442,6 +472,36 @@ vec3 flow_phases(vec2 pos) {
     return vec3(ph0, fract(t + 0.5), abs(1.0 - 2.0 * ph0));
 }
 
+// C4-W4: normal ANALÍTICA del oleaje por píxel (independiente de la rejilla
+// de 625 m del plano del mar): tres trenes de ola alrededor de la dirección de
+// viaje de la rosa de vientos — con focalización alta van casi alineados, con
+// mar isótropo se abren en abanico. El sol-glitter y el fresnel salen por
+// píxel, no por parche de malla. La comparten el mar y el remanso del estuario.
+vec3 sea_wave_normal(float dist, vec2 wd) {
+    vec2 perp = vec2(-wd.y, wd.x);
+    float spread = 1.0 - 0.75 * u_wind_focus;
+    vec2 d1 = normalize(wd + perp * 0.55 * spread);
+    vec2 d2 = normalize(wd - perp * 0.45 * spread);
+    vec2 d3 = normalize(wd + perp * 0.18 * spread);
+    // FASE MODULADA por ruido lento (feedback 2026-07-13 "patrones raros
+    // en los píxeles"): tres senoides puras interferían en un moiré
+    // periódico sintético; el jitter espacial rompe la retícula sin
+    // cambiar la dirección de viaje.
+    float jit = w_vnoise(v_world_pos.xz * 0.012) * 6.2831853;
+    float p1 = dot(v_world_pos.xz, d1) * 0.150 - u_time * 1.5 + jit;
+    float p2 = dot(v_world_pos.xz, d2) * 0.330 - u_time * 2.3 + jit * 0.7;
+    float p3 = dot(v_world_pos.xz, d3) * 0.700 - u_time * 3.4 + jit * 1.4;
+    // Las olas se aplanan con la distancia (mismo criterio que las de
+    // vértice); el tren CORTO muere mucho antes — a media distancia su
+    // longitud de onda cae bajo el píxel y solo aporta aliasing.
+    float wave_k = clamp(1.0 - (dist - 2000.0) / 2000.0, 0.0, 1.0);
+    float near_k = clamp(1.0 - (dist - 250.0) / 600.0, 0.0, 1.0);
+    vec2 slope = d1 * (0.14 * cos(p1)) + d2 * (0.10 * cos(p2))
+               + d3 * (0.07 * cos(p3) * near_k);
+    slope *= wave_k;
+    return normalize(vec3(-slope.x, 1.0, -slope.y));
+}
+
 void main() {
     float dist = length(v_world_pos - u_camera_pos);
     vec3 view_dir = normalize(u_camera_pos - v_world_pos);
@@ -452,33 +512,7 @@ void main() {
     vec2 vel = v_river.xz;
     float speed = length(vel);
     if (u_is_sea == 1) {
-        // C4-W4: normal ANALÍTICA del oleaje por píxel (independiente de la
-        // rejilla de 625 m del plano del mar): tres trenes de ola alrededor
-        // de la dirección de viaje de la rosa de vientos — con focalización
-        // alta van casi alineados, con mar isótropo se abren en abanico. El
-        // sol-glitter y el fresnel salen por píxel, no por parche de malla.
-        vec2 perp = vec2(-wd.y, wd.x);
-        float spread = 1.0 - 0.75 * u_wind_focus;
-        vec2 d1 = normalize(wd + perp * 0.55 * spread);
-        vec2 d2 = normalize(wd - perp * 0.45 * spread);
-        vec2 d3 = normalize(wd + perp * 0.18 * spread);
-        // FASE MODULADA por ruido lento (feedback 2026-07-13 "patrones raros
-        // en los píxeles"): tres senoides puras interferían en un moiré
-        // periódico sintético; el jitter espacial rompe la retícula sin
-        // cambiar la dirección de viaje.
-        float jit = w_vnoise(v_world_pos.xz * 0.012) * 6.2831853;
-        float p1 = dot(v_world_pos.xz, d1) * 0.150 - u_time * 1.5 + jit;
-        float p2 = dot(v_world_pos.xz, d2) * 0.330 - u_time * 2.3 + jit * 0.7;
-        float p3 = dot(v_world_pos.xz, d3) * 0.700 - u_time * 3.4 + jit * 1.4;
-        // Las olas se aplanan con la distancia (mismo criterio que las de
-        // vértice); el tren CORTO muere mucho antes — a media distancia su
-        // longitud de onda cae bajo el píxel y solo aporta aliasing.
-        float wave_k = clamp(1.0 - (dist - 2000.0) / 2000.0, 0.0, 1.0);
-        float near_k = clamp(1.0 - (dist - 250.0) / 600.0, 0.0, 1.0);
-        vec2 slope = d1 * (0.14 * cos(p1)) + d2 * (0.10 * cos(p2))
-                   + d3 * (0.07 * cos(p3) * near_k);
-        slope *= wave_k;
-        normal = normalize(vec3(-slope.x, 1.0, -slope.y));
+        normal = sea_wave_normal(dist, wd);
     } else {
         normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
         // PARED DE AGUA (feedback 2026-07-13 "tensión superficial con muros
@@ -501,6 +535,13 @@ void main() {
             vec2 slope = mix(s0, s1, ph.z) * rough;
             normal = normalize(normal + vec3(-slope.x, 0.0, -slope.y));
         }
+        // REMANSO DEL ESTUARIO: la lámina a cota de mar ES el mar que entra
+        // en el cauce. Lleva el mismo oleaje por píxel que el plano del mar,
+        // así que la costura entre las dos mallas (escalonada a celda) no se
+        // lee como un cambio de superficie.
+        if (v_remanso > 0.0) {
+            normal = normalize(mix(normal, sea_wave_normal(dist, wd), v_remanso));
+        }
     }
 
     // Calado físico del punto: el color del agua sale de ÉL, no de un tinte.
@@ -511,11 +552,20 @@ void main() {
                 / (2.0 * u_domain_half);
         // Fuera del heightfield el mar es abierto y hondo (el CLAMP del
         // borde ya devuelve el fondo del perímetro, que es abisal).
-        // Cauce fluvial: el mar no se mete en el río. Se recorta EXACTAMENTE
-        // en los quads que cubre la malla de agua interior (en el remanso
-        // enrasa con el mar y es la única superficie); fuera del dominio la
-        // textura devuelve el borde (0 = mar).
-        if (texture(u_sea_clip, uv).r > 0.5) {
+        // Cauce fluvial: el mar no se mete en el río. Se recorta en los quads
+        // que cubre la malla de agua interior (en el remanso enrasa con el mar
+        // y es la única superficie); fuera del dominio la textura devuelve el
+        // borde (0 = mar). El remanso ondula con el plano del mar (vértice) y
+        // en la costura las dos superficies coinciden; el recorte se encoge
+        // kSeaClipMargin para que la rasterización de las dos mallas solape
+        // en vez de dejar grietas de un píxel con el fondo a la vista.
+        const float kSeaClipMargin = 0.05; // m
+        float e = kSeaClipMargin / (2.0 * u_domain_half);
+        float clip = min(min(texture(u_sea_clip, uv + vec2(e, e)).r,
+                             texture(u_sea_clip, uv + vec2(-e, e)).r),
+                         min(texture(u_sea_clip, uv + vec2(e, -e)).r,
+                             texture(u_sea_clip, uv + vec2(-e, -e)).r));
+        if (clip > 0.5) {
             discard;
         }
         vec2 de = texture(u_seabed, clamp(uv, 0.0, 1.0)).rg;

@@ -129,11 +129,11 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
 }
 
 render::Mesh build_sea_plane(float island_size_m, float sea_level) {
-    const float half = island_size_m * 2.0f;
+    const float half = sea_plane_half(island_size_m);
     const glm::vec3 sea_color{0.13f, 0.32f, 0.50f};
 
     // Subdividido para que las olas de vértice del shader se noten.
-    constexpr int kRes = 64;
+    constexpr int kRes = kSeaPlaneRes;
     std::vector<render::Vertex> vertices;
     vertices.reserve((kRes + 1) * (kRes + 1));
     for (int z = 0; z <= kRes; ++z) {

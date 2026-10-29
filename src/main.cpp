@@ -441,6 +441,11 @@ void run(std::optional<std::uint32_t> seed_override,
                                        world->data.config.wind_focus);
                 water_shader.set_float("u_wave_hmax", terrain::kOpenSeaWaveHeightM);
                 water_shader.set_float("u_breaker_index", terrain::kBreakerIndex);
+                water_shader.set_float("u_sea_level", world->data.config.sea_level);
+                water_shader.set_float("u_sea_half",
+                                       terrain::sea_plane_half(world->data.config.size_m));
+                water_shader.set_float("u_sea_grid",
+                                       static_cast<float>(terrain::kSeaPlaneRes));
             }
             water_shader.set_int("u_seabed", 0);
             water_shader.set_int("u_sea_clip", 1);
