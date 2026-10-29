@@ -505,7 +505,12 @@ void print_landform_stats(const terrain::TerrainData& data) {
     }
     std::cout << std::endl;
     std::cout << "  perfil del canchal: concavo " << pct(st.scree_concave, st.scree_cells)
-              << " %, convexo " << pct(st.scree_convex, st.scree_cells) << " %" << std::endl;
+              << " %, convexo " << pct(st.scree_convex, st.scree_cells) << " %";
+    if (st.scree_hotspot_x >= 0) {
+        std::cout << "; mayor pedrera en mundo (" << data.height.world_x(st.scree_hotspot_x)
+                  << ", " << data.height.world_z(st.scree_hotspot_z) << ")";
+    }
+    std::cout << std::endl;
     const terrain::RockfallStats& rf = data.rockfall_stats;
     std::cout << "desprendimientos: " << rf.source_cells
               << " celdas de pared en el 1er episodio, desprendido " << rf.detached_m3

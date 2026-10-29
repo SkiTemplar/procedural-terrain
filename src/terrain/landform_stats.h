@@ -56,6 +56,11 @@ struct LandformStats {
     std::array<std::size_t, kScreeSlopeBins> scree_slope_bins{};
     std::size_t scree_concave = 0;
     std::size_t scree_convex = 0;
+    // Celda de canchal con más canchal alrededor (radio kHotspotRadius): el
+    // mejor sitio para mirar una pedrera in-game. -1 si no hay canchal.
+    static constexpr int kHotspotRadius = 8;
+    int scree_hotspot_x = -1;
+    int scree_hotspot_z = -1;
 };
 
 [[nodiscard]] LandformStats compute_landform_stats(const TerrainData& data);

@@ -30,6 +30,9 @@ struct Grid {
              + static_cast<std::size_t>(x);
     }
     [[nodiscard]] float h(int x, int z) const { return data.height.at(x, z); }
+    [[nodiscard]] bool interior(int x, int z) const {
+        return x >= 1 && z >= 1 && x < res - 1 && z < res - 1;
+    }
 
     [[nodiscard]] float slope_tan(int x, int z) const {
         const float gx = (h(x + 1, z) - h(x - 1, z)) / (2.0f * cell);
@@ -150,6 +153,46 @@ void mark_wall_feet(const Grid& g, const std::vector<float>& slope,
     }
 }
 
+// Canchal con más canchal en su entorno (suma por tabla integral).
+void find_scree_hotspot(const Grid& g, LandformStats& st) {
+    if (st.scree_cells == 0) {
+        return;
+    }
+    const int res = g.res;
+    const auto stride = static_cast<std::size_t>(res + 1);
+    std::vector<std::uint32_t> integral(stride * stride, 0);
+    for (int z = 0; z < res; ++z) {
+        std::uint32_t row = 0;
+        for (int x = 0; x < res; ++x) {
+            row += (g.interior(x, z) && g.is_scree(x, z)) ? 1u : 0u;
+            integral[static_cast<std::size_t>(z + 1) * stride + static_cast<std::size_t>(x + 1)] =
+                integral[static_cast<std::size_t>(z) * stride + static_cast<std::size_t>(x + 1)]
+                + row;
+        }
+    }
+    const auto box = [&](int x0, int z0, int x1, int z1) {
+        const auto at = [&](int x, int z) {
+            return integral[static_cast<std::size_t>(z) * stride + static_cast<std::size_t>(x)];
+        };
+        return at(x1, z1) - at(x0, z1) - at(x1, z0) + at(x0, z0);
+    };
+    constexpr int r = LandformStats::kHotspotRadius;
+    std::uint32_t best = 0;
+    for (int z = r; z < res - r; ++z) {
+        for (int x = r; x < res - r; ++x) {
+            if (!g.is_scree(x, z)) {
+                continue;
+            }
+            const std::uint32_t n = box(x - r, z - r, x + r + 1, z + r + 1);
+            if (n > best) {
+                best = n;
+                st.scree_hotspot_x = x;
+                st.scree_hotspot_z = z;
+            }
+        }
+    }
+}
+
 } // namespace
 
 LandformStats compute_landform_stats(const TerrainData& data) {
@@ -227,6 +270,7 @@ LandformStats compute_landform_stats(const TerrainData& data) {
             st.scree_convex += s_down > s_here + LandformStats::kProfileEpsTan ? 1 : 0;
         }
     }
+    find_scree_hotspot(g, st);
     return st;
 }
 
