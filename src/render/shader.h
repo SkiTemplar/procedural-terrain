@@ -19,6 +19,8 @@ public:
     Shader& operator=(Shader&& other) noexcept;
 
     void use() const;
+    GLuint id() const { return program_; }
+    GLint uniform_location(const char* name) const;
 
     void set_mat4(const char* name, const glm::mat4& value) const;
     void set_vec3(const char* name, const glm::vec3& value) const;

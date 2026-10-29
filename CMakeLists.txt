@@ -14,6 +14,7 @@ find_package(glad CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_path(Stb_INCLUDE_DIR stb_image.h REQUIRED)
 find_package(OpenGL REQUIRED)
 
 # Pipeline de generación: sin dependencias de OpenGL, testeable en aislamiento.
@@ -40,6 +41,9 @@ add_executable(ProceduralTerrain
         src/render/camera.cpp
         src/render/mesh.cpp
         src/render/instanced_mesh.cpp
+        src/render/terrain_texture_data.cpp
+        src/render/terrain_normal_map.cpp
+        src/render/terrain_textures.cpp
         src/terrain/mesher.cpp
         src/terrain/palette.cpp
         src/terrain/chunked_terrain.cpp
@@ -52,6 +56,7 @@ add_executable(ProceduralTerrain
 )
 
 target_include_directories(ProceduralTerrain PRIVATE src)
+target_include_directories(ProceduralTerrain PRIVATE ${Stb_INCLUDE_DIR})
 
 # GLFW no debe incluir los headers de GL: los aporta glad.
 target_compile_definitions(ProceduralTerrain PRIVATE GLFW_INCLUDE_NONE)
@@ -80,9 +85,25 @@ endif ()
 # Tests del pipeline de generación
 enable_testing()
 find_package(GTest CONFIG REQUIRED)
+find_package(glslang CONFIG REQUIRED)
 
-add_executable(terrain_tests tests/terrain_tests.cpp tests/golden_tests.cpp)
-target_link_libraries(terrain_tests PRIVATE terrain_gen GTest::gtest_main)
+add_executable(terrain_tests
+        tests/terrain_tests.cpp
+        tests/golden_tests.cpp
+        tests/terrain_texture_tests.cpp
+        src/render/terrain_texture_data.cpp
+        src/render/terrain_normal_map.cpp
+)
+target_link_libraries(terrain_tests PRIVATE
+        terrain_gen
+        GTest::gtest_main
+        glslang::glslang
+        glslang::glslang-default-resource-limits
+)
+# Ruta de los assets para los tests que los usan (se saltan si no están):
+# no dependen del directorio de trabajo de ctest.
+target_compile_definitions(terrain_tests PRIVATE
+        PT_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 
 include(GoogleTest)
 gtest_discover_tests(terrain_tests)
