@@ -42,4 +42,17 @@ private:
     }
 };
 
+// Diagnóstico de paredes: celdas de tierra (h > sea_level) con pendiente
+// central > 1.2 (~50°) y su desglose por desnivel continuo — escarpes de
+// >40 m en una ventana de radio 3 celdas y de >100 m en radio 12. Un
+// acantilado legítimo aparece aquí; una muralla de terraza cortada a cuchillo
+// también: la cifra se compara entre versiones del generador.
+struct WallStats {
+    std::size_t land = 0;
+    std::size_t walls = 0;     // pendiente > 1.2
+    std::size_t scarp40 = 0;   // pared con >40 m de desnivel en radio 3
+    std::size_t scarp100 = 0;  // pared con >100 m de desnivel en radio 12
+};
+WallStats count_walls(const Heightfield& hf, float sea_level);
+
 } // namespace terrain

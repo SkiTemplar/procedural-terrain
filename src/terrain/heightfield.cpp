@@ -44,4 +44,52 @@ glm::vec3 Heightfield::normal_at(int x, int z) const {
     return glm::normalize(glm::vec3{-dx, 1.0f, -dz});
 }
 
+namespace {
+
+// Desnivel (máx − mín) en la ventana cuadrada de radio r centrada en (x, z).
+float local_range(const Heightfield& hf, int x, int z, int r) {
+    const int res = hf.resolution();
+    float lo = hf.at(x, z);
+    float hi = lo;
+    for (int dz = -r; dz <= r; ++dz) {
+        const int zz = std::clamp(z + dz, 0, res - 1);
+        for (int dx = -r; dx <= r; ++dx) {
+            const float v = hf.at(std::clamp(x + dx, 0, res - 1), zz);
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+        }
+    }
+    return hi - lo;
+}
+
+} // namespace
+
+WallStats count_walls(const Heightfield& hf, float sea_level) {
+    constexpr float kWallSlope = 1.2f;
+    WallStats s;
+    const int res = hf.resolution();
+    const float inv_2cell = 0.5f / hf.cell_size();
+    for (int z = 1; z < res - 1; ++z) {
+        for (int x = 1; x < res - 1; ++x) {
+            if (hf.at(x, z) <= sea_level) {
+                continue;
+            }
+            ++s.land;
+            const float gx = (hf.at(x + 1, z) - hf.at(x - 1, z)) * inv_2cell;
+            const float gz = (hf.at(x, z + 1) - hf.at(x, z - 1)) * inv_2cell;
+            if (gx * gx + gz * gz <= kWallSlope * kWallSlope) {
+                continue;
+            }
+            ++s.walls;
+            if (local_range(hf, x, z, 3) > 40.0f) {
+                ++s.scarp40;
+            }
+            if (local_range(hf, x, z, 12) > 100.0f) {
+                ++s.scarp100;
+            }
+        }
+    }
+    return s;
+}
+
 } // namespace terrain

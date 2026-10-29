@@ -844,6 +844,16 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
             std::cout << "fondo llano (pendiente<2%, 5-600 m): " << flat
                       << " celdas (" << (land ? 100.0 * flat / land : 0.0)
                       << " % de la tierra media)" << std::endl;
+            // Paredes (auditoría 2026-10, mesetas con murallas): pendiente
+            // >1.2 en tierra y cuántas forman escarpes de gran desnivel.
+            const terrain::WallStats ws =
+                terrain::count_walls(data.height, cfg.sea_level);
+            std::cout << "paredes (pendiente>1.2): " << ws.walls
+                      << " celdas ("
+                      << (ws.land ? 100.0 * ws.walls / ws.land : 0.0)
+                      << " % de la tierra); escarpe >40 m en r=3: "
+                      << ws.scarp40 << "; escarpe >100 m en r=12: "
+                      << ws.scarp100 << std::endl;
         }
 
         // Histograma de regímenes de orilla (espejo del log del modo ventana):
