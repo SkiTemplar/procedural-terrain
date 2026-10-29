@@ -1,6 +1,7 @@
 #include "terrain/generator.h"
 
 #include "terrain/coast.h"
+#include "terrain/ecology.h"
 #include "terrain/erosion.h"
 #include "terrain/lem.h"
 #include "terrain/noise.h"
@@ -21,12 +22,13 @@ namespace {
 // para que los parámetros sean independientes del tamaño del mapa.
 constexpr float kWarpFreq = 0.35f;
 
-// Sol canónico de generación: el aspecto de la nieve (umbría) se hornea con el
-// azimut por defecto del panel (ui::DebugState::sun_azimuth_deg = 135°). La
-// nieve baja aguanta en la cara RESGUARDADA del sol; la solana pela. Mantener
-// en sincronía con el default del panel si se cambia.
-constexpr float kSunAzimuthDeg = 135.0f;
-constexpr float kSunAltitudeDeg = 40.0f; // == ui::DebugState default
+// Reparto roca/hierba dentro de la fracción de afloramiento física: ruido
+// isótropo de ~25 m de longitud de onda, nunca por debajo de 4 celdas (en
+// mallas gruesas un ruido más fino que la celda vuelve a dar peine).
+// perlin: |n| ≲ 0.7 → umbral 0.5 ± 0.4.
+constexpr float kRockDitherWaveM = 50.0f;
+constexpr float kRockDitherMinCells = 8.0f;
+constexpr float kRockDitherAmp = 0.6f;
 
 float smoothstep(float edge0, float edge1, float x) {
     const float t = glm::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
@@ -327,6 +329,7 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
     const float wind_theta =
         noise.fbm(glm::vec3{41.2f, 0.0f, -17.9f}, 1) * 6.2831853f;
     const glm::vec2 wind{std::cos(wind_theta), std::sin(wind_theta)};
+    data.wind = wind;
     const std::vector<float> macro_h =
         run_lem(uplift, lithology, macro_res, macro_cell,
                 2.0f * cfg.mountain_height_m, 150, wind, seabed,
@@ -560,10 +563,9 @@ void shape_coast(TerrainData& data, const TerrainConfig& cfg) {
     });
 }
 
-// Nieve y pisos de vegetación realistas. La nieve no es una cota: depende de
-// la altitud (borde irregular), la pendiente (las paredes no acumulan), la
-// orientación (las umbrías conservan nieve más abajo) y parches de ruido.
-// La vegetación pierde altura por pisos: bosque → pradera alpina → roca.
+// Materiales: lechos bajo el agua, orillas por régimen de oleaje y, tierra
+// adentro, ecología física (ecology.h): nieve estacional, canchal, roca donde
+// no hay suelo, bosque y pradera por temperatura, agua y suelo.
 // `talus_m` (espesor de derrubio de rockfall_talus, vacío = sin canchales)
 // marca las pedreras: Gravel fuera de la banda litoral.
 constexpr float kScreeMinDepthM = 0.3f; // menos: derrubio disperso bajo suelo
@@ -583,27 +585,18 @@ void classify_materials(TerrainData& data, const Noise& noise,
                                / (1024.0f * 1024.0f);
     const auto rows = row_indices(res);
 
-    // Línea de nieve ADAPTATIVA: cada seed culmina a una cota distinta; si la
-    // cordillera no llega a la línea nominal, la nieve baja para coronar
-    // igualmente. 0.60: las paredes Matterhorn (muy empinadas) restan mucha
-    // superficie donde la nieve agarra — con 0.68 quedaba solo un 1% del
-    // mapa nevado. El slider queda como tope.
-    const float max_h =
-        *std::max_element(hf.data().begin(), hf.data().end());
-    const float snow_line = std::min(cfg.snow_line_m, 0.60f * max_h);
-    // Anclas de la paleta: exactamente los valores usados al clasificar.
-    data.max_height_m = max_h;
-    data.snow_line_m = snow_line;
-    // Treeline subida (feedback 2026-07-08, "más árboles en la montaña"): el
-    // bosque llega hasta ~150 m por debajo de la nieve, antes 240 — trepa por
-    // las laderas altas en vez de cortarse a media montaña.
-    const float treeline_base = snow_line - 150.0f;
-
-    // Dirección horizontal al sol canónico (para el aspecto de nieve): la
-    // umbría es la cara con insolación negativa (n·sol < 0).
-    const float sun_az = kSunAzimuthDeg * 3.14159265f / 180.0f;
-    const float sun_hx = std::cos(sun_az);
-    const float sun_hz = std::sin(sun_az);
+    // Clima físico: la nieve y el bosque ya no son cotas de corte (antes, la
+    // nieve a 0.60·cumbre y el bosque a nieve − 150 m). La temperatura sale
+    // de la cota con el gradiente ambiental; la lluvia, de la advección
+    // orográfica sobre el relieve final (data.precipitation); la humedad
+    // del suelo, del TWI; la radiación, de la luz horneada.
+    data.max_height_m = *std::max_element(hf.data().begin(), hf.data().end());
+    data.snow_line_m = cfg.snow_line_m;  // referencia de la paleta
+    data.treeline_m = cfg.treeline_m;
+    const EcoClimate climate = make_eco_climate(cfg);
+    const EcoProbe probe(data, topographic_wetness(hf, data.hydrology.flow));
+    const float rock_dither_per_km =
+        1000.0f / std::max(kRockDitherWaveM, kRockDitherMinCells * hf.cell_size());
 
     // Máscara de ribera: agua interior dilatada ~4 celdas. Los ríos y lagos
     // concentran humedad → bosque de galería a su alrededor.
@@ -744,38 +737,28 @@ void classify_materials(TerrainData& data, const Noise& noise,
                 // lucen uno con anillo de arena y el otro sin.
                 m = Material::Sand;
             } else {
-                const float snow_edge_jitter =
-                    noise.fbm(p_km * 1.7f + glm::vec3{7.3f, 0.0f, 91.4f}, 3) * 60.0f;
-                const float patch =
-                    noise.fbm(p_km * 11.0f + glm::vec3{-3.1f, 0.0f, 17.9f}, 3);
-                // Moteado fino (~30 m): rompe el borde nieve/roca en manchas.
-                const float speckle =
-                    noise.perlin(p_km * 33.0f + glm::vec3{58.2f, 0.0f, -4.4f});
-
-                // Score de nieve: altitud relativa + umbría − pendiente + parches.
-                float snow_score =
-                    (h - (snow_line + snow_edge_jitter)) / 120.0f;
-                // Umbría: la ladera resguardada del sol conserva nieve más
-                // abajo (menos insolación). Antes se premiaba +n.z, que con el
-                // sol por defecto (az 135°) es justo la cara ILUMINADA → nieve
-                // colgada de la solana (bug de aspecto invertido, auditoría
-                // 2026-07-09). Ahora el bonus va a la cara opuesta al sol.
-                const float insol = n.x * sun_hx + n.z * sun_hz;
-                snow_score += 0.30f * std::max(-insol, 0.0f);
-                // La nieve NO se acumula en paredes: penalización fuerte por
-                // pendiente — los acantilados quedan de roca viva.
-                snow_score -= 0.80f * slope;
-                snow_score += 0.25f * patch;               // parches irregulares
-                snow_score += 0.18f * speckle;             // moteado del borde
-
-                // Treeline por debajo de la nieve; con la nieve baja, el
-                // bosque conserva la mayor parte de la isla.
-                const float treeline = treeline_base
-                    + noise.fbm(p_km * 2.3f + glm::vec3{41.0f, 0.0f, -8.5f}, 2) * 80.0f;
-
-                // Corte físico duro: por encima de ~49° la nieve no puede
-                // agarrar, da igual la altitud.
-                if (snow_score > 0.0f && slope < 1.15f) {
+                // Ecología física (ecology.h): nieve estacional por balance
+                // temperatura-lluvia-radiación, roca donde el suelo no llega a
+                // formarse (denudación ≥ producción o pendiente sobre la
+                // crítica), bosque por temperatura, balance hídrico, viento y
+                // suelo. El ruido solo perturba microclima, borde de bosque
+                // y el reparto roca/hierba dentro de la fracción física.
+                EcoInputs in = probe.inputs_at(x, z);
+                if (riparian[i]) {
+                    // Orilla de agua dulce: depósito de ribera (dique, llanura
+                    // de inundación) a escala de la propia orilla, más fina que
+                    // la ladera de ~20 m: la pared de una garganta no le quita
+                    // el suelo al banco que hay a sus pies.
+                    in.riparian = 1.0f;
+                    in.slope = std::min(in.slope, slope);
+                    in.alluvium_m += kBankDepositM;
+                }
+                in.jitter =
+                    noise.fbm(p_km * 1.7f + glm::vec3{7.3f, 0.0f, 91.4f}, 3);
+                in.edge = noise.fbm(p_km * 0.45f + glm::vec3{14.3f, 0.0f, -7.2f},
+                                    3, 2.0f, 0.48f);
+                const EcoCell eco = evaluate_ecology(in, climate);
+                if (eco.snow_margin_c > 0.0f) {
                     m = Material::Snow;
                 } else if (!talus_m.empty() && talus_m[i] >= kScreeMinDepthM
                            && slope < kScreeMaxSlope && !riparian[i]) {
@@ -783,36 +766,19 @@ void classify_materials(TerrainData& data, const Noise& noise,
                     // demasiado activo para que agarre suelo o vegetación. En
                     // la ribera el río se lo lleva (y la orilla sigue de arena).
                     m = Material::Gravel;
-                } else if (slope > cfg.rock_slope) {
+                } else if (eco.rock_frac
+                           > 0.5f + kRockDitherAmp * noise.fbm(
+                                 p_km * rock_dither_per_km + glm::vec3{-51.7f, 0.0f, 23.9f},
+                                 2)) {
+                    // Afloramiento: la fracción de roca es continua; un ruido
+                    // isótropo de ~25 m reparte esa fracción en manchas (como
+                    // un pedregal con céspedes), no en rayas de una celda.
                     m = Material::Rock;
-                } else if (h > treeline) {
-                    // Piso alpino: cada vez más roca al acercarse a la nieve.
-                    const float alpine_t = smoothstep(treeline, snow_line, h);
-                    m = (patch > 0.25f - 0.55f * alpine_t) ? Material::Rock
-                                                           : Material::Grass;
                 } else {
-                    // Bosque en MASAS: capa lenta (3-6 km) + borde irregular.
-                    // Los claros emergen solos donde la señal cae del umbral;
-                    // la ribera de ríos y lagos siempre lleva bosque de galería.
-                    const float f_bulk = noise.fbm(
-                        p_km * 0.15f + glm::vec3{-29.1f, 0.0f, 63.8f}, 2, 2.5f, 0.50f);
-                    const float f_edge = noise.fbm(
-                        p_km * 0.45f + glm::vec3{14.3f, 0.0f, -7.2f}, 3, 2.0f, 0.48f);
-                    const float forest_n =
-                        (0.65f * f_bulk + 0.35f * f_edge) * 0.5f + 0.5f;
-                    // Umbral base más bajo (0.40): bosque más denso y con
-                    // menos claros; sigue abriendo praderas donde la señal cae.
-                    float forest_threshold =
-                        0.40f + 0.48f * smoothstep(treeline - 350.0f, treeline, h);
-                    if (riparian[i]) {
-                        forest_threshold -= 0.20f;
-                    }
                     // GRADIENTE, no binario: la densidad crece suave a través
                     // del umbral; el material solo etiqueta el núcleo denso.
-                    const float density = glm::clamp(
-                        (forest_n - forest_threshold + 0.18f) / 0.36f, 0.0f, 1.0f);
-                    data.forest_density[i] = density;
-                    if (density > 0.5f) {
+                    data.forest_density[i] = eco.forest;
+                    if (eco.forest > 0.5f) {
                         m = Material::Forest;
                     }
                 }
@@ -820,6 +786,30 @@ void classify_materials(TerrainData& data, const Noise& noise,
             data.material[i] = m;
         }
     });
+
+    // Déficit hídrico en el grid de precipitación (lo muestrea la paleta para
+    // el agostado de la hierba): la misma física, sin perturbaciones.
+    const int pres = data.precip_res;
+    if (pres >= 2) {
+        data.dryness.assign(static_cast<size_t>(pres) * static_cast<size_t>(pres), 0.3f);
+        const auto prows = row_indices(pres);
+        const float to_fine =
+            static_cast<float>(res - 1) / static_cast<float>(pres - 1);
+        std::for_each(std::execution::par, prows.begin(), prows.end(), [&](int gz) {
+            const int z = std::min(static_cast<int>(std::lround(gz * to_fine)), res - 1);
+            for (int gx = 0; gx < pres; ++gx) {
+                const int x =
+                    std::min(static_cast<int>(std::lround(gx * to_fine)), res - 1);
+                const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
+                               + static_cast<size_t>(x);
+                EcoInputs in = probe.inputs_at(x, z);
+                in.riparian = riparian[i] ? 1.0f : 0.0f;
+                data.dryness[static_cast<size_t>(gz) * static_cast<size_t>(pres)
+                             + static_cast<size_t>(gx)] =
+                    evaluate_ecology(in, climate).dryness;
+            }
+        });
+    }
 
     // Anti-dithering de orilla (N0c, feedback 2026-07-08): los umbrales de
     // régimen (e≈0.45, aporte≈0.30, pendiente) flickean celda a celda y
@@ -1125,11 +1115,18 @@ TerrainData generate(const TerrainConfig& cfg,
     if (abrasion.eroded_cells > 0) {
         coast = compute_coast_exposure(data.height, data.hydrology, cfg);
     }
+    // La luz solo depende del relieve final (ya socavado por la abrasión): se
+    // hornea ANTES de clasificar porque la ecología usa la radiación (sombra
+    // arrojada + AO de cielo).
+    report("luz");
+    compute_lighting(data, cfg);
+    report("clima");
+    data.precip_res = std::min(cfg.resolution, 1024);
+    data.precipitation = orographic_precipitation(data.height, cfg.sea_level,
+                                                  data.wind, data.precip_res);
     report("materiales");
     classify_materials(data, noise, coast, talus_m);
     data.wave_energy = std::move(coast.wave_energy);
-    report("luz");
-    compute_lighting(data, cfg);
 
     return data;
 }

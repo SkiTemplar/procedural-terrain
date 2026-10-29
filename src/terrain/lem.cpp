@@ -502,6 +502,16 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
                 h[i] += kDiffusion * lap[i];
             }
         });
+        // Exportación (solo lectura): denudación total del último paso, antes
+        // del relleno de pits, que no es erosión sino manejo de lagos.
+        if (stats != nullptr && it == iterations - 1 && uplift_per_iter > 0.0f) {
+            stats->denudation.resize(n);
+            for (size_t i = 0; i < n; ++i) {
+                stats->denudation[i] =
+                    (h_prev[i] + uplift_per_iter * uplift[i] - h[i])
+                    / uplift_per_iter;
+            }
+        }
 
         // 6) Manejo de lagos: relleno periódico para que las cuencas
         // endorreicas drenen en vez de inflarse como mesetas.
@@ -527,6 +537,9 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
     }
     if (stats != nullptr) {
         stats->alluvium_m = std::move(alluvium);
+        if (has_wind) {
+            stats->rain = rain_w;
+        }
     }
     // El clamp a ≥0 solo tiene sentido sin batimetría: con fondo marino real
     // el relieve devuelto ES con signo (la costa se corta después en h=0).

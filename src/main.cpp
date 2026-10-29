@@ -8,6 +8,7 @@
 #include "terrain/chunked_terrain.h"
 #include "terrain/coast.h"
 #include "terrain/coast_metrics.h"
+#include "terrain/ecology.h"
 #include "terrain/generator.h"
 #include "terrain/landform_stats.h"
 #include "terrain/hydraulic_geometry.h"
@@ -24,6 +25,7 @@
 #include <glm/vec2.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -266,6 +268,9 @@ void run(std::optional<std::uint32_t> seed_override,
                 preset_expected_hash = p->height_hash;
                 state.regenerate_requested = true;
                 state.preset_status = "cargando preset '" + name + "'...";
+                if (p->climate_version < terrain::kPresetClimateVersion) {
+                    state.preset_status += " (clima v1: revisa snow_line_m y treeline_m)";
+                }
             } else {
                 state.preset_status = "ERROR al leer preset '" + name + "'";
             }
@@ -680,13 +685,59 @@ void report_river_mouths(const terrain::TerrainData& data) {
     }
 }
 
+// Métricas de ecología física (track mp/ecologia-fisica): reparto de
+// materiales, campos físicos, correlaciones del bosque, límite del bosque y
+// nieve por exposición, y fragmentación de la roca.
+void print_ecology_report(const terrain::TerrainData& data) {
+    const terrain::EcologyReport r = terrain::ecology_report(data);
+    const auto pct = [&](terrain::Material m) {
+        return r.land_pct[static_cast<std::size_t>(m)];
+    };
+    std::cout << "--- ecologia ---\n";
+    std::cout << "materiales (% tierra): hierba " << pct(terrain::Material::Grass)
+              << " bosque " << pct(terrain::Material::Forest) << " roca "
+              << pct(terrain::Material::Rock) << " nieve "
+              << pct(terrain::Material::Snow) << " arena "
+              << pct(terrain::Material::Sand) << " grava "
+              << pct(terrain::Material::Gravel) << " marisma "
+              << pct(terrain::Material::Marsh) << " lecho rio "
+              << pct(terrain::Material::RiverBed) << " lecho lago "
+              << pct(terrain::Material::LakeBed) << '\n';
+    const auto q3 = [](const std::array<float, 3>& q) {
+        return std::to_string(q[0]) + "/" + std::to_string(q[1]) + "/"
+             + std::to_string(q[2]);
+    };
+    std::cout << "campos p10/p50/p90: lluvia " << q3(r.precip_q) << " (LEM "
+              << q3(r.lem_rain_q) << ") twi " << q3(r.twi_q) << " denudacion "
+              << q3(r.denudation_q) << '\n';
+    std::cout << "  agua/PET " << q3(r.aridity_q) << " deficit 1-ET/PET "
+              << q3(r.dryness_q) << " exposicion viento " << q3(r.exposure_q)
+              << " convexidad " << q3(r.convexity_q) << '\n';
+    std::cout << "spearman bosque~twi " << r.spearman_forest_twi << " bosque~lluvia "
+              << r.spearman_forest_precip << " bosque~exposicion "
+              << r.spearman_forest_exposure << '\n';
+    const auto group = [](const char* name, const terrain::EcologyReport::Group& g) {
+        std::cout << "  " << name << ": limite bosque (logistica, 10 %) " << g.treeline_m
+                  << " m (h50 " << g.forest_line_m << " m), p95 bosque "
+                  << g.forest_p95_m << " m, p10 nieve " << g.snow_p10_m << " m ("
+                  << g.cells << " muestras)\n";
+    };
+    std::cout << "exposicion:\n";
+    group("barlovento", r.windward);
+    group("sotavento ", r.leeward);
+    group("solana    ", r.sunny);
+    group("umbria    ", r.shady);
+    std::cout << "roca a pendiente 0.3-0.6: convexas " << r.rock_convex_pct
+              << " % concavas " << r.rock_concave_pct << " %\n";
+    std::cout << "fragmentacion: roca aislada (<3 vecinas) " << r.rock_isolated_pct
+              << " % nieve aislada " << r.snow_isolated_pct
+              << " % tiras de hierba <=3 celdas entre roca "
+              << r.veg_strips_per_100_rock << " por 100 celdas de roca" << std::endl;
+}
+
 // Dump de verificación de costa (criterio §7-A del plan): mapa de materiales
 // con lámina de agua y mapa de energía de oleaje, sin abrir ventana.
-int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
-    terrain::TerrainConfig cfg;
-    if (seed) {
-        cfg.seed = *seed;
-    }
+int dump_costa(const std::string& prefix, const terrain::TerrainConfig& cfg) {
     // Cada fase con el tiempo transcurrido desde el arranque: el coste de una
     // fase es la diferencia con la siguiente.
     const auto t0 = std::chrono::steady_clock::now();
@@ -1145,6 +1196,30 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
     print_landform_stats(data);
     report_river_mouths(data);
 
+    print_ecology_report(data);
+    // Precipitación de la ecología (gris, 0 → 2.5× la media; mar en azul).
+    if (data.precip_res >= 2) {
+        const int pr = data.precip_res;
+        std::vector<glm::u8vec3> pimg(static_cast<size_t>(pr) * static_cast<size_t>(pr));
+        for (int z = 0; z < pr; ++z) {
+            for (int x = 0; x < pr; ++x) {
+                const size_t pi = static_cast<size_t>(z) * static_cast<size_t>(pr)
+                                + static_cast<size_t>(x);
+                const float wx = -cfg.size_m * 0.5f
+                               + cfg.size_m * static_cast<float>(x) / static_cast<float>(pr - 1);
+                const float wz = -cfg.size_m * 0.5f
+                               + cfg.size_m * static_cast<float>(z) / static_cast<float>(pr - 1);
+                if (data.height.sample(wx, wz) <= cfg.sea_level) {
+                    pimg[pi] = {20, 30, 80};
+                    continue;
+                }
+                const float v = glm::clamp(data.precipitation[pi] / 2.5f, 0.0f, 1.0f);
+                pimg[pi] = to8(glm::vec3{v, v, v});
+            }
+        }
+        write_bmp(prefix + "-lluvia.bmp", pr, pr, pimg);
+    }
+
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "
               << prefix << "-oleaje.bmp / " << prefix << "-relieve.bmp / "
               << prefix << "-litoral.bmp"
@@ -1155,15 +1230,29 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
 // Uso: ProceduralTerrain [seed [x z yaw pitch [alt]]] — sin argumentos usa la
 // seed del config y el spawn estándar; la pose opcional sirve al lazo de
 // verificación visual por capturas (alt = metros sobre el terreno en x,z).
-// Modo dump: ProceduralTerrain --dump-costa <prefijo> [seed] genera el mundo
-// sin ventana y escribe los mapas de materiales y oleaje como BMP.
+// Modo dump: ProceduralTerrain --dump-costa <prefijo> [seed | preset.json]
+// genera el mundo sin ventana y escribe los mapas de materiales y oleaje.
 int main(int argc, char** argv) {
     if (argc > 2 && std::string(argv[1]) == "--dump-costa") {
-        std::optional<std::uint32_t> dump_seed;
+        terrain::TerrainConfig cfg;
         if (argc > 3) {
-            dump_seed = static_cast<std::uint32_t>(std::stoul(argv[3]));
+            const std::string arg = argv[3];
+            if (arg.size() > 5 && arg.ends_with(".json")) {
+                const auto preset = terrain::load_preset(arg);
+                if (!preset) {
+                    std::cerr << "no se pudo cargar el preset " << arg << std::endl;
+                    return 1;
+                }
+                if (preset->climate_version < terrain::kPresetClimateVersion) {
+                    std::cerr << "aviso: preset con clima v1 (nieve relativa a la cumbre); "
+                                 "snow_line_m y treeline_m se leen con la semantica v2\n";
+                }
+                cfg = preset->config;
+            } else {
+                cfg.seed = static_cast<std::uint32_t>(std::stoul(arg));
+            }
         }
-        return dump_costa(argv[2], dump_seed);
+        return dump_costa(argv[2], cfg);
     }
     std::optional<std::uint32_t> seed;
     std::optional<CameraPose> pose;

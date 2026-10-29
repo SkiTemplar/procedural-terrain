@@ -60,6 +60,16 @@ struct LemStats {
     // generador lo usa para enterrar la rugosidad de detalle bajo el
     // sedimento (un fondo de valle relleno es liso).
     std::vector<float> alluvium_m;
+    // Precipitación orográfica relativa por celda macro (la misma `rain_w`
+    // que pondera el caudal del LEM en su último recálculo): media 1 sobre
+    // tierra, suelo kRainFloor en la sombra de lluvia, 1 sobre el mar. Vacío
+    // si no se calculó (sin viento → lluvia uniforme 1).
+    std::vector<float> rain;
+    // Denudación neta de la última iteración por celda macro (incisión +
+    // difusión, antes del relleno de pits), en unidades del uplift máximo
+    // por iteración: ~u en equilibrio, >u en transitorio erosivo, <0 donde
+    // agrada. Mide dónde el suelo no llega a formarse (roca desnuda).
+    std::vector<float> denudation;
 };
 
 std::vector<float> run_lem(const std::vector<float>& uplift,

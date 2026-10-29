@@ -62,6 +62,8 @@ json preset_to_json(const TerrainConfig& cfg) {
     j["fluvial_iterations"] = cfg.fluvial_iterations;
     j["detail_amplitude_m"] = cfg.detail_amplitude_m;
     j["snow_line_m"] = cfg.snow_line_m;
+    j["treeline_m"] = cfg.treeline_m;
+    j["climate_version"] = kPresetClimateVersion;
     j["rock_slope"] = cfg.rock_slope;
     j["beach_band_m"] = cfg.beach_band_m;
     j["wind_dir_deg"] = cfg.wind_dir_deg;
@@ -123,12 +125,14 @@ std::optional<Preset> load_preset(const std::string& path) {
         read_or_keep(j, "fluvial_iterations", p.config.fluvial_iterations);
         read_or_keep(j, "detail_amplitude_m", p.config.detail_amplitude_m);
         read_or_keep(j, "snow_line_m", p.config.snow_line_m);
+        read_or_keep(j, "treeline_m", p.config.treeline_m);
         read_or_keep(j, "rock_slope", p.config.rock_slope);
         read_or_keep(j, "beach_band_m", p.config.beach_band_m);
         read_or_keep(j, "wind_dir_deg", p.config.wind_dir_deg);
         read_or_keep(j, "wind_focus", p.config.wind_focus);
         read_or_keep(j, "shore_width_scale", p.config.shore_width_scale);
         read_or_keep(j, "height_hash", p.height_hash);
+        read_or_keep(j, "climate_version", p.climate_version);
         return p;
     } catch (const std::exception&) {
         return std::nullopt;

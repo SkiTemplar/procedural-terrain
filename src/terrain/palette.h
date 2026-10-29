@@ -23,13 +23,17 @@ public:
 private:
     const TerrainData* data_;
     float sea_level_ = 0.0f;
-    float snow_line_ = 0.0f; // efectiva: min(slider, 0.60·cumbre)
+    float snow_line_ = 0.0f; // nieve estacional de referencia
     float tree_line_ = 1.0f;
     float snow_span_ = 1.0f; // recorrido nieve sucia → blanca pura
     float rock_low_ = 0.0f;  // arranque del gradiente de roca (sobre el mar)
     float rock_span_ = 1.0f;
 
+    // Bilineal de un campo cuadrado res² que cubre el mapa (fallback si falta).
+    float field_at(const std::vector<float>& field, int res, float wx, float wz,
+                   float fallback) const;
     float lithology_at(float wx, float wz) const;    // bilineal, grid macro
+    float dryness_at(float wx, float wz) const;      // déficit hídrico [0,1]
     float water_level_near(float wx, float wz) const; // NaN si no hay agua
     bool littoral_near(float wx, float wz) const;     // banda de oleaje
     glm::vec3 rock_base(float y, float climate, float cx, float cz) const;

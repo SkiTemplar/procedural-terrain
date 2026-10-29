@@ -80,10 +80,20 @@ struct TerrainConfig {
     // levantaba puntas de casi 2 m sobre celdas de 0.3 m del LOD cercano.
     float detail_amplitude_m = 0.55f;
 
-    // Clasificación. La nieve sigue a las cumbres nuevas (~1.2-1.4 km):
-    // con 480 m la mitad de la cordillera quedaba blanca.
-    float snow_line_m = 950.0f;
-    float rock_slope = 0.85f; // pendiente (tan) a partir de la cual es roca
+    // Clima (ecología física). `snow_line_m`: cota de la nieve estacional de
+    // la escena con precipitación media y exposición neutra (calibra la fecha
+    // de la escena; la línea real sube en solana y sotavento y baja en umbría
+    // y barlovento). Ya no es relativa a la cumbre (antes min(valor,
+    // 0.60·cumbre)). 875 m deja en el mundo canónico (seed 20260711) un 6-7 %
+    // de nieve, como la línea efectiva antigua (min(950, 0.6·1090) = 654 m).
+    float snow_line_m = 875.0f;
+    // Cota de la isoterma de 10 °C del mes cálido en una ladera neutra: fija
+    // la temperatura a nivel del mar con el gradiente de 6.5 °C/km. 500 m es
+    // una isla hiperoceánica de veranos frescos (Hébridas, Feroe: límite del
+    // bosque natural a 300-500 m); el límite real varía alrededor con la
+    // radiación, la exposición al viento y la lluvia.
+    float treeline_m = 500.0f;
+    float rock_slope = 0.85f; // tanβ crítica de retención de suelo (~40°)
     float beach_band_m = 12.0f; // la arena cubre la mayor parte de la zona plana
 
     // Costa expuesta (Agua v2 paso 8): rosa de vientos del oleaje REI/fetch.

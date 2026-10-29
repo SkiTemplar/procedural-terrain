@@ -19,9 +19,18 @@ namespace terrain {
 // campo a campo y explícita: un campo nuevo del config debe añadirse aquí
 // a conciencia (y romperá el round-trip del test si se olvida a medias).
 
+// Versión de la semántica del clima en el preset. v1 (sin campo): la nieve
+// era min(snow_line_m, 0.60·cumbre) y el bosque llegaba a nieve − 150 m.
+// v2: snow_line_m es la cota absoluta de la nieve estacional con exposición
+// neutra y treeline_m la isoterma de 10 °C (ecología física). La conversión
+// v1 → v2 no es automática (la cumbre solo se conoce tras generar): un preset
+// v1 carga tal cual y el llamante avisa de que su nieve y su bosque cambian.
+inline constexpr int kPresetClimateVersion = 2;
+
 struct Preset {
     TerrainConfig config;
     std::uint64_t height_hash = 0; // 0 = preset sin hash (aún no generado)
+    int climate_version = 1;       // 1 = preset anterior a la ecología física
 };
 
 // FNV-1a de 64 bits sobre los bits de los floats del heightfield: barato,
