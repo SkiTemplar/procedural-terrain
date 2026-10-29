@@ -107,11 +107,11 @@ struct RockyCoastMetrics {
     int platform_cells = 0;         // −2 < h ≤ mar, pendiente < 0.05, unida a un pie
     float platform_area_m2 = 0.0f;
     float mean_platform_width_m = 0.0f; // media sobre pies con plataforma
-    // Anchura (pie → borde mar adentro de la plataforma) frente a E: solo en
-    // pies de acantilado, y en toda la costa (anchura 0 sin plataforma).
+    // Anchura del fondo somero y llano al pie (pie → borde mar adentro)
+    // frente a E, en pies de acantilado. Mide la plataforma TOTAL (natural +
+    // abrasión): la firma de Sunamura aislada la da CliffRetreatStats.
     float width_energy_pearson = 0.0f;
     float width_energy_spearman = 0.0f;
-    float coast_width_energy_spearman = 0.0f;
     float toe_energy_p50 = 0.0f;
     float toe_energy_p90 = 0.0f;
     float toe_face_deg_p50 = 0.0f;  // inclinación del frente pie → agua
@@ -453,13 +453,11 @@ inline RockyCoastMetrics measure_rocky_coast(const Heightfield& hf,
     }
     m.toe_face_deg_p50 = percentile(face_deg, 0.5f);
 
-    // La misma relación sobre TODA la costa (anchura 0 sin plataforma): sin
-    // el sesgo de selección de mirar solo pies, que solo existen donde el
-    // oleaje ya superó a la roca.
-    std::vector<float> coast_w;
     std::vector<float> coast_e;
-    sample(coast.cells, coast_w, coast_e);
-    m.coast_width_energy_spearman = grid::spearman(coast_w, coast_e);
+    coast_e.reserve(coast.cells.size());
+    for (const std::uint32_t i : coast.cells) {
+        coast_e.push_back(wave_energy[i]);
+    }
     m.coast_energy_p50 = percentile(coast_e, 0.5f);
     m.coast_energy_p90 = percentile(coast_e, 0.9f);
 

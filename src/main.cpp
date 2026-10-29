@@ -827,10 +827,12 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
                   << " celdas (" << rc.platform_area_m2 / 10000.0f
                   << " ha); anchura media " << rc.mean_platform_width_m
                   << " m" << std::endl;
-        std::cout << "  correlacion anchura-E: en pies pearson "
+        // Fondo somero total al pie (natural + abrasión); la firma de
+        // Sunamura (anchura SOCAVADA frente a E) sale en el log de la etapa
+        // "abrasion costera" de la generación.
+        std::cout << "  correlacion fondo somero al pie-E (natural + abrasion): pearson "
                   << rc.width_energy_pearson << " spearman "
-                  << rc.width_energy_spearman << "; en toda la costa spearman "
-                  << rc.coast_width_energy_spearman << std::endl;
+                  << rc.width_energy_spearman << std::endl;
         std::cout << "  farallones (<0.5 ha a <300 m de acantilado): "
                   << rc.stacks << " (" << rc.tall_stacks
                   << " con >3 m); area media " << rc.stack_mean_area_m2
