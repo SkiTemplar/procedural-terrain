@@ -803,8 +803,9 @@ TEST(Hidrologia, ElMarRecortadoNoDejaElFondoAlAire) {
 TEST(Corriente, CanalRectoDaManningAguasAbajo) {
     // Canal sintético recto hacia +x, 3 celdas de ancho, calado 1 m y lámina
     // con pendiente S: toda la anchura corre aguas abajo (no hacia el eje) a
-    // la velocidad de Manning v = n⁻¹·R^(2/3)·S^(1/2). Un lago no lleva
-    // corriente.
+    // la velocidad de Manning v = n⁻¹·R^(2/3)·S^(1/2) con la rugosidad de
+    // Jarrett (1984) n = 0.39·S^0.38·R^-0.16 (S = 0.004 > umbral de grava).
+    // Un lago no lleva corriente.
     constexpr int kRes = 64;
     constexpr float kSlope = 0.004f;
     constexpr float kDepth = 1.0f;
@@ -844,8 +845,11 @@ TEST(Corriente, CanalRectoDaManningAguasAbajo) {
     }
 
     const auto field = terrain::compute_river_flow(data);
+    const float n_jarrett =
+        0.39f * std::pow(kSlope, 0.38f) * std::pow(kDepth, -0.16f);
+    ASSERT_GT(n_jarrett, terrain::kManningGravel);
     const float expected =
-        std::pow(kDepth, 2.0f / 3.0f) * std::sqrt(kSlope) / terrain::kManningGravel;
+        std::pow(kDepth, 2.0f / 3.0f) * std::sqrt(kSlope) / n_jarrett;
     for (int x = 8; x < kRes - 8; x += 7) {
         for (int z = 31; z <= 33; ++z) {
             const glm::vec2 v = field.at(static_cast<size_t>(z) * kRes + x);
@@ -856,6 +860,36 @@ TEST(Corriente, CanalRectoDaManningAguasAbajo) {
         }
     }
     EXPECT_EQ(glm::length(field.at(static_cast<size_t>(7) * kRes + 7)), 0.0f);
+}
+
+TEST(Corriente, LaRugosidadCreceConLaPendiente) {
+    // Bloqueantes #3/#7: con n de grava constante (0.035) un torrente de
+    // S = 0.04 y R = 0.86 m daba 5.2 m/s (techo). Con Jarrett, ~1.5 m/s; en
+    // llanura (S < 0.0015) manda el suelo de grava.
+    EXPECT_FLOAT_EQ(terrain::manning_n(0.0005f, 1.0f), terrain::kManningGravel);
+    EXPECT_NEAR(terrain::manning_n(0.04f, 0.86f), 0.1177f, 0.002f);
+    EXPECT_NEAR(terrain::manning_speed(0.04f, 0.86f), 1.54f, 0.05f);
+    EXPECT_LT(terrain::manning_speed(0.04f, 0.86f), 0.5f * terrain::kMaxRiverSpeed);
+    EXPECT_EQ(terrain::manning_speed(0.04f, 0.0f), 0.0f);
+    // Monótona en el calado y en la pendiente (con R fijo).
+    EXPECT_LT(terrain::manning_speed(0.01f, 0.5f), terrain::manning_speed(0.01f, 1.5f));
+    EXPECT_LT(terrain::manning_speed(0.005f, 1.0f), terrain::manning_speed(0.05f, 1.0f));
+}
+
+TEST(Corriente, LaVelocidadDelMundoNoVaAlTecho) {
+    // Bloqueantes #3/#7: un tercio de la lámina (44 % del eje) iba a 5 m/s.
+    // La ley, no la cota, fija la velocidad: casi nada en el techo. (La
+    // mediana de 0.5-2.5 m/s se comprueba en el dump del mundo de referencia:
+    // este mapa, con montañas de 1000 m en 3 km y celdas de 23.6 m, es todo
+    // torrente con la lámina al tope de calado.)
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    ASSERT_GT(report.speed_wet.cells, 0);
+    EXPECT_LT(report.speed_wet.pct_at_cap, 2.0f);
+    EXPECT_LT(report.speed_axis.pct_at_cap, 2.0f);
+    EXPECT_GT(report.speed_wet.p50, 0.5f);
 }
 
 TEST(Corriente, LosRiosDelMundoCorrenAguasAbajoSinSaltos) {

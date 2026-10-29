@@ -546,6 +546,14 @@ void print_water_report(const terrain::TerrainData& data) {
                   << " % a >60 grados del eje aguas abajo, salto mediano entre vecinas "
                   << s.median_jump_deg << " grados" << std::endl;
     };
+    const auto print_speed = [](const char* label, const terrain::SpeedStats& s) {
+        std::cout << label << ": " << s.cells << " celdas, p50 " << s.p50 << " m/s, p95 "
+                  << s.p95 << " m/s, max " << s.max << " m/s, en el techo ("
+                  << terrain::kMaxRiverSpeed << " m/s) " << s.pct_at_cap << " %"
+                  << std::endl;
+    };
+    print_speed("velocidad de Manning (lamina de rio)", r.speed_wet);
+    print_speed("  eje (caudal >= umbral)", r.speed_axis);
     print_angles("corriente (campo de flujo)", r.flow_field);
     print_angles("  referencia: descenso del lecho", r.bed_descent);
     const float pct_e = r.shallow_sea_cells > 0

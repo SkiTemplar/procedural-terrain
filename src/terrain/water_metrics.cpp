@@ -296,6 +296,27 @@ void measure_mouths(const TerrainData& data, const Grid& g, float threshold,
     r.mouths = std::move(kept);
 }
 
+SpeedStats speed_stats(std::vector<float> speeds) {
+    constexpr float kCapTolerance = 1e-3f;
+    SpeedStats st;
+    st.cells = static_cast<int>(speeds.size());
+    if (speeds.empty()) {
+        return st;
+    }
+    std::sort(speeds.begin(), speeds.end());
+    const auto at = [&](float q) {
+        return speeds[static_cast<size_t>(q * static_cast<float>(speeds.size() - 1))];
+    };
+    st.p50 = at(0.5f);
+    st.p95 = at(0.95f);
+    st.max = speeds.back();
+    const auto capped = std::count_if(speeds.begin(), speeds.end(), [](float v) {
+        return v >= kMaxRiverSpeed - kCapTolerance;
+    });
+    st.pct_at_cap = 100.0f * static_cast<float>(capped) / static_cast<float>(speeds.size());
+    return st;
+}
+
 // Recorte del mar: vértices de la lámina interior con el lecho sumergido que
 // quedan por debajo del mar dentro de un quad donde el mar se descarta.
 void measure_sea_clip(const TerrainData& data, WaterReport& r) {
@@ -376,6 +397,22 @@ WaterReport measure_water(const TerrainData& data, const RiverFlowField& flow) {
         }
     }
 
+    {
+        std::vector<float> wet_speeds;
+        std::vector<float> axis_speeds;
+        for (size_t i = 0; i < n && flow.wet_id.size() == n; ++i) {
+            const float v = glm::length(flow.at(i));
+            if (v <= 0.0f) {
+                continue;
+            }
+            wet_speeds.push_back(v);
+            if (hydro.flow[i] >= threshold) {
+                axis_speeds.push_back(v);
+            }
+        }
+        r.speed_wet = speed_stats(std::move(wet_speeds));
+        r.speed_axis = speed_stats(std::move(axis_speeds));
+    }
     r.flow_field = angle_stats(data, g, threshold, [&](size_t i) { return flow.at(i); });
     // Referencia: el método anterior (descenso más pronunciado del lecho
     // tallado), para medir cuánto corregía el campo nuevo.

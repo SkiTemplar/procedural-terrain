@@ -423,7 +423,18 @@ vec2 ripple_slope(vec2 p) {
 // |1 − 2φ0|, de modo que cada capa se reinicia cuando su peso es nulo. No
 // depende de la posición absoluta ni de una dirección interpolada: el rizado
 // viaja a la velocidad física, es rápido en los rápidos y nulo en lagos.
-const float kFlowPeriod = 1.6; // s
+//
+// El desplazamiento por ciclo se acota a kMaxCycleShift: con |v|·T de varios
+// metros frente a un rizado de 0.3-0.8 m, el gradiente lateral de velocidad
+// (eje rápido, orilla quieta) cizallaba y estiraba el patrón. Por encima de
+// kMaxCycleShift/T (2 m/s) el rizado deja de acelerar; la física completa
+// sigue en la rugosidad y en la espuma, que dependen de la velocidad real.
+const float kFlowPeriod = 1.0;    // s
+const float kMaxCycleShift = 2.0; // m por ciclo
+vec2 flow_advection(vec2 vel) {
+    float shift = length(vel) * kFlowPeriod;
+    return shift > kMaxCycleShift ? vel * (kMaxCycleShift / shift) : vel;
+}
 vec3 flow_phases(vec2 pos) {
     // Desfase espacial lento: los reinicios no laten en sincronía.
     float t = u_time / kFlowPeriod + w_vnoise(pos * 0.04);
@@ -482,8 +493,9 @@ void main() {
         // picados); con v ≈ 0 (remanso quieto) no hay rizado de corriente.
         if (speed > 0.02) {
             vec3 ph = flow_phases(v_world_pos.xz);
-            vec2 s0 = ripple_slope(v_world_pos.xz - vel * (ph.x * kFlowPeriod));
-            vec2 s1 = ripple_slope(v_world_pos.xz - vel * (ph.y * kFlowPeriod)
+            vec2 adv = flow_advection(vel);
+            vec2 s0 = ripple_slope(v_world_pos.xz - adv * (ph.x * kFlowPeriod));
+            vec2 s1 = ripple_slope(v_world_pos.xz - adv * (ph.y * kFlowPeriod)
                                    + vec2(31.7, 12.9));
             float rough = mix(0.45, 1.0, smoothstep(0.2, 2.0, speed));
             vec2 slope = mix(s0, s1, ph.z) * rough;
@@ -566,8 +578,9 @@ void main() {
     } else if (v_ww > 0.05) {
         // Vetas de espuma arrastradas por la corriente (mismo flow map).
         vec3 ph = flow_phases(v_world_pos.xz);
-        float f0 = w_vnoise((v_world_pos.xz - vel * (ph.x * kFlowPeriod)) * 0.9);
-        float f1 = w_vnoise((v_world_pos.xz - vel * (ph.y * kFlowPeriod)) * 0.9
+        vec2 adv = flow_advection(vel);
+        float f0 = w_vnoise((v_world_pos.xz - adv * (ph.x * kFlowPeriod)) * 0.9);
+        float f1 = w_vnoise((v_world_pos.xz - adv * (ph.y * kFlowPeriod)) * 0.9
                             + vec2(7.3, -3.1));
         float streak = smoothstep(0.30, 0.75, mix(f0, f1, ph.z));
         foam = clamp(v_ww * (0.40 + 0.60 * streak), 0.0, 1.0);

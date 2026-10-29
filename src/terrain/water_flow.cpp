@@ -25,8 +25,30 @@ constexpr int kWetBlurPasses = 2;
 constexpr float kBlurMinCos = 0.0f; // vecinas a menos de 90°
 constexpr float kMinSurfaceSlope = 1e-4f;
 constexpr float kMaxSurfaceSlope = 0.3f;
+constexpr float kMinHydraulicRadiusM = 0.05f;
+// Jarrett (1984): n = 0.39·S^0.38·R^-0.16.
+constexpr float kJarrettCoef = 0.39f;
+constexpr float kJarrettSlopeExp = 0.38f;
+constexpr float kJarrettRadiusExp = -0.16f;
 
 } // namespace
+
+float manning_n(float slope, float hydraulic_radius_m, float floor_n) {
+    const float s = std::clamp(slope, kMinSurfaceSlope, kMaxSurfaceSlope);
+    const float r = std::max(hydraulic_radius_m, kMinHydraulicRadiusM);
+    return std::max(floor_n, kJarrettCoef * std::pow(s, kJarrettSlopeExp)
+                                 * std::pow(r, kJarrettRadiusExp));
+}
+
+float manning_speed(float slope, float depth_m, float floor_n) {
+    if (depth_m <= 0.0f) {
+        return 0.0f;
+    }
+    const float s = std::clamp(slope, kMinSurfaceSlope, kMaxSurfaceSlope);
+    return std::min(std::pow(depth_m, 2.0f / 3.0f) * std::sqrt(s)
+                        / manning_n(s, depth_m, floor_n),
+                    kMaxRiverSpeed);
+}
 
 RiverFlowField compute_river_flow(const TerrainData& data) {
     const auto& hf = data.height;
@@ -61,11 +83,13 @@ RiverFlowField compute_river_flow(const TerrainData& data) {
     }
 
     // 1) Eje: dirección hacia la receptora D8 (la vecina con más caudal entre
-    //    las que tienen más que la propia: el caudal solo crece aguas abajo)
-    //    y pendiente de la lámina en ese paso.
+    //    las que tienen más que la propia: el caudal solo crece aguas abajo).
+    constexpr std::uint32_t kNoCell = RiverFlowField::kDry;
     std::vector<std::uint8_t> is_axis(m, 0);
     std::vector<glm::vec2> axis_dir(m, glm::vec2{0.0f});
     std::vector<float> axis_slope(m, 0.0f);
+    std::vector<std::uint32_t> receiver(m, kNoCell); // receptora mojada (eje)
+    std::vector<float> receiver_dist(m, 0.0f);
     for (size_t k = 0; k < m; ++k) {
         const size_t i = wet_cells[k];
         if (hydro.flow[i] < threshold) {
@@ -93,10 +117,45 @@ RiverFlowField compute_river_flow(const TerrainData& data) {
         is_axis[k] = 1;
         axis_dir[k] = glm::normalize(glm::vec2{static_cast<float>(kDx[best]),
                                                static_cast<float>(kDz[best])});
-        const size_t r = idx(x + kDx[best], z + kDz[best]);
-        if (!std::isnan(hydro.water_level[r])) {
-            const float dist = cell * ((kDx[best] != 0 && kDz[best] != 0) ? kDiagonal : 1.0f);
-            axis_slope[k] = std::max(0.0f, hydro.water_level[i] - hydro.water_level[r]) / dist;
+        receiver[k] = field.wet_id[idx(x + kDx[best], z + kDz[best])];
+        receiver_dist[k] =
+            cell * ((kDx[best] != 0 && kDz[best] != 0) ? kDiagonal : 1.0f);
+    }
+    // Donante principal de cada celda de eje (el de más caudal que la tiene
+    // por receptora): el camino aguas arriba por el cauce principal.
+    std::vector<std::uint32_t> main_donor(m, kNoCell);
+    for (size_t k = 0; k < m; ++k) {
+        const std::uint32_t r = receiver[k];
+        if (r == kNoCell) {
+            continue;
+        }
+        if (main_donor[r] == kNoCell
+            || hydro.flow[wet_cells[k]] > hydro.flow[wet_cells[main_donor[r]]]) {
+            main_donor[r] = static_cast<std::uint32_t>(k);
+        }
+    }
+    // Pendiente de la lámina sobre un tramo de eje de kSlopeReachM centrado en
+    // la celda (medio tramo aguas abajo, medio aguas arriba): una cascada
+    // aislada no pone el tramo entero en rápido, ni un rellano lo frena.
+    for (size_t k = 0; k < m; ++k) {
+        if (!is_axis[k]) {
+            continue;
+        }
+        std::uint32_t down = static_cast<std::uint32_t>(k);
+        float dist = 0.0f;
+        while (dist < 0.5f * kSlopeReachM && receiver[down] != kNoCell) {
+            dist += receiver_dist[down];
+            down = receiver[down];
+        }
+        std::uint32_t up = static_cast<std::uint32_t>(k);
+        while (dist < kSlopeReachM && main_donor[up] != kNoCell) {
+            dist += receiver_dist[main_donor[up]];
+            up = main_donor[up];
+        }
+        if (dist > 0.0f) {
+            const float drop = hydro.water_level[wet_cells[up]]
+                             - hydro.water_level[wet_cells[down]];
+            axis_slope[k] = std::max(0.0f, drop) / dist;
         }
     }
 
@@ -228,20 +287,18 @@ RiverFlowField compute_river_flow(const TerrainData& data) {
     }
 
     // 4) Módulo de Manning con el calado local: el agua corre en el eje y se
-    //    frena hacia la orilla, donde el calado tiende a cero.
+    //    frena hacia la orilla, donde el calado tiende a cero. La rugosidad
+    //    crece con la pendiente (Jarrett): los torrentes van rotos y lentos.
     for (size_t k = 0; k < m; ++k) {
         if (source[k] == kNoSource) {
             continue;
         }
         const size_t i = wet_cells[k];
         const float depth = std::max(0.0f, hydro.water_level[i] - hf.data()[i]);
-        const float s = std::clamp(slope[k], kMinSurfaceSlope, kMaxSurfaceSlope);
-        const float n_manning =
+        const float floor_n =
             (!hydro.whitewater.empty() && hydro.whitewater[i] >= 1) ? kManningRapids
                                                                     : kManningGravel;
-        const float v = std::min(
-            std::pow(depth, 2.0f / 3.0f) * std::sqrt(s) / n_manning, kMaxRiverSpeed);
-        field.velocity[k] = dir[k] * v;
+        field.velocity[k] = dir[k] * manning_speed(slope[k], depth, floor_n);
     }
     return field;
 }

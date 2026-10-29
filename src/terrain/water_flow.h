@@ -15,7 +15,10 @@ namespace terrain {
 // umbral), suavizada a lo largo del propio río para borrar los quiebros de
 // 45° de la rejilla, y propagada a la anchura mojada desde el eje más
 // cercano. El módulo es la velocidad de Manning v = n⁻¹·R^(2/3)·S^(1/2), con
-// R ≈ calado (cauce ancho) y S la pendiente de la LÁMINA a lo largo del eje.
+// R ≈ calado (cauce ancho), S la pendiente de la LÁMINA medida sobre un tramo
+// de eje de kSlopeReachM (no celda a celda, que mete las cascadas) y n la
+// rugosidad de Jarrett (1984) para cauces de montaña, con suelo de grava de
+// llanura: con n constante los torrentes iban todos al techo de velocidad.
 // Lagos: v = 0 (lámina de equilibrio). El mar no forma parte del campo.
 struct RiverFlowField {
     static constexpr std::uint32_t kDry = std::numeric_limits<std::uint32_t>::max();
@@ -29,9 +32,22 @@ struct RiverFlowField {
 };
 
 // Constantes físicas expuestas para los tests y el dump.
-inline constexpr float kManningGravel = 0.035f; // lecho de grava (s/m^(1/3))
-inline constexpr float kManningRapids = 0.045f; // rápidos y cascadas
-inline constexpr float kMaxRiverSpeed = 5.0f;   // m/s, techo de crecida
+inline constexpr float kManningGravel = 0.035f; // suelo: lecho de grava de llanura
+inline constexpr float kManningRapids = 0.045f; // suelo en rápidos y cascadas
+inline constexpr float kMaxRiverSpeed = 5.0f;   // m/s, techo de seguridad
+inline constexpr float kSlopeReachM = 50.0f;    // tramo de eje para S
+
+// Rugosidad de Manning de un cauce natural: Jarrett (1984), ajustada en ríos
+// de montaña de Colorado, n = 0.39·S^0.38·R^-0.16 (S pendiente de la lámina,
+// R radio hidráulico en m), con suelo `floor_n`: por debajo de S ≈ 0.0015 la
+// ley de Jarrett baja del valor de un lecho de grava y manda el suelo.
+[[nodiscard]] float manning_n(float slope, float hydraulic_radius_m,
+                              float floor_n = kManningGravel);
+
+// Velocidad media de Manning v = R^(2/3)·S^(1/2)/n con la n de manning_n,
+// acotada por kMaxRiverSpeed.
+[[nodiscard]] float manning_speed(float slope, float depth_m,
+                                  float floor_n = kManningGravel);
 
 [[nodiscard]] RiverFlowField compute_river_flow(const TerrainData& data);
 

@@ -30,6 +30,14 @@ struct FlowAngleStats {
     float median_jump_deg = 0.0f; // salto angular mediano entre vecinas
 };
 
+struct SpeedStats {
+    int cells = 0;
+    float p50 = 0.0f;
+    float p95 = 0.0f;
+    float max = 0.0f;
+    float pct_at_cap = 0.0f;
+};
+
 struct WaterReport {
     // #2 desembocaduras: una por río (supresión de bocas vecinas), por caudal.
     std::vector<RiverMouthReport> mouths;
@@ -57,7 +65,12 @@ struct WaterReport {
     int sea_clip_quads = 0;
     int sea_clip_sunk_vertices = 0;
     float sea_clip_worst_sink_m = 0.0f;
-    // #1 corriente: campo nuevo y, como referencia, el descenso del lecho.
+    // #1 corriente: velocidad de Manning en las celdas de río (todas las
+    // mojadas con corriente y, aparte, el eje con caudal ≥ umbral) y fracción
+    // que toca el techo kMaxRiverSpeed (si es grande, manda la cota, no la ley).
+    SpeedStats speed_wet;
+    SpeedStats speed_axis;
+    // Dirección: campo nuevo y, como referencia, el descenso del lecho.
     FlowAngleStats flow_field;
     FlowAngleStats bed_descent;
     // #3 rompiente.
