@@ -849,6 +849,20 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
         }
         std::cout << std::endl;
 
+        // Depósito fluvial: deltas (lóbulos sobre el mar o el lago) y barras
+        // (celdas de cauce que pasan de agua a barra emergida).
+        {
+            const auto& dep = data.hydrology.deposits;
+            const double cell_m2 = static_cast<double>(data.height.cell_size())
+                                 * data.height.cell_size();
+            std::cout << "deltas: " << dep.deltas << " (" << dep.delta_lobes
+                      << " lobulos), area emergida "
+                      << dep.delta_cells * cell_m2 / 1.0e6 << " km2, volumen "
+                      << dep.delta_volume_m3 << " m3" << std::endl;
+            std::cout << "barras: " << dep.bars << ", area emergida "
+                      << dep.bar_cells * cell_m2 << " m2" << std::endl;
+        }
+
         // Sedimentación del LEM (Yuan 2019): cuánto de lo erosionado se
         // redeposita en la última iteración, y fondos de valle llanos en
         // tierra (pendiente < 2 %, 5-600 m: excluye playa y cumbres), que es
