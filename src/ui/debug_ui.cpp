@@ -83,7 +83,6 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         ImGui::SliderInt("gotas erosion", &cfg.erosion_droplets, 0, 600000);
         ImGui::SliderFloat("erosion fluvial", &cfg.fluvial_strength, 0.0f, 1.0f);
         ImGui::SliderFloat("umbral rios", &cfg.river_flow_threshold, 100.0f, 5000.0f, "%.0f");
-        ImGui::SliderFloat("anchura rios", &cfg.river_max_width_m, 4.0f, 30.0f, "%.0f m");
         ImGui::SliderFloat("aplanado costa", &cfg.coast_flatten_strength, 0.0f, 1.0f);
         ImGui::SliderFloat("viento dominante", &cfg.wind_dir_deg, 0.0f, 360.0f, "%.0f grados");
         ImGui::SliderFloat("focalizacion oleaje", &cfg.wind_focus, 0.0f, 1.0f);

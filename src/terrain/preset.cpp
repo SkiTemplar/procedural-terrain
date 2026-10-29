@@ -58,8 +58,6 @@ json preset_to_json(const TerrainConfig& cfg) {
     j["coast_flatten_band_m"] = cfg.coast_flatten_band_m;
     j["coast_flatten_strength"] = cfg.coast_flatten_strength;
     j["river_flow_threshold"] = cfg.river_flow_threshold;
-    j["river_max_depth_m"] = cfg.river_max_depth_m;
-    j["river_max_width_m"] = cfg.river_max_width_m;
     j["fluvial_strength"] = cfg.fluvial_strength;
     j["fluvial_iterations"] = cfg.fluvial_iterations;
     j["detail_amplitude_m"] = cfg.detail_amplitude_m;
@@ -121,8 +119,6 @@ std::optional<Preset> load_preset(const std::string& path) {
         read_or_keep(j, "coast_flatten_strength",
                      p.config.coast_flatten_strength);
         read_or_keep(j, "river_flow_threshold", p.config.river_flow_threshold);
-        read_or_keep(j, "river_max_depth_m", p.config.river_max_depth_m);
-        read_or_keep(j, "river_max_width_m", p.config.river_max_width_m);
         read_or_keep(j, "fluvial_strength", p.config.fluvial_strength);
         read_or_keep(j, "fluvial_iterations", p.config.fluvial_iterations);
         read_or_keep(j, "detail_amplitude_m", p.config.detail_amplitude_m);

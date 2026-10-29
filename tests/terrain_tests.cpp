@@ -2,6 +2,7 @@
 #include "terrain/erosion.h"
 #include "terrain/generator.h"
 #include "terrain/heightfield.h"
+#include "terrain/hydraulic_geometry.h"
 #include "terrain/hydrology.h"
 #include "terrain/lem.h"
 #include "terrain/noise.h"
@@ -303,10 +304,21 @@ TEST(Generator, ElAguaDeLosRiosNoFlota) {
     ASSERT_FALSE(gaps.empty());
     std::sort(gaps.begin(), gaps.end());
     const float median = gaps[gaps.size() / 2];
-    // Límite ligado a la profundidad de diseño del cauce: protege contra
-    // flotación (junto al check de contención), no contra la profundidad
-    // legítima que crece con el contraste de caudales.
-    EXPECT_LT(median, cfg.river_max_depth_m + 2.0f);
+    // Límite ligado al calado físico del cauce mayor del mapa (thalweg 1.5·d
+    // de su caudal de cauce lleno) más el tope de lámina sobre el lecho que
+    // impone la hidrología (2.5 m, rampas de cascada): protege contra
+    // flotación (junto al check de contención). A resolución de test (celda
+    // ~23 m, pendientes de varios metros por celda) la mediana ya vivía en
+    // ese tope antes de la geometría absoluta.
+    constexpr float kMaxSheetM = 2.5f;
+    const float max_flow_cells = *std::max_element(
+        data.hydrology.flow.begin(), data.hydrology.flow.end());
+    const float cell = data.height.cell_size();
+    const float max_thalweg_m =
+        1.5f * terrain::hydraulics::regime_depth_m(
+                   terrain::hydraulics::bankfull_discharge_m3s(
+                       max_flow_cells * cell * cell));
+    EXPECT_LT(median, max_thalweg_m + kMaxSheetM);
     EXPECT_GT(median, 0.0f);
     EXPECT_GT(static_cast<float>(contained) / static_cast<float>(total), 0.97f);
 
@@ -441,6 +453,26 @@ TEST(Preset, CargarYRegenerarReproduceElMundo) {
 
     const auto regen = terrain::generate(loaded->config);
     EXPECT_EQ(terrain::heightfield_hash(regen.height), loaded->height_hash);
+}
+
+TEST(Preset, UnPresetViejoConCamposRetiradosSigueCargando) {
+    // river_max_width_m y river_max_depth_m se retiraron (la geometría del
+    // cauce sale del caudal): un preset guardado antes debe cargar igual,
+    // ignorando esos campos y conservando el resto.
+    const auto path = std::filesystem::temp_directory_path()
+                    / "pt-preset-viejo.json";
+    {
+        std::ofstream out(path);
+        out << R"({"seed": 31337, "river_flow_threshold": 1500.0,
+                   "river_max_depth_m": 5.5, "river_max_width_m": 30.0})";
+    }
+    const auto loaded = terrain::load_preset(path.string());
+    std::filesystem::remove(path);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_EQ(loaded->config.seed, 31337u);
+    EXPECT_FLOAT_EQ(loaded->config.river_flow_threshold, 1500.0f);
+    EXPECT_FALSE(terrain::preset_to_json(loaded->config)
+                     .contains("river_max_width_m"));
 }
 
 TEST(Preset, CargarFicheroCorruptoNoRevienta) {
@@ -1022,4 +1054,69 @@ TEST(ScharrNormal, NormalMapParaleloYDecodificadoSnorm16) {
             EXPECT_NEAR(decoded.z, expected.z, 1e-3f) << "x=" << x << " z=" << z;
         }
     }
+}
+
+TEST(GeometriaHidraulica, CuadruplicarElCaudalDuplicaLaAnchura) {
+    // Leopold & Maddock (1953): aguas abajo w ∝ Q^0.5. Dos tramos de llanura
+    // (misma pendiente tendida, fuera del techo de Finnegan) con Q2 = 4·Q1:
+    // el segundo es el doble de ancho.
+    namespace hyd = terrain::hydraulics;
+    constexpr float kGentleSlope = 0.001f;
+    for (const float q1 : {0.5f, 2.0f, 5.0f}) {
+        const float w1 = hyd::bankfull_width_m(q1, kGentleSlope);
+        const float w2 = hyd::bankfull_width_m(4.0f * q1, kGentleSlope);
+        ASSERT_GT(w1, 0.0f);
+        EXPECT_NEAR(w2 / w1, 2.0f, 2.0f * 0.15f) << "Q1 = " << q1 << " m3/s";
+        // Y el calado crece más despacio que la anchura: 4^0.4 ≈ 1.74.
+        EXPECT_NEAR(hyd::regime_depth_m(4.0f * q1) / hyd::regime_depth_m(q1),
+                    1.74f, 0.05f);
+    }
+}
+
+TEST(GeometriaHidraulica, LaAnchuraEsAbsolutaYRealista) {
+    // La anchura depende del caudal ABSOLUTO, no del río mayor del mapa: una
+    // cuenca atlántica de 20 km² da un cauce de piedemonte de 8-18 m (curvas
+    // regionales de cauce lleno), sea o no el río más grande de la isla.
+    namespace hyd = terrain::hydraulics;
+    const float q_mean = hyd::mean_discharge_m3s(20.0e6f);
+    EXPECT_NEAR(q_mean, 0.67f, 0.05f); // 1500 mm/año · 70 % sobre 20 km²
+    const float q_bf = hyd::bankfull_discharge_m3s(20.0e6f);
+    const float w = hyd::bankfull_width_m(q_bf, 0.003f);
+    EXPECT_GT(w, 8.0f);
+    EXPECT_LT(w, 18.0f);
+    const float d = hyd::regime_depth_m(q_bf);
+    EXPECT_GT(w / d, 15.0f); // cauce de grava ancho y somero
+    EXPECT_LT(w / d, 40.0f);
+}
+
+TEST(GeometriaHidraulica, LaPendienteEstrechaElCauce) {
+    // Finnegan et al. (2005): w ∝ Q^(3/8)·S^(-3/16). En garganta el cauce es
+    // más estrecho que en llanura con el mismo caudal, y nunca más ancho que
+    // la anchura de régimen.
+    namespace hyd = terrain::hydraulics;
+    constexpr float kQ = 10.0f;
+    const float flat = hyd::bankfull_width_m(kQ, 0.001f);
+    const float gorge = hyd::bankfull_width_m(kQ, 0.15f);
+    EXPECT_FLOAT_EQ(flat, hyd::regime_width_m(kQ));
+    EXPECT_LT(gorge, 0.7f * flat);
+    EXPECT_GT(gorge, 0.3f * flat);
+}
+
+TEST(GeometriaHidraulica, LaLlanuraAluvialDependeDelCaudalAbsoluto) {
+    // La puerta de la llanura aluvial solo mira el caudal de cauce lleno del
+    // propio tramo y su pendiente: una cuenca de 1 km² la abre en llano tanto
+    // si el río mayor de la isla tiene 3 km² como 30 km² (la puerta relativa
+    // antigua, (A/A_max)^0.4 > 0.35, la cerraba en la isla grande).
+    namespace hyd = terrain::hydraulics;
+    const float q_one_km2 = hyd::bankfull_discharge_m3s(1.0e6f);
+    const float q_tenth_km2 = hyd::bankfull_discharge_m3s(0.1e6f);
+    EXPECT_TRUE(hyd::opens_floodplain(q_one_km2, 0.01f));
+    EXPECT_FALSE(hyd::opens_floodplain(q_tenth_km2, 0.01f));
+    // En la caída no hay valle ancho, por mucho caudal que lleve.
+    EXPECT_FALSE(hyd::opens_floodplain(10.0f * q_one_km2, 0.2f));
+    // El umbral está en el caudal, no en una fracción: justo por encima abre
+    // y justo por debajo no.
+    EXPECT_TRUE(hyd::opens_floodplain(hyd::kFloodplainMinBankfullQ, 0.0f));
+    EXPECT_FALSE(
+        hyd::opens_floodplain(0.99f * hyd::kFloodplainMinBankfullQ, 0.0f));
 }

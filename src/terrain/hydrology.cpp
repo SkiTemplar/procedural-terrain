@@ -1,5 +1,6 @@
 #include "terrain/hydrology.h"
 
+#include "terrain/hydraulic_geometry.h"
 #include "terrain/riverscape.h"
 
 #include <glm/common.hpp>
@@ -406,22 +407,42 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     //    eso dejaba el agua flotando). Profundidad según caudal, y monótono
     //    decreciente aguas abajo.
     std::vector<float> level(filled.size(), std::numeric_limits<float>::infinity());
-    // Geometría hidráulica (Leopold & Maddock PP-252): anchura y profundidad
-    // crecen como potencias DISTINTAS del caudal — w ∝ Q^0.4, d ∝ Q^0.3 —
-    // normalizadas al caudal MÁXIMO del mapa. Solo el río principal cerca de
-    // la desembocadura abre el cauce pleno; los tributarios escalan solos.
-    float max_flow = threshold;
-    for (size_t i = 0; i < out.flow.size(); ++i) {
-        if (is_river(i)) {
-            max_flow = std::max(max_flow, out.flow[i]);
+    // Geometría hidráulica ABSOLUTA (hallazgo #4 de la auditoría 2026-10):
+    // cada tramo toma la anchura y el calado de cauce lleno de SU caudal en
+    // m³/s (hydraulic_geometry.h: Leopold-Maddock con coeficientes de
+    // Hey-Thorne y techo de Finnegan en pendiente), no una fracción del río
+    // mayor del mapa. `flow` es área drenada en celdas.
+    const float cell = hf.cell_size();
+    const float cell_area = cell * cell;
+    const auto bankfull_q = [&](size_t i) {
+        return hydraulics::bankfull_discharge_m3s(out.flow[i] * cell_area);
+    };
+    // Pendiente del tramo: caída del lecho a lo largo de ~20 m de traza D8
+    // aguas abajo (la de una sola celda es el escalón de la monotonía).
+    constexpr int kSlopeReachCells = 8;
+    const auto reach_slope = [&](size_t i) {
+        size_t j = i;
+        float run = 0.0f;
+        for (int k = 0; k < kSlopeReachCells && downstream[j] != kNone; ++k) {
+            const size_t d = downstream[j];
+            const bool diagonal = (d % static_cast<size_t>(res)
+                                   != j % static_cast<size_t>(res))
+                               && (d / static_cast<size_t>(res)
+                                   != j / static_cast<size_t>(res));
+            run += cell * (diagonal ? 1.4142f : 1.0f);
+            j = d;
+        }
+        return run > 0.0f ? std::max(0.0f, (bed0[i] - bed0[j]) / run) : 0.0f;
+    };
+    // Anchura de cauce lleno (m) de toda celda con caudal de río; la usan
+    // también los pases de riverscape (confluencias, cascadas, deltas, barras).
+    std::vector<float> channel_w(filled.size(), 0.0f);
+    for (size_t i = 0; i < channel_w.size(); ++i) {
+        if (out.flow[i] >= threshold) {
+            channel_w[i] =
+                hydraulics::bankfull_width_m(bankfull_q(i), reach_slope(i));
         }
     }
-    const auto width_of = [&](size_t i) {
-        return std::pow(glm::clamp(out.flow[i] / max_flow, 0.0f, 1.0f), 0.4f);
-    };
-    const auto depth_of = [&](size_t i) {
-        return std::pow(glm::clamp(out.flow[i] / max_flow, 0.0f, 1.0f), 0.3f);
-    };
 
     // Los ríos nacen gradualmente: cauce y lámina crecen desde cero durante
     // el primer tramo (rampa hasta 3× el umbral — física: duplicar el área
@@ -469,9 +490,6 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     }
 
     // 3) Anchura del cauce y llanura aluvial respecto al lecho de la incisión.
-    const int max_radius = std::max(
-        1, static_cast<int>(std::round(cfg.river_max_width_m / hf.cell_size())));
-
     for (int z = 1; z < res - 1; ++z) {
         for (int x = 1; x < res - 1; ++x) {
             const size_t i = idx(x, z);
@@ -487,35 +505,29 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
             if (out.lake[i]) {
                 continue;
             }
-            const float width_f = width_of(i);
-            const float depth_f = depth_of(i);
             // El nacimiento escala TODO el cauce (profundidad y anchura), no
             // solo la lámina: sin esto el canal tallado aparecía de golpe.
             const float birth = birth_of(i);
             if (birth < 0.05f) {
                 continue; // aún no hay cauce visible
             }
-            // Régimen hidráulico: en pendiente el canal es ESTRECHO y
-            // encajonado (garganta/rápidos — p.ej. el desagüe de un lago de
-            // montaña); solo en llanura el río se abre a su anchura plena.
-            const float local_slope = std::max(
-                std::abs(bed0[i + 1] - bed0[i - 1]),
-                std::abs(bed0[i + static_cast<size_t>(res)]
-                         - bed0[i - static_cast<size_t>(res)]))
-                * 0.5f / hf.cell_size();
-            const float narrow =
-                glm::clamp(1.0f / (1.0f + 6.0f * local_slope), 0.2f, 1.0f);
-            const float depth =
-                cfg.river_max_depth_m * (0.15f + 0.85f * depth_f) * birth;
-            const int radius = std::max(
-                1, static_cast<int>(
-                       std::round(max_radius * width_f * birth * narrow)));
+            // Sección parabólica de cauce lleno: semiancho w/2 en celdas (con
+            // suelo de una celda: la rejilla de 2.4 m no resuelve cauces más
+            // finos) y calado de thalweg 1.5·d (en una parábola el calado
+            // medio es 2/3 del máximo), con el mínimo visible de siempre.
+            const float half_w =
+                std::max(1.0f, 0.5f * channel_w[i] / cell * birth);
+            const float axis_depth =
+                std::max(1.5f * hydraulics::regime_depth_m(bankfull_q(i)),
+                         0.5f)
+                * birth;
+            const int radius = static_cast<int>(std::ceil(half_w));
             const float surface = level[i];
             // El cauce corta su salida en los vertederos, pero SOLO hasta
             // ~6 m de garganta: sin límite, excavaba zanjas de decenas de
             // metros de paredes verticales atravesando laderas. Si el
             // vertedero es más alto, lo que hay ahí es un lago, no un tajo.
-            const float bed_target = bed0[i] - depth * 0.4f;
+            const float bed_target = settled_level(i) - axis_depth;
             const float axis_bed =
                 std::max(std::min(bed_target, surface - 0.5f * birth),
                          bed_target - 6.0f);
@@ -532,12 +544,14 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
                         continue;
                     }
                     const float r = std::sqrt(static_cast<float>(dx * dx + dz * dz))
-                                  / static_cast<float>(radius);
+                                  / half_w;
                     const size_t ni = idx(nx, nz);
 
                     if (r <= 1.0f) {
-                        // Lecho: hondo en el eje, sube hacia la orilla.
-                        const float bed = axis_bed + depth * 0.4f * (r * r);
+                        // Lecho: hondo en el eje, sube hacia la orilla y llega
+                        // al lecho original en r = 1 (anchura de cauce lleno).
+                        const float bed =
+                            axis_bed + (bed0[i] - axis_bed) * (r * r);
                         if (hf.data()[ni] > bed) {
                             hf.data()[ni] = bed;
                         }
@@ -577,8 +591,8 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     // rellano + pared + plunge pool y los tramos de rápido reciben
     // micro-escalones + flag whitewater. Después del tallado: la zona
     // remodelada reasienta su propia lámina.
-    carve_cascades(hf, out, order, downstream, threshold, max_flow,
-                   max_radius, cfg.sea_level);
+    carve_cascades(hf, out, order, downstream, threshold, channel_w,
+                   cfg.sea_level);
     // El tallado y los micro-escalones pueden dejar contrapendientes de
     // decimales en las costuras (frontera de zona de rápidos, confluencias):
     // segunda pasada de monotonía, que solo talla.
@@ -588,8 +602,7 @@ Hydrology compute_hydrology(Heightfield& hf, const TerrainConfig& cfg,
     // Poza de socavación + espigón de grava en cada unión madura; lóbulos
     // deltaicos con distributarios en las bocas grandes de costa tendida;
     // barras fluviales emergentes en los tramos anchos y tendidos.
-    const RiverscapeParams rsp{threshold, max_flow, max_radius, cfg.sea_level,
-                               cfg.seed};
+    const RiverscapeParams rsp{threshold, channel_w, cfg.sea_level, cfg.seed};
     smooth_confluences(hf, out, order, downstream, rsp);
     build_deltas(hf, out, order, downstream, rsp);
     stamp_channel_bars(hf, out, order, downstream, rsp);

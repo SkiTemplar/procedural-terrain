@@ -8,6 +8,7 @@
 #include "terrain/chunked_terrain.h"
 #include "terrain/generator.h"
 #include "terrain/landform_stats.h"
+#include "terrain/hydraulic_geometry.h"
 #include "terrain/mesher.h"
 #include "terrain/palette.h"
 #include "terrain/preset.h"
@@ -17,6 +18,8 @@
 #include "veg/veg_renderer.h"
 
 #include <GLFW/glfw3.h>
+#include <glm/geometric.hpp>
+#include <glm/vec2.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -524,6 +527,157 @@ void print_landform_stats(const terrain::TerrainData& data) {
               << rf.evacuated_m3 << " m3" << std::endl;
 }
 
+// Geometría de los ríos mayores (hallazgo #4 de la auditoría 2026-10): la
+// anchura MOJADA se mide sobre el resultado, no se lee de la fórmula. Boca =
+// celda de río en tierra cuyo único vecino con más caudal está bajo el mar;
+// la sección se toma ~100 m aguas arriba siguiendo el tronco principal
+// (mediana de 5 secciones) para no medir el abanico de la desembocadura.
+void report_river_mouths(const terrain::TerrainData& data) {
+    namespace hyd = terrain::hydraulics;
+    constexpr int kTopRivers = 5;
+    constexpr int kTraceCells = 60;
+    constexpr int kSections[] = {30, 35, 40, 45, 50};
+    constexpr int kDirHalfSpan = 5;
+    constexpr float kProbeStep = 0.25f;
+    constexpr float kMaxProbeCells = 200.0f;
+
+    const auto& cfg = data.config;
+    const auto& hf = data.height;
+    const auto& h = hf.data();
+    const auto& flow = data.hydrology.flow;
+    const auto& wl = data.hydrology.water_level;
+    const auto& lake = data.hydrology.lake;
+    const int res = hf.resolution();
+    const float cell = hf.cell_size();
+    const float threshold = cfg.river_flow_threshold
+                          * (static_cast<float>(res) * static_cast<float>(res))
+                          / (1024.0f * 1024.0f);
+    const auto at = [res](int x, int z) {
+        return static_cast<size_t>(z) * static_cast<size_t>(res)
+             + static_cast<size_t>(x);
+    };
+    const auto is_wet = [&](size_t i) {
+        return !std::isnan(wl[i]) && wl[i] > h[i];
+    };
+
+    struct Mouth {
+        int x;
+        int z;
+        float flow;
+    };
+    std::vector<Mouth> mouths;
+    for (int z = 1; z < res - 1; ++z) {
+        for (int x = 1; x < res - 1; ++x) {
+            const size_t i = at(x, z);
+            if (flow[i] < threshold || h[i] <= cfg.sea_level || lake[i]) {
+                continue;
+            }
+            bool to_sea = false;
+            bool land_downstream = false;
+            for (int dz = -1; dz <= 1; ++dz) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const size_t ni = at(x + dx, z + dz);
+                    if ((!dx && !dz) || flow[ni] <= flow[i]) {
+                        continue;
+                    }
+                    if (h[ni] <= cfg.sea_level) {
+                        to_sea = true;
+                    } else {
+                        land_downstream = true;
+                    }
+                }
+            }
+            if (to_sea && !land_downstream) {
+                mouths.push_back({x, z, flow[i]});
+            }
+        }
+    }
+    std::sort(mouths.begin(), mouths.end(),
+              [](const Mouth& a, const Mouth& b) { return a.flow > b.flow; });
+
+    std::cout << "--- rios mayores (seccion ~100 m aguas arriba de la boca) ---"
+              << std::endl;
+    const int count = std::min(kTopRivers, static_cast<int>(mouths.size()));
+    for (int r = 0; r < count; ++r) {
+        // Tronco principal aguas arriba: el aportador de más caudal.
+        std::vector<glm::ivec2> path{{mouths[r].x, mouths[r].z}};
+        while (static_cast<int>(path.size()) < kTraceCells) {
+            const glm::ivec2 c = path.back();
+            const float fc = flow[at(c.x, c.y)];
+            glm::ivec2 best{-1, -1};
+            float best_flow = 0.0f;
+            for (int dz = -1; dz <= 1; ++dz) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int nx = c.x + dx;
+                    const int nz = c.y + dz;
+                    if ((!dx && !dz) || nx < 1 || nz < 1 || nx >= res - 1
+                        || nz >= res - 1) {
+                        continue;
+                    }
+                    const float fn = flow[at(nx, nz)];
+                    if (fn < fc && fn > best_flow) {
+                        best_flow = fn;
+                        best = {nx, nz};
+                    }
+                }
+            }
+            if (best.x < 0 || best_flow < threshold) {
+                break;
+            }
+            path.push_back(best);
+        }
+
+        std::vector<float> widths;
+        for (const int k : kSections) {
+            if (k + kDirHalfSpan >= static_cast<int>(path.size())) {
+                break;
+            }
+            const glm::vec2 down = glm::vec2(path[k - kDirHalfSpan])
+                                 - glm::vec2(path[k + kDirHalfSpan]);
+            if (glm::length(down) < 1e-3f) {
+                continue;
+            }
+            const glm::vec2 perp = glm::normalize(glm::vec2{-down.y, down.x});
+            const glm::vec2 c = glm::vec2(path[k]);
+            float total = 0.0f;
+            for (const float side : {1.0f, -1.0f}) {
+                float t = 0.0f;
+                while (t < kMaxProbeCells) {
+                    const glm::vec2 p = c + perp * (side * (t + kProbeStep));
+                    const int px = static_cast<int>(std::floor(p.x + 0.5f));
+                    const int pz = static_cast<int>(std::floor(p.y + 0.5f));
+                    if (px < 0 || pz < 0 || px >= res || pz >= res
+                        || !is_wet(at(px, pz))) {
+                        break;
+                    }
+                    t += kProbeStep;
+                }
+                total += t + 0.5f * kProbeStep;
+            }
+            widths.push_back(is_wet(at(path[k].x, path[k].y)) ? total * cell
+                                                               : 0.0f);
+        }
+        std::sort(widths.begin(), widths.end());
+        const float wet_w = widths.empty() ? 0.0f : widths[widths.size() / 2];
+
+        const glm::ivec2 s = path[std::min<size_t>(40, path.size() - 1)];
+        const float area_m2 = flow[at(s.x, s.y)] * cell * cell;
+        const float q_mean = hyd::mean_discharge_m3s(area_m2);
+        const float q_bf = hyd::bankfull_discharge_m3s(area_m2);
+        std::cout << "rio " << (r + 1) << ": boca (" << hf.world_x(mouths[r].x)
+                  << ", " << hf.world_z(mouths[r].z) << ") cuenca "
+                  << area_m2 * 1e-6f << " km2, Qmedio " << q_mean
+                  << " m3/s, Qbf " << q_bf << " m3/s, anchura mojada " << wet_w
+                  << " m (ley: w_bf " << hyd::regime_width_m(q_bf)
+                  << " m, d_bf " << hyd::regime_depth_m(q_bf) << " m)"
+                  << std::endl;
+        if (r == 0) {
+            std::cout << "rio mayor: anchura mojada " << wet_w << " m con Qbf "
+                      << q_bf << " m3/s" << std::endl;
+        }
+    }
+}
+
 // Dump de verificación de costa (criterio §7-A del plan): mapa de materiales
 // con lámina de agua y mapa de energía de oleaje, sin abrir ventana.
 int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
@@ -948,6 +1102,7 @@ int dump_costa(const std::string& prefix, std::optional<std::uint32_t> seed) {
                   << " marisma " << n_marsh << std::endl;
     }
     print_landform_stats(data);
+    report_river_mouths(data);
 
     std::cout << "dumps escritos: " << prefix << "-materiales.bmp / "
               << prefix << "-oleaje.bmp / " << prefix << "-relieve.bmp"
