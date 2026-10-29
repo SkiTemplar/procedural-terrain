@@ -37,6 +37,7 @@ add_executable(ProceduralTerrain
         src/render/mesh.cpp
         src/render/instanced_mesh.cpp
         src/render/terrain_texture_data.cpp
+        src/render/terrain_normal_map.cpp
         src/render/terrain_textures.cpp
         src/terrain/mesher.cpp
         src/terrain/palette.cpp
@@ -80,6 +81,7 @@ add_executable(terrain_tests
         tests/terrain_tests.cpp
         tests/terrain_texture_tests.cpp
         src/render/terrain_texture_data.cpp
+        src/render/terrain_normal_map.cpp
 )
 target_link_libraries(terrain_tests PRIVATE
         terrain_gen

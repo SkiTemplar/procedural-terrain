@@ -89,16 +89,18 @@ in vec3 v_normal_smooth;
 in vec2 v_light;             // x = sombra arrojada (1=al sol), y = AO de cielo
 
 uniform vec3 u_camera_pos;
-uniform float u_smooth_blend; // 1 = mezclar a suave en distancia; 0 = solo flat
+uniform float u_smooth_blend; // 1 = sombreado suave; 0 = solo flat (vegetacion o comparacion)
+uniform int u_smooth_shading; // 1 = sombreado suave con normal map; 0 = flat
 uniform int u_detail_enabled;
 uniform float u_detail_intensity;
 uniform float u_terrain_half;
 // Unidades fijas (render/terrain_shader_constants.h). La vegetación comparte
-// este fragment: con binding explícito los tres samplers nunca caen en la
+// este fragment: con binding explícito los samplers nunca caen en la
 // unidad 0 (fondo marino del agua) ni comparten unidad con otro tipo.
 layout(binding = )glsl" PT_GLSL_STR(PT_DETAIL_ALBEDO_UNIT) R"glsl() uniform sampler2DArray u_detail_albedo;
 layout(binding = )glsl" PT_GLSL_STR(PT_DETAIL_NORMAL_UNIT) R"glsl() uniform sampler2DArray u_detail_normal;
 layout(binding = )glsl" PT_GLSL_STR(PT_MATERIAL_GRID_UNIT) R"glsl() uniform usampler2D u_material_grid;
+layout(binding = )glsl" PT_GLSL_STR(PT_TERRAIN_NORMAL_MAP_UNIT) R"glsl() uniform sampler2D u_terrain_normal_map;
 uniform float u_layer_size[10];
 uniform vec3 u_layer_mean[10];
 
@@ -355,23 +357,31 @@ vec3 aces(vec3 x) {
 }
 
 void main() {
-    // Suavizado de sombreado del SUELO (HP-6, feedback 2026-07-08): las
-    // facetas subdivididas (~0.3-0.6 m) daban un sombreado a cuadros/pixelado
-    // al caminar ("divisiones en el suelo"). La normal y el color mezclan a la
-    // versión suave ya en el campo cercano: plano solo en los ~4 m inmediatos
-    // (mantiene textura al pie), totalmente suave a 40 m. El low-poly persiste
-    // en la SILUETA facetada; el sombreado deja de leerse como rejilla.
+    // Sombreado del terreno: el sombreado suave emplea el normal map continuo
+    // del heightfield completo (calculado en CPU con Scharr 3x3) y color suave
+    // interpolado entre vértices (v_color_smooth).
+    // Con u_smooth_blend == 0 (vegetación) o u_smooth_shading == 0 (toggle debug),
+    // se mantiene el sombreado flat por triángulo (derivadas dFdx/dFdy) y v_color.
     float dist_cam = length(v_world_pos - u_camera_pos);
-    float smooth_k = u_smooth_blend * clamp((dist_cam - 4.0) / 36.0, 0.0, 1.0);
 
-    // Gradientes de pantalla en flujo uniforme: sirven a la normal plana y a
-    // todas las lecturas textureGrad del detalle (que van dentro de ramas).
+    // Gradientes de pantalla en flujo uniforme: sirven a la normal plana, al
+    // normal map y a todas las lecturas textureGrad del detalle.
     vec3 dpdx = dFdx(v_world_pos);
     vec3 dpdy = dFdy(v_world_pos);
     vec3 n_flat = normalize(cross(dpdx, dpdy));
-    vec3 n_soft = normalize(v_normal_smooth + vec3(1e-5));
-    vec3 normal = normalize(mix(n_flat, n_soft, smooth_k));
-    vec3 albedo = mix(v_color, v_color_smooth, smooth_k);
+
+    ivec2 norm_size = textureSize(u_terrain_normal_map, 0);
+    vec2 norm_grid = (v_world_pos.xz / (2.0 * u_terrain_half) + 0.5) * vec2(norm_size - 1);
+    vec2 norm_uv = (norm_grid + 0.5) / vec2(norm_size);
+    vec2 norm_dx = dpdx.xz / (2.0 * u_terrain_half);
+    vec2 norm_dy = dpdy.xz / (2.0 * u_terrain_half);
+    vec2 n_xz = textureGrad(u_terrain_normal_map, norm_uv, norm_dx, norm_dy).rg;
+    float n_y = sqrt(max(0.0, 1.0 - dot(n_xz, n_xz)));
+    vec3 n_map = normalize(vec3(n_xz.x, n_y, n_xz.y));
+
+    float blend = (u_smooth_shading != 0) ? u_smooth_blend : 0.0;
+    vec3 normal = normalize(mix(n_flat, n_map, blend));
+    vec3 albedo = mix(v_color, v_color_smooth, blend);
 
     // Sin detalle (desactivado, lejos o sin assets) devuelve ratio 1 y la
     // normal base: el resultado es idéntico al render solo-paleta.

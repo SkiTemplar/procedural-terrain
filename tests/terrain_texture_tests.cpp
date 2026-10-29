@@ -239,6 +239,7 @@ TEST(Shaders, SamplersDeDetalleConBindingExplicito) {
         {"u_detail_albedo", PT_DETAIL_ALBEDO_UNIT},
         {"u_detail_normal", PT_DETAIL_NORMAL_UNIT},
         {"u_material_grid", PT_MATERIAL_GRID_UNIT},
+        {"u_terrain_normal_map", PT_TERRAIN_NORMAL_MAP_UNIT},
     };
     for (const auto& shader : render::kTerrainShaderPrograms) {
         if (shader.fragment != render::kTerrainFrag) {
@@ -259,6 +260,7 @@ TEST(Shaders, SamplersDeDetalleConBindingExplicito) {
     EXPECT_NE(PT_DETAIL_ALBEDO_UNIT, 0);
     EXPECT_NE(PT_DETAIL_NORMAL_UNIT, 0);
     EXPECT_NE(PT_MATERIAL_GRID_UNIT, 0);
+    EXPECT_NE(PT_TERRAIN_NORMAL_MAP_UNIT, 0);
 }
 
 // Las lecturas de detalle van dentro de ramas no uniformes: solo textureGrad
@@ -266,11 +268,12 @@ TEST(Shaders, SamplersDeDetalleConBindingExplicito) {
 TEST(Shaders, DetalleSinDerivadasImplicitasEnRamas) {
     const std::string_view frag{render::kTerrainFrag};
     for (const char* call : {"texture(u_detail_albedo", "texture(u_detail_normal",
-                             "texture(maps"}) {
+                             "texture(u_terrain_normal_map", "texture(maps"}) {
         EXPECT_EQ(frag.find(call), std::string_view::npos) << call;
     }
     EXPECT_NE(frag.find("textureGrad(u_detail_albedo"), std::string_view::npos);
     EXPECT_NE(frag.find("textureGrad(u_detail_normal"), std::string_view::npos);
+    EXPECT_NE(frag.find("textureGrad(u_terrain_normal_map"), std::string_view::npos);
 }
 
 // El warp de material del shader replica terrain::value_noise: mismas

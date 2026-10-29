@@ -368,6 +368,7 @@ void run(std::optional<std::uint32_t> seed_override,
             terrain_shader.use();
             set_common_uniforms(terrain_shader, camera, window.aspect(), state);
             terrain_shader.set_float("u_smooth_blend", 1.0f);
+            terrain_shader.set_int("u_smooth_shading", state.smooth_shading ? 1 : 0);
             world->ground.bind_detail_textures(
                 terrain_shader, state.detail_textures,
                 state.detail_texture_intensity);
@@ -378,6 +379,7 @@ void run(std::optional<std::uint32_t> seed_override,
             veg_shader.use();
             set_common_uniforms(veg_shader, camera, window.aspect(), state);
             veg_shader.set_float("u_smooth_blend", 0.0f);
+            veg_shader.set_int("u_smooth_shading", 0);
             veg_shader.set_int("u_detail_enabled", 0);
             world->vegetation.draw(camera.position, state.veg_draw_distance);
 

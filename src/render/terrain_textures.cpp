@@ -9,6 +9,7 @@
 #include "render/terrain_textures.h"
 
 #include "render/shader.h"
+#include "render/terrain_normal_map.h"
 #include "render/terrain_shader_constants.h"
 #include "terrain/generator.h"
 
@@ -215,6 +216,44 @@ GLuint create_fallback_array() {
     return texture;
 }
 
+// Textura 2D RG16_SNORM con el normal map de Scharr 3x3 del heightfield completo,
+// con mipmaps y filtrado lineal.
+GLuint upload_terrain_normal_map(const std::int16_t* data, int resolution) {
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16_SNORM, resolution, resolution, 0,
+                 GL_RG, GL_SHORT, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    GLfloat maximum = 1.0f;
+    glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &maximum);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY,
+                    std::min(maximum, 8.0f));
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return texture;
+}
+
+// Fallback 1x1 con normal cenital (0, 1, 0)
+GLuint create_fallback_normal_map() {
+    const std::int16_t texel[2] = {0, 0};
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16_SNORM, 1, 1, 0,
+                 GL_RG, GL_SHORT, texel);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return texture;
+}
+
 } // namespace
 
 DetailTextureArrays::~DetailTextureArrays() {
@@ -225,6 +264,11 @@ DetailTextureArrays::~DetailTextureArrays() {
 TerrainTextures::TerrainTextures(const terrain::TerrainData& data)
     : arrays_(acquire_detail_arrays()),
       domain_half_(data.config.size_m * 0.5f) {
+    if (data.height.resolution() >= 2) {
+        const auto normal_data = compute_scharr_normal_map(data.height);
+        normal_map_ = upload_terrain_normal_map(normal_data.data(),
+                                                data.height.resolution());
+    }
     if (!arrays_) {
         // Render solo-paleta: rejilla 1x1 y array neutro, nunca unidades vacías.
         const std::uint8_t material = 0;
@@ -246,7 +290,9 @@ TerrainTextures::~TerrainTextures() { release(); }
 void TerrainTextures::release() {
     if (material_grid_ != 0) glDeleteTextures(1, &material_grid_);
     if (fallback_array_ != 0) glDeleteTextures(1, &fallback_array_);
-    material_grid_ = fallback_array_ = 0;
+    if (normal_map_ != 0) glDeleteTextures(1, &normal_map_);
+    if (fallback_normal_map_ != 0) glDeleteTextures(1, &fallback_normal_map_);
+    material_grid_ = fallback_array_ = normal_map_ = fallback_normal_map_ = 0;
 }
 
 void TerrainTextures::cache_uniforms(const Shader& shader) {
@@ -282,12 +328,18 @@ void TerrainTextures::bind(const Shader& shader, bool enabled, float intensity) 
 
     const GLuint albedo = arrays_ ? arrays_->albedo : fallback_array_;
     const GLuint normal = arrays_ ? arrays_->normal : fallback_array_;
+    const GLuint norm_map = normal_map_ != 0 ? normal_map_
+                          : (fallback_normal_map_ != 0 ? fallback_normal_map_
+                             : (fallback_normal_map_ = create_fallback_normal_map()));
+
     glActiveTexture(GL_TEXTURE0 + PT_DETAIL_ALBEDO_UNIT);
     glBindTexture(GL_TEXTURE_2D_ARRAY, albedo);
     glActiveTexture(GL_TEXTURE0 + PT_DETAIL_NORMAL_UNIT);
     glBindTexture(GL_TEXTURE_2D_ARRAY, normal);
     glActiveTexture(GL_TEXTURE0 + PT_MATERIAL_GRID_UNIT);
     glBindTexture(GL_TEXTURE_2D, material_grid_);
+    glActiveTexture(GL_TEXTURE0 + PT_TERRAIN_NORMAL_MAP_UNIT);
+    glBindTexture(GL_TEXTURE_2D, norm_map);
     glActiveTexture(GL_TEXTURE0);
 }
 

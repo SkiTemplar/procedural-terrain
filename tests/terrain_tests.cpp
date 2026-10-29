@@ -1,3 +1,4 @@
+#include "render/terrain_normal_map.h"
 #include "terrain/erosion.h"
 #include "terrain/generator.h"
 #include "terrain/heightfield.h"
@@ -909,4 +910,114 @@ TEST(Erosion, ModificaElTerrenoSinRomperlo) {
         }
     }
     EXPECT_TRUE(changed);
+}
+
+TEST(ScharrNormal, HeightfieldConstanteDevuelveNormalCenital) {
+    constexpr int kRes = 65;
+    terrain::Heightfield hf(kRes, 640.0f);
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            hf.at(x, z) = 150.0f;
+        }
+    }
+
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            const glm::vec3 n = render::compute_scharr_normal(hf, x, z);
+            EXPECT_NEAR(n.x, 0.0f, 1e-4f) << "x=" << x << " z=" << z;
+            EXPECT_NEAR(n.y, 1.0f, 1e-4f) << "x=" << x << " z=" << z;
+            EXPECT_NEAR(n.z, 0.0f, 1e-4f) << "x=" << x << " z=" << z;
+        }
+    }
+}
+
+TEST(ScharrNormal, PlanoInclinadoConocidoNormalExacta) {
+    constexpr int kRes = 33;
+    terrain::Heightfield hf(kRes, 320.0f);
+    const float a = 0.5f;   // dh/dx
+    const float b = -0.3f;  // dh/dz
+    const float c = 42.0f;
+
+    // Normal analítica exacta: normalize(-dh/dx, 1, -dh/dz)
+    const glm::vec3 expected = glm::normalize(glm::vec3{-a, 1.0f, -b});
+
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            hf.at(x, z) = a * hf.world_x(x) + b * hf.world_z(z) + c;
+        }
+    }
+
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            const glm::vec3 n = render::compute_scharr_normal(hf, x, z);
+            EXPECT_NEAR(n.x, expected.x, 1e-3f) << "x=" << x << " z=" << z;
+            EXPECT_NEAR(n.y, expected.y, 1e-3f) << "x=" << x << " z=" << z;
+            EXPECT_NEAR(n.z, expected.z, 1e-3f) << "x=" << x << " z=" << z;
+        }
+    }
+}
+
+TEST(ScharrNormal, PlanosInclinadosEjesPuros) {
+    constexpr int kRes = 17;
+    terrain::Heightfield hf_x(kRes, 160.0f);
+    const float slope_x = 0.75f;
+    const glm::vec3 exp_x = glm::normalize(glm::vec3{-slope_x, 1.0f, 0.0f});
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            hf_x.at(x, z) = slope_x * hf_x.world_x(x) + 10.0f;
+        }
+    }
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            const glm::vec3 n = render::compute_scharr_normal(hf_x, x, z);
+            EXPECT_NEAR(n.x, exp_x.x, 1e-3f);
+            EXPECT_NEAR(n.y, exp_x.y, 1e-3f);
+            EXPECT_NEAR(n.z, exp_x.z, 1e-3f);
+        }
+    }
+
+    terrain::Heightfield hf_z(kRes, 160.0f);
+    const float slope_z = -0.4f;
+    const glm::vec3 exp_z = glm::normalize(glm::vec3{0.0f, 1.0f, -slope_z});
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            hf_z.at(x, z) = slope_z * hf_z.world_z(z) + 10.0f;
+        }
+    }
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            const glm::vec3 n = render::compute_scharr_normal(hf_z, x, z);
+            EXPECT_NEAR(n.x, exp_z.x, 1e-3f);
+            EXPECT_NEAR(n.y, exp_z.y, 1e-3f);
+            EXPECT_NEAR(n.z, exp_z.z, 1e-3f);
+        }
+    }
+}
+
+TEST(ScharrNormal, NormalMapParaleloYDecodificadoSnorm16) {
+    constexpr int kRes = 64;
+    terrain::Heightfield hf(kRes, 640.0f);
+    const float a = -0.25f;
+    const float b = 0.40f;
+    const glm::vec3 expected = glm::normalize(glm::vec3{-a, 1.0f, -b});
+
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            hf.at(x, z) = a * hf.world_x(x) + b * hf.world_z(z) + 50.0f;
+        }
+    }
+
+    const auto normal_map = render::compute_scharr_normal_map(hf);
+    ASSERT_EQ(normal_map.size(), static_cast<std::size_t>(kRes) * kRes * 2);
+
+    for (int z = 0; z < kRes; ++z) {
+        for (int x = 0; x < kRes; ++x) {
+            const std::size_t idx = (static_cast<std::size_t>(z) * kRes + x) * 2;
+            const glm::vec3 decoded = render::decode_snorm16_normal(
+                normal_map[idx], normal_map[idx + 1]);
+            EXPECT_NEAR(decoded.x, expected.x, 1e-3f) << "x=" << x << " z=" << z;
+            EXPECT_NEAR(decoded.y, expected.y, 1e-3f) << "x=" << x << " z=" << z;
+            EXPECT_NEAR(decoded.z, expected.z, 1e-3f) << "x=" << x << " z=" << z;
+        }
+    }
 }

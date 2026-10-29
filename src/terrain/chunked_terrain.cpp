@@ -15,16 +15,11 @@ namespace {
 
 constexpr float kSkirtDepth = 5.0f; // m hacia abajo para tapar grietas de LOD
 
-// Jitter determinista de vértice (HP-6 fase 1, feedback 2026-07-08): desplaza
-// cada nodo de la rejilla en XZ una fracción del paso, en función SOLO de su
-// índice global de nodo — chunks vecinos del mismo nivel comparten nodos de
-// borde y por tanto el mismo jitter (sin grietas; entre niveles ya hay
-// faldón). Rompe la retícula de cuadrados alineados sin abandonar el low-poly.
-glm::vec2 vertex_jitter(int gx, int gz, float step) {
-    const float k = 0.30f * step;
-    return {(hash01(gx * 3 + 7331, gz * 5 - 911) - 0.5f) * 2.0f * k,
-            (hash01(gx * 7 - 4177, gz * 11 + 263) - 0.5f) * 2.0f * k};
-}
+// Con normal map continuo (Scharr 3x3) y sombreado suave ya no se usa jitter
+// de vértices en XZ: el jitter low-poly rompía la retícula creando microfacetas
+// geométricas artificiales que alteraban las derivadas y deformaban el normal
+// map continuo.
+
 
 // Domain warp del muestreo de material (feedback 2026-07-08 "colores en
 // cuadrado"): desplaza la posición donde se lee el material unos metros según
@@ -75,13 +70,11 @@ render::Mesh build_grid_mesh(int w, int h, GetVertex&& get_vertex) {
             const auto tr = node(i + 1, j);
             const auto bl = node(i, j + 1);
             const auto br = node(i + 1, j + 1);
-            // Diagonal alternada por paridad: con la misma diagonal en todos
-            // los quads el suelo se lee como retícula (HP-6 "cuadraditos").
-            if (((i + j) & 1) == 0) {
-                indices.insert(indices.end(), {tl, bl, tr, tr, bl, br});
-            } else {
-                indices.insert(indices.end(), {tl, bl, br, tl, br, tr});
-            }
+            // Triangulación uniforme: con sombreado suave y normal map continuo
+            // no se necesita alternar la diagonal por paridad (que se usaba en
+            // low-poly para evitar patrones de retícula). La diagonal alternada
+            // producía arrugas en zigzag en la interpolación de normales y UVs.
+            indices.insert(indices.end(), {tl, bl, tr, tr, bl, br});
         }
     }
 
@@ -140,13 +133,14 @@ ChunkedTerrain::ChunkedTerrain(const TerrainData& data, const DetailSampler& sam
                     y_max = std::max(y_max, h);
                 }
             }
-            // Margen XZ de 1 m: el jitter de vértice puede sacar un nodo de
-            // borde fuera de la caja exacta del chunk.
-            chunk.aabb_min = {hf.world_x(chunk.x0) - 1.0f,
+            // AABB: extremos de altura del chunk + margen (faldón hacia
+            // abajo, ruido de detalle hacia arriba). Sin jitter de vértice,
+            // los nodos quedan exactamente alineados a la celda.
+            chunk.aabb_min = {hf.world_x(chunk.x0),
                               y_min - kSkirtDepth - 2.0f,
-                              hf.world_z(chunk.z0) - 1.0f};
-            chunk.aabb_max = {hf.world_x(x1) + 1.0f, y_max + 3.0f,
-                              hf.world_z(z1) + 1.0f};
+                              hf.world_z(chunk.z0)};
+            chunk.aabb_max = {hf.world_x(x1), y_max + 3.0f,
+                              hf.world_z(z1)};
         }
     }
     // Arranque: todo en el nivel más basto (rápido); update() irá refinando.
@@ -257,10 +251,10 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
             const float wx0 = hf.world_x(chunk.x0);
             const float wz0 = hf.world_z(chunk.z0);
             return build_grid_mesh(w, h, [&](int i, int j) {
-                const glm::vec2 jit =
-                    vertex_jitter(chunk.x0 * sub + i, chunk.z0 * sub + j, step);
-                const float wx = wx0 + static_cast<float>(i) * step + jit.x;
-                const float wz = wz0 + static_cast<float>(j) * step + jit.y;
+                // Vértices regulares sin jitter: geometría limpia y uniforme
+                // para el sombreado continuo con normal map.
+                const float wx = wx0 + static_cast<float>(i) * step;
+                const float wz = wz0 + static_cast<float>(j) * step;
                 const float wy = sampler_->height(wx, wz);
                 // El COLOR se muestrea en una posición warpeada (bordes que
                 // serpentean, no cuadros); la altura/normal usan la real.
@@ -290,13 +284,6 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
             float cx = wx;
             float cz = wz;
             if (stride == 1) {
-                // Nivel medio (celda nativa): mismo jitter anti-retícula que
-                // los niveles finos. Los lejanos (stride 4/8) se quedan en
-                // rejilla: allí manda el blend a suave del shader.
-                const glm::vec2 jit = vertex_jitter(sx, sz, hf.cell_size());
-                wx += jit.x;
-                wz += jit.y;
-                wy = hf.sample(wx, wz);
                 // Domain warp del color también en media distancia (el borde de
                 // material serpentea, no solo en el LOD cercano).
                 const glm::vec2 mw = material_warp(wx, wz);

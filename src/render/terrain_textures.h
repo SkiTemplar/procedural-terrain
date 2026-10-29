@@ -63,6 +63,8 @@ private:
 
     std::shared_ptr<const DetailTextureArrays> arrays_;
     GLuint material_grid_ = 0;
+    GLuint normal_map_ = 0;
+    GLuint fallback_normal_map_ = 0;
     GLuint fallback_array_ = 0; // 1x1x1, solo sin assets
     float domain_half_ = 1.0f;
     UniformLocations uniforms_;

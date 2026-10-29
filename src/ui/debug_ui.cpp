@@ -1,4 +1,4 @@
-﻿#include "ui/debug_ui.h"
+#include "ui/debug_ui.h"
 
 #include "player/controller.h"
 #include "render/camera.h"
@@ -64,6 +64,7 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
         ImGui::SliderFloat("intensidad texturas", &state.detail_texture_intensity,
                            0.0f, 1.5f, "%.2f");
         ImGui::EndDisabled();
+        ImGui::Checkbox("Sombreado suave", &state.smooth_shading);
         ImGui::Checkbox("wireframe", &state.wireframe);
     }
 
