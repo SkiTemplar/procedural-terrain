@@ -743,21 +743,24 @@ TEST(Hidrologia, ElLechoDelRioNoSubeAguasAbajo) {
 
 TEST(Hidrologia, LaBocaDelRioEnrasaConElMar) {
     // Remanso de desembocadura (auditoría 2026-10 #2): la lámina del río que
-    // toca el mar abierto enrasa con él — ni colgada encima ni hundida debajo
-    // (el francobordo la dejaba 0.45 m bajo el mar y el mar se metía en el
-    // cauce). Y ninguna lámina de río queda por debajo del nivel del mar.
+    // toca el mar enrasa con él — ni colgada encima ni hundida debajo (el
+    // francobordo la dejaba 0.45 m bajo el mar y el mar se metía en el
+    // cauce). Ninguna lámina de río queda por debajo del nivel del mar.
+    // El salto en el tramo final (que el pin de una celda escondía una celda
+    // aguas arriba) lo cubren AguaCosta.UnaBocaColgada… y el dump del mundo
+    // de referencia: con celdas de 23.6 m este mapa tiene torrentes que bajan
+    // metros por celda de forma legítima y no discrimina.
     const auto cfg = test_config();
     const auto data = terrain::generate(cfg);
     const auto report =
         terrain::measure_water(data, terrain::compute_river_flow(data));
     ASSERT_FALSE(report.mouths.empty()) << "ningún río llega al mar";
     for (const auto& m : report.mouths) {
-        EXPECT_LT(std::abs(m.step_m), 0.2f)
+        EXPECT_LT(std::abs(m.drop_to_sea_m), 0.05f)
             << "boca (" << m.x << ", " << m.z << ") caudal " << m.flow
-            << ": escalón lámina-mar de " << m.step_m << " m";
+            << ": lámina " << m.drop_to_sea_m << " m sobre el mar";
     }
-    EXPECT_LT(report.mouth_step_max, 0.2f)
-        << "escalón lámina-mar en la boca de " << report.mouth_step_max << " m";
+    ASSERT_GT(report.mouth_cells, 0);
 
     int below_sea = 0;
     for (size_t i = 0; i < data.hydrology.water_level.size(); ++i) {
@@ -768,6 +771,33 @@ TEST(Hidrologia, LaBocaDelRioEnrasaConElMar) {
         }
     }
     EXPECT_EQ(below_sea, 0) << below_sea << " celdas de río con lámina bajo el mar";
+}
+
+TEST(Hidrologia, NingunCauceSecoFueraDelMarAbierto) {
+    // Bloqueante #5 (auditoría 2026-10): el contador de río seco excluía todo
+    // lo que estaba bajo el mar, y el eje del estuario del río mayor quedaba
+    // sin lámina entre celdas mojadas. Todo cauce con caudal de río que no
+    // sea mar abierto lleva lámina.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    EXPECT_EQ(report.dry_cells, 0)
+        << "peor caudal " << report.dry_worst_flow << " en (" << report.dry_x
+        << ", " << report.dry_z << ")";
+}
+
+TEST(Hidrologia, ElMarRecortadoNoDejaElFondoAlAire) {
+    // Bloqueantes #1/#4/#6: donde el mar se descarta (quads de la lámina
+    // interior) ningún vértice de esa lámina con el lecho sumergido queda
+    // por debajo del mar.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    EXPECT_GT(report.sea_clip_quads, 0);
+    EXPECT_EQ(report.sea_clip_sunk_vertices, 0)
+        << "peor hundimiento " << report.sea_clip_worst_sink_m << " m";
 }
 
 TEST(Corriente, CanalRectoDaManningAguasAbajo) {

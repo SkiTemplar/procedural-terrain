@@ -1,12 +1,14 @@
 #include "terrain/water_metrics.h"
 
 #include "terrain/coast.h"
+#include "terrain/water_surface.h"
 
 #include <glm/geometric.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <utility>
 
 namespace terrain {
 
@@ -186,24 +188,84 @@ FlowAngleStats angle_stats(const TerrainData& data, const Grid& g, float thresho
     return s;
 }
 
+// Mayor salto de lámina en el tramo final de una boca: la caída boca → mar y,
+// subiendo kMouthReachM metros por el eje, el mayor desnivel de cada celda
+// visitada hacia cualquier vecina mojada (escalones a lo largo y a lo ancho de
+// la cinta). El eje aguas arriba es la vecina mojada (no lago) de más caudal
+// entre las que tienen menos que la actual (el caudal crece aguas abajo).
+float mouth_reach_step(const TerrainData& data, const Grid& g, int x0, int z0) {
+    const auto& hydro = data.hydrology;
+    float step = hydro.water_level[g.at(x0, z0)] - data.config.sea_level;
+    const int reach_steps =
+        std::max(1, static_cast<int>(std::lround(kMouthReachM / data.height.cell_size())));
+    int x = x0;
+    int z = z0;
+    for (int k = 0; k <= reach_steps; ++k) {
+        const size_t i = g.at(x, z);
+        int best = -1;
+        float best_flow = 0.0f;
+        for (int d = 0; d < 8; ++d) {
+            if (!g.inside(x + kDx[d], z + kDz[d])) {
+                continue;
+            }
+            const size_t ni = g.at(x + kDx[d], z + kDz[d]);
+            if (std::isnan(hydro.water_level[ni]) || hydro.lake[ni]) {
+                continue;
+            }
+            step = std::max(step, hydro.water_level[ni] - hydro.water_level[i]);
+            if (hydro.flow[ni] >= hydro.flow[i]) {
+                continue;
+            }
+            if (best < 0 || hydro.flow[ni] > best_flow) {
+                best = d;
+                best_flow = hydro.flow[ni];
+            }
+        }
+        if (best < 0) {
+            break;
+        }
+        x += kDx[best];
+        z += kDz[best];
+    }
+    return step;
+}
+
+// Bocas: celdas de río contiguas a mar sin lámina (abierto o encerrado: el
+// mismo criterio que usa la hidrología para el nivel de base). Los contadores
+// cubren TODAS las celdas de boca; la lista, una por río con caudal de río.
 void measure_mouths(const TerrainData& data, const Grid& g, float threshold,
-                    const std::vector<std::uint8_t>& open_sea, WaterReport& r) {
+                    WaterReport& r) {
+    constexpr float kStepSmallM = 0.2f;
+    constexpr float kStepLargeM = 1.0f;
     const auto& hydro = data.hydrology;
     const float sea = data.config.sea_level;
     std::vector<RiverMouthReport> all;
     for (int z = 1; z < g.res - 1; ++z) {
         for (int x = 1; x < g.res - 1; ++x) {
             const size_t i = g.at(x, z);
-            if (std::isnan(hydro.water_level[i]) || hydro.lake[i]
-                || hydro.flow[i] < threshold) {
+            if (std::isnan(hydro.water_level[i]) || hydro.lake[i]) {
                 continue;
             }
             bool touches_sea = false;
             for (int d = 0; d < 8 && !touches_sea; ++d) {
-                touches_sea = open_sea[g.at(x + kDx[d], z + kDz[d])] != 0;
+                const size_t ni = g.at(x + kDx[d], z + kDz[d]);
+                touches_sea = std::isnan(hydro.water_level[ni])
+                           && data.height.data()[ni] <= sea;
             }
-            if (touches_sea) {
-                all.push_back({x, z, hydro.flow[i], hydro.water_level[i] - sea});
+            if (!touches_sea) {
+                continue;
+            }
+            const float step = mouth_reach_step(data, g, x, z);
+            const RiverMouthReport m{x, z, hydro.flow[i], step,
+                                     hydro.water_level[i] - sea};
+            ++r.mouth_cells;
+            r.mouth_cells_step_over_02 += step > kStepSmallM ? 1 : 0;
+            r.mouth_cells_step_over_1 += step > kStepLargeM ? 1 : 0;
+            if (step > r.worst_mouth_cell.step_m) {
+                r.worst_mouth_cell = m;
+            }
+            if (hydro.flow[i] >= threshold) {
+                all.push_back(m);
             }
         }
     }
@@ -222,7 +284,7 @@ void measure_mouths(const TerrainData& data, const Grid& g, float threshold,
     }
     std::vector<float> steps;
     for (const auto& m : kept) {
-        steps.push_back(std::abs(m.step_m));
+        steps.push_back(std::max(std::abs(m.drop_to_sea_m), m.step_m));
     }
     if (!steps.empty()) {
         std::sort(steps.begin(), steps.end());
@@ -232,6 +294,34 @@ void measure_mouths(const TerrainData& data, const Grid& g, float threshold,
     }
     kept.resize(std::min(kept.size(), kMouthsReported));
     r.mouths = std::move(kept);
+}
+
+// Recorte del mar: vértices de la lámina interior con el lecho sumergido que
+// quedan por debajo del mar dentro de un quad donde el mar se descarta.
+void measure_sea_clip(const TerrainData& data, WaterReport& r) {
+    const WaterSurface surface = compute_water_surface(data);
+    const auto& h = data.height.data();
+    const float sea = data.config.sea_level;
+    const int res = surface.res;
+    std::vector<std::uint8_t> counted(h.size(), 0);
+    for (int z = 0; z < res - 1; ++z) {
+        for (int x = 0; x < res - 1; ++x) {
+            if (!surface.quad_covered[surface.quad_index(x, z)]) {
+                continue;
+            }
+            ++r.sea_clip_quads;
+            for (const auto [dx, dz] : {std::pair{0, 0}, {1, 0}, {0, 1}, {1, 1}}) {
+                const size_t i = static_cast<size_t>(z + dz) * static_cast<size_t>(res)
+                               + static_cast<size_t>(x + dx);
+                const float sink = sea - surface.vertex_y[i];
+                if (h[i] < sea && sink > 1e-3f && !counted[i]) {
+                    counted[i] = 1;
+                    ++r.sea_clip_sunk_vertices;
+                    r.sea_clip_worst_sink_m = std::max(r.sea_clip_worst_sink_m, sink);
+                }
+            }
+        }
+    }
 }
 
 } // namespace
@@ -249,7 +339,8 @@ WaterReport measure_water(const TerrainData& data, const RiverFlowField& flow) {
                           / (1024.0f * 1024.0f);
     const std::vector<std::uint8_t> open_sea = open_sea_mask(data, g);
 
-    measure_mouths(data, g, threshold, open_sea, r);
+    measure_mouths(data, g, threshold, r);
+    measure_sea_clip(data, r);
 
     for (size_t i = 0; i < n; ++i) {
         const bool has_water = !std::isnan(hydro.water_level[i]);
@@ -259,9 +350,10 @@ WaterReport measure_water(const TerrainData& data, const RiverFlowField& flow) {
         if (!has_water && h[i] <= sea && !open_sea[i]) {
             ++r.enclosed_sea_cells;
         }
-        // Río seco en tierra firme, SIN la franja de 0.3 m sobre el mar que
-        // excluía el contador anterior (ahí se escondía el tramo final).
-        if (!has_water && h[i] > sea && hydro.flow[i] >= kDryFlowFactor * threshold) {
+        // Río seco: todo cauce sin lámina que no sea mar abierto, también el
+        // que queda bajo el mar encerrado entre la lámina del estuario (ahí
+        // se escondía el eje del río mayor).
+        if (!has_water && !open_sea[i] && hydro.flow[i] >= kDryFlowFactor * threshold) {
             ++r.dry_cells;
             if (hydro.flow[i] > r.dry_worst_flow) {
                 r.dry_worst_flow = hydro.flow[i];

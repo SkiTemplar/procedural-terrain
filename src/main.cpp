@@ -13,6 +13,7 @@
 #include "terrain/preset.h"
 #include "terrain/water_flow.h"
 #include "terrain/water_metrics.h"
+#include "terrain/water_surface.h"
 #include "ui/debug_ui.h"
 #include "ui/field_maps.h"
 #include "veg/grass_field.h"
@@ -80,11 +81,14 @@ struct World {
 // color por calado (Beer-Lambert) y espuma de orilla POR PÍXEL, cosa que los
 // vértices del plano del mar (~625 m) jamás podrían resolver. Los ríos no la
 // usan: llevan su calado por vértice (la malla de agua va a resolución plena).
+//
+// Segunda textura (R8, un texel por quad del heightfield, filtro NEAREST):
+// 1 = la malla de agua interior cubre ese quad y el mar se recorta en él. Es
+// la MISMA cobertura que usa la malla (terrain/water_surface), alineada al
+// quad: el mar nunca se descarta donde no hay lámina de río que lo sustituya.
 struct SeabedTexture {
-    // Marca de "cauce fluvial, no mar" en el canal r (el shader descarta el
-    // plano del mar por debajo de -0.25 tras el filtrado bilineal).
-    static constexpr float kSeaClipDepth = -1.0f;
     GLuint id = 0;
+    GLuint clip_id = 0;
 
     ~SeabedTexture() {
         release();
@@ -94,6 +98,10 @@ struct SeabedTexture {
             glDeleteTextures(1, &id);
             id = 0;
         }
+        if (clip_id != 0) {
+            glDeleteTextures(1, &clip_id);
+            clip_id = 0;
+        }
     }
     void rebuild(const terrain::TerrainData& data) {
         release();
@@ -101,12 +109,6 @@ struct SeabedTexture {
         const auto& hf = data.height;
         const int res = hf.resolution();
         const float sea = data.config.sea_level;
-        const auto& wl = data.hydrology.water_level;
-        const auto river_water = [&](int x, int z) {
-            const size_t i = static_cast<size_t>(std::min(z, res - 1)) * res
-                           + static_cast<size_t>(std::min(x, res - 1));
-            return !std::isnan(wl[i]) && !data.hydrology.lake[i];
-        };
         std::vector<float> texels(static_cast<size_t>(kRes) * kRes * 2);
         for (int z = 0; z < kRes; ++z) {
             for (int x = 0; x < kRes; ++x) {
@@ -114,14 +116,7 @@ struct SeabedTexture {
                 const int sz = z * (res - 1) / (kRes - 1);
                 const size_t si = static_cast<size_t>(sz) * res + sx;
                 const size_t ti = (static_cast<size_t>(z) * kRes + x) * 2;
-                // Cauce fluvial (huella del texel con lámina de río): calado
-                // NEGATIVO = el mar no se dibuja ahí. La malla del río, que en
-                // el remanso enrasa con el mar, es la única superficie.
-                const bool channel = river_water(sx, sz) || river_water(sx + 1, sz)
-                                  || river_water(sx, sz + 1)
-                                  || river_water(sx + 1, sz + 1);
-                texels[ti] = channel ? kSeaClipDepth
-                                     : std::max(0.0f, sea - hf.data()[si]);
+                texels[ti] = std::max(0.0f, sea - hf.data()[si]);
                 texels[ti + 1] =
                     data.wave_energy.empty() ? 0.0f : data.wave_energy[si];
             }
@@ -134,6 +129,24 @@ struct SeabedTexture {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        const terrain::WaterSurface surface = terrain::compute_water_surface(data);
+        std::vector<std::uint8_t> clip(surface.quad_covered.size());
+        for (size_t i = 0; i < clip.size(); ++i) {
+            clip[i] = surface.quad_covered[i] != 0 ? 255 : 0;
+        }
+        glGenTextures(1, &clip_id);
+        glBindTexture(GL_TEXTURE_2D, clip_id);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, res - 1, res - 1, 0, GL_RED,
+                     GL_UNSIGNED_BYTE, clip.data());
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+        constexpr float kNoClip[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, kNoClip);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 };
@@ -430,6 +443,9 @@ void run(std::optional<std::uint32_t> seed_override,
                 water_shader.set_float("u_breaker_index", terrain::kBreakerIndex);
             }
             water_shader.set_int("u_seabed", 0);
+            water_shader.set_int("u_sea_clip", 1);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, seabed_tex.clip_id);
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, seabed_tex.id);
             water_shader.set_int("u_is_sea", 1);
@@ -493,15 +509,25 @@ void print_water_report(const terrain::TerrainData& data) {
     const terrain::WaterReport r =
         terrain::measure_water(data, terrain::compute_river_flow(data));
     std::cout << "--- agua que fluye ---" << std::endl;
-    std::cout << "escalon en desembocadura (lamina rio - mar): max "
+    std::cout << "escalon en desembocadura (mayor salto de lamina boca->mar y en los "
+              << terrain::kMouthReachM << " m aguas arriba): max "
               << r.mouth_step_max << " m, p95 " << r.mouth_step_p95 << " m"
               << std::endl;
     for (const auto& m : r.mouths) {
         std::cout << "  boca caudal " << m.flow << " en mundo (" << hf.world_x(m.x)
-                  << ", " << hf.world_z(m.z) << "): escalon " << m.step_m << " m"
-                  << std::endl;
+                  << ", " << hf.world_z(m.z) << "): salto " << m.step_m
+                  << " m (boca-mar " << m.drop_to_sea_m << " m)" << std::endl;
     }
-    std::cout << "rio seco (caudal>=1.5x umbral sin lamina, terreno sobre el mar): "
+    std::cout << "celdas de boca: " << r.mouth_cells << "; con salto >0.2 m: "
+              << r.mouth_cells_step_over_02 << ", >1 m: " << r.mouth_cells_step_over_1;
+    if (r.worst_mouth_cell.x >= 0) {
+        std::cout << "; peor " << r.worst_mouth_cell.step_m << " m (caudal "
+                  << r.worst_mouth_cell.flow << ") en mundo ("
+                  << hf.world_x(r.worst_mouth_cell.x) << ", "
+                  << hf.world_z(r.worst_mouth_cell.z) << ")";
+    }
+    std::cout << std::endl;
+    std::cout << "rio seco (caudal>=1.5x umbral sin lamina, fuera del mar abierto): "
               << r.dry_cells << " celdas; peor caudal " << r.dry_worst_flow;
     if (r.dry_x >= 0) {
         std::cout << " en mundo (" << hf.world_x(r.dry_x) << ", "
@@ -511,6 +537,10 @@ void print_water_report(const terrain::TerrainData& data) {
     std::cout << "lecho de rio bajo el plano del mar: " << r.river_bed_under_sea_plane
               << " celdas; mar encerrado tierra adentro: " << r.enclosed_sea_cells
               << " celdas" << std::endl;
+    std::cout << "mar recortado bajo la lamina interior: " << r.sea_clip_quads
+              << " quads; vertices con lecho sumergido por debajo del mar: "
+              << r.sea_clip_sunk_vertices << " (peor " << r.sea_clip_worst_sink_m
+              << " m)" << std::endl;
     const auto print_angles = [](const char* label, const terrain::FlowAngleStats& s) {
         std::cout << label << ": " << s.cells << " celdas, " << s.pct_over_60deg
                   << " % a >60 grados del eje aguas abajo, salto mediano entre vecinas "

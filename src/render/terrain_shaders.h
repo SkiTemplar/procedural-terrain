@@ -365,7 +365,8 @@ in float v_ww;
 
 uniform vec3 u_camera_pos;
 uniform int u_is_sea;        // 1 = plano del mar, 0 = malla de ríos/lagos
-uniform sampler2D u_seabed;  // r = calado bajo el mar (m; <0 = cauce), g = energía oleaje
+uniform sampler2D u_seabed;  // r = calado bajo el mar (m), g = energía oleaje
+uniform sampler2D u_sea_clip; // 1 = la lámina de río/lago cubre el quad (NEAREST)
 uniform float u_domain_half; // semiancho del heightfield (m)
 uniform float u_time;
 uniform vec3 u_wave_dir;     // xz = dirección de VIAJE del oleaje dominante
@@ -498,12 +499,14 @@ void main() {
                 / (2.0 * u_domain_half);
         // Fuera del heightfield el mar es abierto y hondo (el CLAMP del
         // borde ya devuelve el fondo del perímetro, que es abisal).
-        vec2 de = texture(u_seabed, clamp(uv, 0.0, 1.0)).rg;
-        // Cauce fluvial (calado negativo): el mar no se mete en el río; en el
-        // remanso la malla del río enrasa con él y es la única superficie.
-        if (de.r < -0.25) {
+        // Cauce fluvial: el mar no se mete en el río. Se recorta EXACTAMENTE
+        // en los quads que cubre la malla de agua interior (en el remanso
+        // enrasa con el mar y es la única superficie); fuera del dominio la
+        // textura devuelve el borde (0 = mar).
+        if (texture(u_sea_clip, uv).r > 0.5) {
             discard;
         }
+        vec2 de = texture(u_seabed, clamp(uv, 0.0, 1.0)).rg;
         depth = max(de.r, 0.0);
         wave_e = de.g;
     } else {

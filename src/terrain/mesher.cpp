@@ -1,6 +1,7 @@
 #include "terrain/mesher.h"
 
 #include "terrain/water_flow.h"
+#include "terrain/water_surface.h"
 
 #include <glm/glm.hpp>
 
@@ -52,8 +53,6 @@ float value_noise(float x, float z) {
 
 namespace {
 
-constexpr float kWaterSink = 0.12f; // baja la lámina para no pelear con la orilla
-constexpr float kSinkFadeM = 0.5f;  // sobre el mar, el hundido crece de 0 a pleno
 const glm::vec3 kLakeColor{0.16f, 0.36f, 0.52f};
 
 } // namespace
@@ -65,15 +64,9 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
         return static_cast<size_t>(z) * static_cast<size_t>(res) + static_cast<size_t>(x);
     };
 
-    std::vector<render::Vertex> vertices;
-    std::vector<std::uint32_t> indices;
-    const auto& wl = data.hydrology.water_level;
-    const float sea_level = data.config.sea_level;
-
-    // Malla indexada con vértices compartidos entre celdas vecinas (~4x menos
-    // memoria y ancho de banda que un quad suelto por celda).
-    constexpr std::uint32_t kNoVertex = std::numeric_limits<std::uint32_t>::max();
-    std::vector<std::uint32_t> vertex_of(static_cast<size_t>(res) * res, kNoVertex);
+    // Alturas y cobertura de la lámina (terrain/water_surface): la misma
+    // geometría que recorta el plano del mar, así que no quedan huecos.
+    const WaterSurface surface = compute_water_surface(data);
 
     // C4-W3 (auditoría 2026-10 #1): CORRIENTE por vértice en m/s — dirección
     // del eje del cauce suavizada a lo largo del río y módulo de Manning
@@ -82,26 +75,19 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
     // sin depender de la posición absoluta.
     const RiverFlowField flow = compute_river_flow(data);
 
-    const auto get_or_create = [&](int x, int z, float fallback) {
+    // Malla indexada con vértices compartidos entre celdas vecinas (~4x menos
+    // memoria y ancho de banda que un quad suelto por celda).
+    constexpr std::uint32_t kNoVertex = std::numeric_limits<std::uint32_t>::max();
+    std::vector<std::uint32_t> vertex_of(static_cast<size_t>(res) * res, kNoVertex);
+    std::vector<render::Vertex> vertices;
+    std::vector<std::uint32_t> indices;
+
+    const auto get_or_create = [&](int x, int z) {
         const size_t i = sample_index(x, z);
         if (vertex_of[i] != kNoVertex) {
             return vertex_of[i];
         }
-        const float own = wl[i];
-        // Vértice de orilla (sin lámina propia): se HUNDE bajo el terreno
-        // (feedback 2026-07-14, borde dentado): con el borde de la malla
-        // ENTERRADO, la línea de agua visible la dibuja la intersección
-        // z-buffer contra el talud — sub-píxel y orgánica — en vez del
-        // contorno poligonal de la cinta, que escalonaba a saltos de celda.
-        // (El +0.04 anterior venía del fix "agua que no se pega al suelo":
-        // hundirlo también lo respeta — el agua muere DENTRO de la orilla.)
-        const float bank = std::min(fallback, hf.at(x, z) - 0.15f);
-        // En el remanso (lámina a cota de mar) no se hunde: la cinta enrasa
-        // con el plano del mar en la boca, sin escalón de 12 cm.
-        const float sink = std::isnan(own)
-            ? kWaterSink
-            : kWaterSink * std::clamp((own - sea_level) / kSinkFadeM, 0.0f, 1.0f);
-        const float y = (std::isnan(own) ? bank : own) - sink;
+        const float y = surface.vertex_y[i];
         const float tint = 0.95f + 0.10f * hash01(x, z);
         vertex_of[i] = static_cast<std::uint32_t>(vertices.size());
         // C4-W1: PROFUNDIDAD REAL por vértice (lámina − lecho) en normal.y —
@@ -125,25 +111,13 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
 
     for (int z = 0; z < res - 1; ++z) {
         for (int x = 0; x < res - 1; ++x) {
-            // Fallback = MÍNIMO de los niveles definidos: con el máximo la
-            // lámina se estiraba hacia arriba sobre las orillas.
-            float level = 1e9f;
-            bool any = false;
-            for (const auto [dx, dz] : {std::pair{0, 0}, {1, 0}, {0, 1}, {1, 1}}) {
-                const float v = wl[sample_index(x + dx, z + dz)];
-                if (!std::isnan(v)) {
-                    level = std::min(level, v);
-                    any = true;
-                }
-            }
-            if (!any) {
+            if (!surface.quad_covered[surface.quad_index(x, z)]) {
                 continue;
             }
-
-            const std::uint32_t v00 = get_or_create(x, z, level);
-            const std::uint32_t v10 = get_or_create(x + 1, z, level);
-            const std::uint32_t v01 = get_or_create(x, z + 1, level);
-            const std::uint32_t v11 = get_or_create(x + 1, z + 1, level);
+            const std::uint32_t v00 = get_or_create(x, z);
+            const std::uint32_t v10 = get_or_create(x + 1, z);
+            const std::uint32_t v01 = get_or_create(x, z + 1);
+            const std::uint32_t v11 = get_or_create(x + 1, z + 1);
             indices.insert(indices.end(), {v00, v01, v10, v10, v01, v11});
         }
     }

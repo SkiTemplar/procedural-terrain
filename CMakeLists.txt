@@ -25,6 +25,7 @@ add_library(terrain_gen STATIC
         src/terrain/preset.cpp
         src/terrain/water_flow.cpp
         src/terrain/water_metrics.cpp
+        src/terrain/water_surface.cpp
 )
 target_include_directories(terrain_gen PUBLIC src)
 target_link_libraries(terrain_gen PUBLIC glm::glm nlohmann_json::nlohmann_json)
@@ -73,7 +74,7 @@ endif ()
 enable_testing()
 find_package(GTest CONFIG REQUIRED)
 
-add_executable(terrain_tests tests/terrain_tests.cpp)
+add_executable(terrain_tests tests/terrain_tests.cpp tests/water_tests.cpp)
 target_link_libraries(terrain_tests PRIVATE terrain_gen GTest::gtest_main)
 
 include(GoogleTest)
