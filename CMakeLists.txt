@@ -43,6 +43,10 @@ target_link_libraries(terrain_gen PUBLIC glm::glm nlohmann_json::nlohmann_json)
 
 add_executable(ProceduralTerrain
         src/main.cpp
+        src/app/world.cpp
+        src/app/scene_renderer.cpp
+        src/app/camera_path.cpp
+        src/app/offscreen.cpp
         src/core/window.cpp
         src/core/input.cpp
         src/render/shader.cpp
@@ -102,6 +106,8 @@ add_executable(terrain_tests
         tests/ecology_tests.cpp
         tests/water_tests.cpp
         tests/terrain_texture_tests.cpp
+        tests/camera_path_tests.cpp
+        src/app/camera_path.cpp
         src/render/terrain_texture_data.cpp
         src/render/terrain_normal_map.cpp
 )

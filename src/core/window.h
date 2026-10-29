@@ -9,7 +9,7 @@ namespace core {
 // Ventana GLFW + contexto OpenGL 4.6 core. RAII: crea en ctor, destruye en dtor.
 class Window {
 public:
-    Window(int width, int height, const std::string& title);
+    Window(int width, int height, const std::string& title, bool visible = true);
     ~Window();
 
     Window(const Window&) = delete;

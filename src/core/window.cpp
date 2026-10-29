@@ -15,7 +15,7 @@ void framebuffer_size_callback(GLFWwindow* /*window*/, int width, int height) {
 
 } // namespace
 
-Window::Window(int width, int height, const std::string& title) {
+Window::Window(int width, int height, const std::string& title, bool visible) {
     if (!glfwInit()) {
         throw std::runtime_error("GLFW: fallo en glfwInit");
     }
@@ -24,6 +24,10 @@ Window::Window(int width, int height, const std::string& title) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_SAMPLES, 4);
+    // Oculta = render fuera de pantalla (--shots/--record/--bench): la ventana
+    // solo aporta el contexto GL, nunca se muestra ni toma el foco.
+    glfwWindowHint(GLFW_VISIBLE, visible ? GLFW_TRUE : GLFW_FALSE);
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, visible ? GLFW_TRUE : GLFW_FALSE);
 
     window_ = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
     if (!window_) {
@@ -32,7 +36,7 @@ Window::Window(int width, int height, const std::string& title) {
     }
 
     glfwMakeContextCurrent(window_);
-    glfwSwapInterval(1); // vsync
+    glfwSwapInterval(visible ? 1 : 0); // vsync solo en interactivo
 
     if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress))) {
         glfwDestroyWindow(window_);
@@ -41,7 +45,9 @@ Window::Window(int width, int height, const std::string& title) {
     }
 
     glfwSetFramebufferSizeCallback(window_, framebuffer_size_callback);
-    set_mouse_captured(true);
+    if (visible) {
+        set_mouse_captured(true);
+    }
 }
 
 Window::~Window() {

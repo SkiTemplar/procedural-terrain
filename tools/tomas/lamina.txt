@@ -1,0 +1,6 @@
+# Cuatro cámaras fijas de la lámina A/B (seed por defecto 20260711).
+# nombre x z yaw pitch alt [t]  (alt = m sobre max(terreno, mar); yaw -90 mira a -z = norte)
+alta_sur         0     6200  -90 -32 2600
+este             4400     0  180 -12  450
+oeste           -4400   300    0 -12  450
+boca            -3950 -1542  -40 -20   84

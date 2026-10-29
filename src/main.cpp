@@ -1,3 +1,6 @@
+#include "app/offscreen.h"
+#include "app/scene_renderer.h"
+#include "app/world.h"
 #include "core/frame_clock.h"
 #include "core/input.h"
 #include "core/window.h"
@@ -46,129 +49,8 @@
 
 namespace {
 
-constexpr glm::vec3 kSkyColor{0.53f, 0.71f, 0.92f};
-
-// Pose inicial de cámara por CLI: permite al lazo de verificación visual
-// (capturas automatizadas) encuadrar costas o ríos concretos sin volar.
-struct CameraPose {
-    float x;
-    float z;
-    float yaw;
-    float pitch;
-    float alt = 180.0f; // metros sobre el terreno en (x, z)
-};
-
-// En heap y no-movible: ChunkedTerrain y DetailSampler guardan punteros a data.
-// Recibe la TerrainData YA generada (el generate corre en un hilo de trabajo);
-// aquí solo queda el trabajo con GL, que debe vivir en el hilo principal.
-struct World {
-    terrain::TerrainData data;
-    terrain::DetailSampler sampler;
-    terrain::ChunkedTerrain ground;
-    std::optional<render::Mesh> water;
-    render::Mesh sea;
-    veg::VegRenderer vegetation;
-    veg::GrassField grass;
-
-    explicit World(terrain::TerrainData&& ready)
-        : data(std::move(ready)),
-          sampler(data),
-          ground(data, sampler),
-          water(terrain::build_water_mesh(data)),
-          sea(terrain::build_sea_plane(data.config.size_m, data.config.sea_level)),
-          vegetation(data, sampler),
-          grass(data, sampler) {}
-
-    World(const World&) = delete;
-    World& operator=(const World&) = delete;
-};
-
-// C4-W1/W2: textura RG del dominio para el shader del MAR — r = profundidad
-// real del fondo bajo el nivel del mar (m), g = energía de oleaje [0,1]. Da
-// color por calado (Beer-Lambert) y espuma de orilla POR PÍXEL, cosa que los
-// vértices del plano del mar (~625 m) jamás podrían resolver. Los ríos no la
-// usan: llevan su calado por vértice (la malla de agua va a resolución plena).
-//
-// Segunda textura (R8, un texel por quad del heightfield, filtro NEAREST):
-// 1 = la malla de agua interior cubre ese quad y el mar se recorta en él. Es
-// la MISMA cobertura que usa la malla (terrain/water_surface), alineada al
-// quad: el mar nunca se descarta donde no hay lámina de río que lo sustituya.
-struct SeabedTexture {
-    GLuint id = 0;
-    GLuint clip_id = 0;
-
-    ~SeabedTexture() {
-        release();
-    }
-    void release() {
-        if (id != 0) {
-            glDeleteTextures(1, &id);
-            id = 0;
-        }
-        if (clip_id != 0) {
-            glDeleteTextures(1, &clip_id);
-            clip_id = 0;
-        }
-    }
-    void rebuild(const terrain::TerrainData& data) {
-        release();
-        constexpr int kRes = 2048;
-        const auto& hf = data.height;
-        const int res = hf.resolution();
-        const float sea = data.config.sea_level;
-        std::vector<float> texels(static_cast<size_t>(kRes) * kRes * 2);
-        for (int z = 0; z < kRes; ++z) {
-            for (int x = 0; x < kRes; ++x) {
-                const int sx = x * (res - 1) / (kRes - 1);
-                const int sz = z * (res - 1) / (kRes - 1);
-                const size_t si = static_cast<size_t>(sz) * res + sx;
-                const size_t ti = (static_cast<size_t>(z) * kRes + x) * 2;
-                texels[ti] = std::max(0.0f, sea - hf.data()[si]);
-                texels[ti + 1] =
-                    data.wave_energy.empty() ? 0.0f : data.wave_energy[si];
-            }
-        }
-        glGenTextures(1, &id);
-        glBindTexture(GL_TEXTURE_2D, id);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, kRes, kRes, 0, GL_RG,
-                     GL_FLOAT, texels.data());
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-        const terrain::WaterSurface surface = terrain::compute_water_surface(data);
-        std::vector<std::uint8_t> clip(surface.quad_covered.size());
-        for (size_t i = 0; i < clip.size(); ++i) {
-            clip[i] = surface.quad_covered[i] != 0 ? 255 : 0;
-        }
-        glGenTextures(1, &clip_id);
-        glBindTexture(GL_TEXTURE_2D, clip_id);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, res - 1, res - 1, 0, GL_RED,
-                     GL_UNSIGNED_BYTE, clip.data());
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-        constexpr float kNoClip[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, kNoClip);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
-};
-
-void set_common_uniforms(const render::Shader& shader, const render::Camera& camera,
-                         float aspect, const ui::DebugState& state) {
-    shader.set_mat4("u_view", camera.view());
-    shader.set_mat4("u_proj", camera.proj(aspect));
-    shader.set_vec3("u_sun_dir", state.sun_dir());
-    shader.set_vec3("u_camera_pos", camera.position);
-    shader.set_float("u_fog_density", state.fog_density);
-}
-
 void run(std::optional<std::uint32_t> seed_override,
-         std::optional<CameraPose> pose_override) {
+         std::optional<app::CameraPose> pose_override) {
     // Declarados ANTES que window a propósito: al cerrar durante una
     // generación, el destructor del future bloquea hasta que el worker
     // termina — con este orden la ventana (GL) muere al instante y el
@@ -183,17 +65,7 @@ void run(std::optional<std::uint32_t> seed_override,
 
     render::Camera camera;
     player::Controller controller;
-    render::Shader terrain_shader(render::kTerrainVert, render::kTerrainFrag);
-    render::Shader veg_shader(render::kVegVert, render::kTerrainFrag);
-    render::Shader grass_shader(render::kGrassVert, render::kGrassFrag);
-    render::Shader water_shader(render::kWaterVert, render::kWaterFrag);
-    render::Shader sky_shader(render::kSkyVert, render::kSkyFrag);
-
-    // VAO vacío para el triángulo fullscreen del cielo (core profile exige un
-    // VAO ligado aunque el shader no lea atributos: los vértices salen de
-    // gl_VertexID).
-    GLuint sky_vao = 0;
-    glGenVertexArrays(1, &sky_vao);
+    app::SceneRenderer renderer;
 
     ui::DebugUi debug_ui(window.handle());
     ui::DebugState state;
@@ -207,13 +79,12 @@ void run(std::optional<std::uint32_t> seed_override,
     state.preset_list = terrain::list_presets(preset_dir);
     std::uint64_t preset_expected_hash = 0;
     ui::FieldMaps field_maps; // minimapas C2: se reconstruyen al montar mundo
-    SeabedTexture seabed_tex; // C4-W1/W2: calado + oleaje para el mar
 
     // Generación asíncrona: el generate() (solo CPU) corre en un hilo de
     // trabajo y la ventana sigue viva con un overlay de progreso. El montaje
     // GL (mallas, agua, vegetación) se hace en el hilo principal al recoger
     // el resultado. En regeneración, el mundo viejo sigue dibujándose.
-    std::unique_ptr<World> world;
+    std::unique_ptr<app::World> world;
 
     const auto start_baking = [&]() {
         bake_start = std::chrono::steady_clock::now();
@@ -317,7 +188,7 @@ void run(std::optional<std::uint32_t> seed_override,
         if (baking.valid()
             && baking.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             const bool first_world = (world == nullptr);
-            world = std::make_unique<World>(baking.get());
+            world = std::make_unique<app::World>(baking.get());
             baking = {};
             bake_phase.store(nullptr);
             {
@@ -331,7 +202,6 @@ void run(std::optional<std::uint32_t> seed_override,
                           << std::endl;
             }
             field_maps.rebuild(world->data);
-            seabed_tex.rebuild(world->data);
             if (preset_expected_hash != 0) {
                 // Verificación §7-C: el mundo regenerado desde el preset debe
                 // reproducir exactamente el heightfield guardado.
@@ -346,11 +216,8 @@ void run(std::optional<std::uint32_t> seed_override,
             state.last_generation_seconds = std::chrono::duration<float>(
                 std::chrono::steady_clock::now() - bake_start).count();
             if (first_world && pose_override) {
-                const CameraPose& p = *pose_override;
-                const float ground = std::max(
-                    world->data.height.sample(p.x, p.z),
-                    world->data.config.sea_level);
-                camera.position = {p.x, ground + p.alt, p.z};
+                const app::CameraPose& p = *pose_override;
+                camera.position = {p.x, world->pose_height(p), p.z};
                 camera.yaw = p.yaw;
                 camera.pitch = p.pitch;
             } else if (first_world) {
@@ -371,120 +238,11 @@ void run(std::optional<std::uint32_t> seed_override,
                   std::chrono::steady_clock::now() - bake_start).count()
             : 0.0f;
 
-        glClearColor(kSkyColor.r, kSkyColor.g, kSkyColor.b, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        // Pase de cielo (C4-L4): gradiente + disco solar a pantalla completa,
-        // sin depth (el mundo se pinta encima). Siempre relleno, aunque el
-        // modo wireframe esté activo — el cielo no es malla que inspeccionar.
-        glDisable(GL_DEPTH_TEST);
-        sky_shader.use();
-        const glm::mat4 view_rot = glm::mat4(glm::mat3(camera.view()));
-        sky_shader.set_mat4(
-            "u_inv_vp", glm::inverse(camera.proj(window.aspect()) * view_rot));
-        sky_shader.set_vec3("u_sun_dir", state.sun_dir());
-        sky_shader.set_vec3("u_camera_pos", camera.position);
-        glBindVertexArray(sky_vao);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        glBindVertexArray(0);
-        glEnable(GL_DEPTH_TEST);
-
-        glPolygonMode(GL_FRONT_AND_BACK, state.wireframe ? GL_LINE : GL_FILL);
-
-        if (world) {
-            world->ground.update(camera.position,
-                                 camera.proj(window.aspect()) * camera.view());
-            state.visible_chunks =
-                static_cast<int>(world->ground.visible_meshes().size());
-            state.total_chunks = world->ground.total_chunks();
-            {
-                const auto& vc = world->vegetation.counts();
-                state.veg_counts[0] = vc.pines;
-                state.veg_counts[1] = vc.broadleafs;
-                state.veg_counts[2] = vc.rocks;
-                state.veg_counts[3] = vc.tufts;
-                state.veg_counts[4] = vc.bushes;
-                state.veg_counts[5] = vc.logs;
-            }
-
-            terrain_shader.use();
-            set_common_uniforms(terrain_shader, camera, window.aspect(), state);
-            terrain_shader.set_float("u_smooth_blend", 1.0f);
-            terrain_shader.set_int("u_smooth_shading", state.smooth_shading ? 1 : 0);
-            world->ground.bind_detail_textures(
-                terrain_shader, state.detail_textures,
-                state.detail_texture_intensity);
-            for (const render::Mesh* chunk : world->ground.visible_meshes()) {
-                chunk->draw();
-            }
-
-            veg_shader.use();
-            set_common_uniforms(veg_shader, camera, window.aspect(), state);
-            veg_shader.set_float("u_smooth_blend", 0.0f);
-            veg_shader.set_int("u_smooth_shading", 0);
-            veg_shader.set_int("u_detail_enabled", 0);
-            world->vegetation.draw(camera.position, state.veg_draw_distance);
-
-            // Césped del LOD cercano: shader propio con viento + desvanecido
-            // por distancia (encoge la altura entre 70 y 104 m → sin pop al
-            // repoblar el disco alrededor de la cámara).
-            grass_shader.use();
-            set_common_uniforms(grass_shader, camera, window.aspect(), state);
-            grass_shader.set_float("u_time", clock.total);
-            grass_shader.set_float("u_grass_fade_start", 70.0f);
-            grass_shader.set_float("u_grass_fade_end", 104.0f);
-            world->grass.update(camera.position);
-            world->grass.draw();
-
-            // Agua después del terreno, con blending.
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            water_shader.use();
-            set_common_uniforms(water_shader, camera, window.aspect(), state);
-            water_shader.set_float("u_time", clock.total);
-            water_shader.set_float("u_domain_half",
-                                   world->data.config.size_m * 0.5f);
-            // C4-W4: el oleaje viaja con la rosa de vientos. wind_dir_deg es
-            // DE dónde sopla (brújula: 0 = del norte = -z); las olas van al
-            // sentido contrario.
-            {
-                const float wr = world->data.config.wind_dir_deg
-                               * 3.14159265f / 180.0f;
-                water_shader.set_vec3(
-                    "u_wave_dir",
-                    {-std::sin(wr), 0.0f, std::cos(wr)});
-                water_shader.set_float("u_wind_focus",
-                                       world->data.config.wind_focus);
-                water_shader.set_float("u_wave_hmax", terrain::kOpenSeaWaveHeightM);
-                water_shader.set_float("u_breaker_index", terrain::kBreakerIndex);
-                water_shader.set_float("u_sea_level", world->data.config.sea_level);
-                water_shader.set_float("u_sea_half",
-                                       terrain::sea_plane_half(world->data.config.size_m));
-                water_shader.set_float("u_sea_grid",
-                                       static_cast<float>(terrain::kSeaPlaneRes));
-            }
-            water_shader.set_int("u_seabed", 0);
-            water_shader.set_int("u_sea_clip", 1);
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, seabed_tex.clip_id);
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, seabed_tex.id);
-            water_shader.set_int("u_is_sea", 1);
-            world->sea.draw();
-            water_shader.set_int("u_is_sea", 0);
-            if (world->water) {
-                world->water->draw();
-            }
-            glDisable(GL_BLEND);
-        }
-
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        renderer.draw(world.get(), camera, window.aspect(), state, clock.total);
         debug_ui.draw(state, camera, controller, clock.dt, &field_maps);
 
         window.swap_and_poll();
     }
-
-    glDeleteVertexArrays(1, &sky_vao);
 }
 
 } // namespace
@@ -1308,7 +1066,17 @@ int dump_costa(const std::string& prefix, const terrain::TerrainConfig& cfg) {
 // verificación visual por capturas (alt = metros sobre el terreno en x,z).
 // Modo dump: ProceduralTerrain --dump-costa <prefijo> [seed | preset.json]
 // genera el mundo sin ventana y escribe los mapas de materiales y oleaje.
+// Modos fuera de pantalla (ventana oculta, ver app/offscreen.h):
+// ProceduralTerrain --shots|--record|--bench <entrada> <salida> [opciones]
 int main(int argc, char** argv) {
+    try {
+        if (const auto offscreen = app::parse_offscreen_args(argc, argv)) {
+            return app::run_offscreen(*offscreen);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "offscreen: " << e.what() << std::endl;
+        return 1;
+    }
     if (argc > 2 && std::string(argv[1]) == "--dump-costa") {
         terrain::TerrainConfig cfg;
         if (argc > 3) {
@@ -1331,13 +1099,13 @@ int main(int argc, char** argv) {
         return dump_costa(argv[2], cfg);
     }
     std::optional<std::uint32_t> seed;
-    std::optional<CameraPose> pose;
+    std::optional<app::CameraPose> pose;
     try {
         if (argc > 1) {
             seed = static_cast<std::uint32_t>(std::stoul(argv[1]));
         }
         if (argc > 5) {
-            CameraPose p;
+            app::CameraPose p;
             p.x = std::stof(argv[2]);
             p.z = std::stof(argv[3]);
             p.yaw = std::stof(argv[4]);

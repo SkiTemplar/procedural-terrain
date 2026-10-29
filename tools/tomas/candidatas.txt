@@ -1,0 +1,9 @@
+# nombre x z yaw pitch alt [t]  (alt = m sobre max(terreno, mar); yaw -90 mira a -z = norte)
+sur_panoramica   0     4300  -90 -10  380
+norte_valles     800  -4400   90 -16  650
+oeste           -4400   300    0 -12  450
+este             4400     0  180 -12  450
+costa_mar       -4900 -1500    0  -6   45
+alta_sur         0     6200  -90 -32 2600
+suelo_ladera    -500   1500  -90  -4    3
+boca            -3950 -1542  -40 -20   84
