@@ -842,6 +842,26 @@ TEST(Corriente, LosRiosDelMundoCorrenAguasAbajoSinSaltos) {
     EXPECT_LT(report.flow_field.pct_over_60deg, report.bed_descent.pct_over_60deg);
 }
 
+TEST(Costa, ElOleajeLlegaALaRompiente) {
+    // Auditoría 2026-10 #3: la energía de oleaje solo existía en tierra y la
+    // espuma de rompiente salía al 20 % uniforme. Ahora el mar somero (donde
+    // rompe la ola) conoce la energía que le llega desde mar adentro, acotada
+    // en [0, 1], y la zona de rompiente (calado < H_s/γ) no está vacía.
+    const auto cfg = test_config();
+    const auto data = terrain::generate(cfg);
+    for (const float e : data.wave_energy) {
+        ASSERT_GE(e, 0.0f);
+        ASSERT_LE(e, 1.0f);
+    }
+    const auto report =
+        terrain::measure_water(data, terrain::compute_river_flow(data));
+    ASSERT_GT(report.shallow_sea_cells, 0);
+    const float pct = 100.0f * static_cast<float>(report.shallow_sea_with_energy)
+                    / static_cast<float>(report.shallow_sea_cells);
+    EXPECT_GT(pct, 90.0f) << "mar somero con oleaje: " << pct << " %";
+    EXPECT_GT(report.surf_cells, 0);
+}
+
 TEST(Costa, EnergiaDeOleajeAcotadaYSoloLitoral) {
     // Contrato Agua v2 (paso 8): la energía REI/fetch está en [0,1] y solo
     // vive en la banda litoral — toda celda con energía debe tener mar a

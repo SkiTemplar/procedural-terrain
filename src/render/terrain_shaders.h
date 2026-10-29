@@ -370,6 +370,8 @@ uniform float u_domain_half; // semiancho del heightfield (m)
 uniform float u_time;
 uniform vec3 u_wave_dir;     // xz = dirección de VIAJE del oleaje dominante
 uniform float u_wind_focus;  // 0 = mar isótropo, 1 = todo del viento dominante
+uniform float u_wave_hmax;     // H_s del mar abierto (m), terrain::kOpenSeaWaveHeightM
+uniform float u_breaker_index; // γ de rotura por fondo, terrain::kBreakerIndex
 
 out vec4 frag_color;
 )glsl" PT_GLSL_SKY_COMMON R"glsl(
@@ -543,13 +545,21 @@ void main() {
     // de campos simulados.
     float foam = 0.0;
     if (u_is_sea == 1) {
-        float band = 1.0 - smoothstep(0.25, 2.4, depth);
+        // ROTURA POR FONDO (auditoría 2026-10 #3): H_s = H_abierto·√E (oleaje
+        // limitado por fetch) y la ola rompe donde H ≥ γ·h, así que la zona
+        // de rompiente acaba en h_b = H_s/γ y su anchura la da la pendiente
+        // real del fondo (playa tendida: ancha; acantilado: una línea). La
+        // blancura crece con la altura de ola: costa batida blanca, abrigo
+        // (H_s < 0.3 m) sin espuma de rompiente.
+        float h_s = u_wave_hmax * sqrt(wave_e);
+        float h_b = h_s / u_breaker_index;
+        float surf = 1.0 - smoothstep(0.35 * h_b, 1.15 * h_b, depth);
+        float whiteness = smoothstep(0.3, 1.1, h_s);
         float chop = w_vnoise(v_world_pos.xz * 0.45 - wd * (u_time * 1.4));
         float pulse = 0.5
             + 0.5 * sin(dot(v_world_pos.xz, wd) * 0.30 - u_time * 1.8
                         + chop * 2.6);
-        foam = clamp(band * (0.20 + 0.80 * wave_e) * (0.35 + 0.65 * pulse),
-                     0.0, 1.0);
+        foam = clamp(surf * whiteness * (0.35 + 0.65 * pulse), 0.0, 1.0);
     } else if (v_ww > 0.05) {
         // Vetas de espuma arrastradas por la corriente (mismo flow map).
         vec3 ph = flow_phases(v_world_pos.xz);

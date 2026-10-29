@@ -6,6 +6,7 @@
 #include "render/shader.h"
 #include "render/terrain_shaders.h"
 #include "terrain/chunked_terrain.h"
+#include "terrain/coast.h"
 #include "terrain/generator.h"
 #include "terrain/mesher.h"
 #include "terrain/palette.h"
@@ -425,6 +426,8 @@ void run(std::optional<std::uint32_t> seed_override,
                     {-std::sin(wr), 0.0f, std::cos(wr)});
                 water_shader.set_float("u_wind_focus",
                                        world->data.config.wind_focus);
+                water_shader.set_float("u_wave_hmax", terrain::kOpenSeaWaveHeightM);
+                water_shader.set_float("u_breaker_index", terrain::kBreakerIndex);
             }
             water_shader.set_int("u_seabed", 0);
             glActiveTexture(GL_TEXTURE0);
