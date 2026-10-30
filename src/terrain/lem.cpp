@@ -142,6 +142,34 @@ float initial_relief(size_t i, int res, float cell_size_m) {
     return kInitialReliefM * (0.65f * broad + 0.35f * fine - 0.5f);
 }
 
+// Diaclasado fino (iter. 9): la fracturación de la litología (~0.7 km) es
+// más ancha que el espaciado de los barrancos de primer orden (40-150 m), así
+// que a lo largo de un flanco uniforme la erodibilidad no variaba a esa
+// escala y el stream power los tallaba en peine: barrancos paralelos,
+// equiespaciados y alineados con la máxima pendiente (la arista de cumbre era
+// una sierra de dientes iguales con canales de nieve paralelos). Una red de
+// diaclasas de ~60 m modula la K por celda: los cauces que caen en roca
+// diaclasada ganan y el espaciado sale irregular. Contraste suave y una sola
+// escala, por debajo de la de los valles: con ×1.6 y una octava de ~190 m los
+// valles mayores seguían al ruido en gusanos y la cumbre bajaba un 20 %. La
+// K calibrada es la de la roca MÁS diaclasada (×kJointSpan^0.5); la masiva
+// resiste más (hasta ×kJointSpan^-1.5): como los cauces buscan la roca
+// blanda, con el rango centrado en 1 la cumbre bajaba un 13 %.
+// Coordenadas giradas: el value noise de retícula cuadrada no debe alinear
+// los cauces con los ejes.
+constexpr float kJointSpan = 1.3f;
+constexpr float kJointWavelengthM = 60.0f;
+
+float joint_factor(size_t i, int res, float cell_size_m) {
+    const float x = static_cast<float>(i % static_cast<size_t>(res)) * cell_size_m;
+    const float z = static_cast<float>(i / static_cast<size_t>(res)) * cell_size_m;
+    const float n = lattice_noise((0.8253f * x - 0.5646f * z) / kJointWavelengthM + 29.7f,
+                                  (0.5646f * x + 0.8253f * z) / kJointWavelengthM - 29.7f);
+    const float t = std::clamp((n - 0.25f) / 0.50f, 0.0f, 1.0f);
+    const float j = t * t * (3.0f - 2.0f * t);
+    return std::pow(kJointSpan, 2.0f * j - 1.5f);
+}
+
 constexpr int kDx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
 constexpr int kDz[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
 
@@ -225,6 +253,9 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
             k_lith[i] = std::pow(kErodSpan, 2.0f * lith - 1.0f);
             a0[i] = kChannelAreaM2 * std::pow(kA0Span, 1.0f - 2.0f * lith);
         }
+    }
+    for (size_t i = 0; i < n; ++i) {
+        k_lith[i] *= joint_factor(i, res, cell_size_m);
     }
 
     // Calibración física e independiente del grid: la pendiente de equilibrio

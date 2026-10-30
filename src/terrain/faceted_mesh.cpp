@@ -48,12 +48,25 @@ glm::vec2 material_warp(float wx, float wz) {
 // pasar ~25-50 % de los periodos entre 1 y 2 pasos, y los barrancos paralelos
 // del LEM batían con la rejilla en franjas claras y oscuras alineadas con sus
 // ejes; la binomial los deja por debajo del 25 % (0 en periodo 1-1.3 pasos).
+// Iter. 9: en las facetas de 39-78 m (vistas de 2-7 km) los barrancos de
+// 120-200 m caen en 1.5-2.5 pasos y aun así pasaban un 25-40 %: la ladera sur
+// se dibujaba como un código de barras de columnas alternas claras y oscuras
+// alineadas con la rejilla, que la exageración de relieve del fragment
+// triplicaba. Con r = 1.5 pasos la respuesta en 2-2.5 pasos baja al 2-10 %
+// y un relieve de 4+ pasos conserva la mitad o más.
 constexpr int kFilterStride = 2;
 constexpr float kFilterRadius = 1.0f;
+constexpr int kWideFilterStride = 16;
+constexpr float kWideFilterRadius = 1.5f;
 
 // Radio del prefiltro para una faceta de `cells` celdas (0 = sin filtro).
 float filter_radius(float cells, float cell_m) {
-    return cells >= static_cast<float>(kFilterStride) ? kFilterRadius * cells * cell_m : 0.0f;
+    if (cells < static_cast<float>(kFilterStride)) {
+        return 0.0f;
+    }
+    const float r = cells >= static_cast<float>(kWideFilterStride) ? kWideFilterRadius
+                                                                   : kFilterRadius;
+    return r * cells * cell_m;
 }
 
 float node_height(const DetailSampler& sampler, float wx, float wz, float radius) {
@@ -179,7 +192,8 @@ struct FaceShade {
 };
 
 FaceShade shade_face(const DetailSampler& sampler, const Palette& palette,
-                     const glm::vec3& c, const glm::vec3& n, std::uint32_t id) {
+                     const glm::vec3& c, const glm::vec3& n, std::uint32_t id,
+                     float facet_m = 0.0f) {
     const glm::vec2 mw = material_warp(c.x, c.z);
     const float cx = c.x + mw.x;
     const float cz = c.z + mw.y;
@@ -187,7 +201,7 @@ FaceShade shade_face(const DetailSampler& sampler, const Palette& palette,
     const glm::vec3 base = palette.ground(m, sampler.forest_density_near(cx, cz),
                                           sampler.climate_near(cx, cz), c.y, c.x, c.z,
                                           cx, cz);
-    return {palette.face(base, m, n, c.y, cx, cz, id),
+    return {palette.face(base, m, n, c.y, cx, cz, id, facet_m),
             {sampler.shadow_at(c.x, c.z), sampler.sky_ao_at(c.x, c.z)}};
 }
 
@@ -199,11 +213,11 @@ constexpr int kAverageColourStride = 4;
 
 FaceShade shade_face_area(const DetailSampler& sampler, const Palette& palette,
                           const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
-                          const glm::vec3& n, std::uint32_t id) {
+                          const glm::vec3& n, std::uint32_t id, float facet_m) {
     const glm::vec3 g = (a + b + c) / 3.0f;
-    FaceShade acc = shade_face(sampler, palette, g, n, id);
+    FaceShade acc = shade_face(sampler, palette, g, n, id, facet_m);
     for (const glm::vec3* v : {&a, &b, &c}) {
-        const FaceShade s = shade_face(sampler, palette, (g + *v) * 0.5f, n, id);
+        const FaceShade s = shade_face(sampler, palette, (g + *v) * 0.5f, n, id, facet_m);
         acc.color += s.color;
         acc.light += s.light;
     }
@@ -245,13 +259,19 @@ void emit_triangle(const DetailSampler& sampler, const Palette& palette,
     const glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
     const bool average = stride >= kAverageColourStride
                       || crosses_material_edge(sampler, a, b, c);
-    const FaceShade s = average ? shade_face_area(sampler, palette, a, b, c, n, id)
-                                : shade_face(sampler, palette, (a + b + c) / 3.0f, n, id);
+    // El relieve que decide el color (nieve, afloramiento, canchal) se mide
+    // a la escala de la faceta: con la sonda fija de ~12 m, en una faceta de
+    // 78 m cada cara caía al azar en un lado u otro del barranco y la ladera
+    // se pintaba en columnas alternas.
+    const float extent = facet_extent(a, b, c);
+    const FaceShade s = average
+        ? shade_face_area(sampler, palette, a, b, c, n, id, extent)
+        : shade_face(sampler, palette, (a + b + c) / 3.0f, n, id, extent);
     // El atributo normal lleva la normal de REFERENCIA de la cara (ladera a
     // la escala de la faceta): el fragment exagera la desviación de la cara
     // respecto a ella y las facetas se leen también a media distancia.
     const glm::vec3 g = (a + b + c) / 3.0f;
-    const glm::vec3 ref = sampler.normal_at_scale(g.x, g.z, facet_extent(a, b, c));
+    const glm::vec3 ref = sampler.normal_at_scale(g.x, g.z, extent);
     out[0] = render::Vertex{a, s.color, ref, s.light};
     out[1] = render::Vertex{b, s.color, ref, s.light};
     out[2] = render::Vertex{c, s.color, ref, s.light};

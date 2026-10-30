@@ -28,8 +28,10 @@ public:
     // fresca), lluvia local y un pequeño salto de valor por cara (`id`).
     // n = normal de la cara; cx/cz = centroide warpeado.
     // y = cota del centroide (nieve retenida en caras altas tendidas).
+    // facet_m = arista horizontal de la cara: el relieve que decide el color
+    // se mide a esa escala si supera la fija (0 = escala fija).
     glm::vec3 face(glm::vec3 base, Material m, glm::vec3 n, float y, float cx, float cz,
-                   std::uint32_t id) const;
+                   std::uint32_t id, float facet_m = 0.0f) const;
 
 private:
     const TerrainData* data_;
@@ -55,7 +57,7 @@ private:
     glm::vec3 scree(float y, float climate, float cx, float cz) const;
     glm::vec3 snow(float y) const;
     glm::vec3 beach_sand(float y, float climate) const;
-    // Relieve a escala fija (no depende del LOD de la faceta).
+    // Relieve a escala fija (~12 m) o a la de la faceta si es mayor.
     struct Relief {
         float tan_slope = 0.0f;  // tanβ a ~12 m
         float concavity = 0.0f;  // > 0 canal o vaguada, < 0 cresta (anillo de 30 m)
@@ -72,13 +74,14 @@ private:
         bool mountain = false; // se midió el relieve
         Relief relief;
     };
-    Relief relief_at(float wx, float wz) const;
+    Relief relief_at(float wx, float wz, float facet_m) const;
     float sunny_of(glm::vec3 n) const; // insolación relativa a un llano, [-1, 1]
     // Cobertura k en [0, 1] → decisión casi binaria por cara (ver palette.cpp).
     float pick(float k, const FaceCtx& f, std::uint32_t salt) const;
     float snow_cover(const FaceCtx& f) const;
     glm::vec3 alpine_turf(float y, float sunny) const;
     glm::vec3 mountain_rock(glm::vec3 c, const FaceCtx& f) const;
+    glm::vec3 rock_weathering(glm::vec3 c, const FaceCtx& f) const;
     glm::vec3 grass_outcrop(glm::vec3 c, Material m, const FaceCtx& f) const;
     glm::vec3 grass_face(glm::vec3 c, Material m, const FaceCtx& f) const;
     glm::vec3 rock_face(glm::vec3 c, Material m, const FaceCtx& f) const;

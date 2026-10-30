@@ -169,9 +169,12 @@ vec2 material_warp(vec2 w) {
 // calculados en flujo uniforme al principio de main: dentro de ramas no
 // uniformes las derivadas implícitas de texture() están indefinidas.
 // Exageración de la desviación de cada faceta respecto a su ladera: x1.4 de
-// cerca y hasta x2 a varios km, donde el prefiltro del LOD ya alisa las caras.
+// cerca y x1.6 a varios km, donde el prefiltro del LOD ya alisa las caras.
+// Iter. 9: con x2 lejos, en las caras de 39-78 m cada flanco de barranco
+// (una columna de facetas) saltaba de luz a sombra y la ladera era un código
+// de barras.
 const float kFacetReliefNear = 1.4;
-const float kFacetReliefFar = 2.0;
+const float kFacetReliefFar = 1.6;
 const vec2 kFacetReliefRampM = vec2(400.0, 4000.0);
 // Asimetría del cielo hacia el lado del sol (en caras verticales).
 const float kSkySunSide = 0.25;

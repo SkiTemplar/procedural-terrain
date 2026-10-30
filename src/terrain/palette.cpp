@@ -373,16 +373,19 @@ glm::vec3 Palette::ground(Material m, float forest_density, float climate,
     return c * tint;
 }
 
-// Relieve a escala fija, independiente del LOD de la faceta (la normal de
-// una cara lejana de 40 m promedia la pared con su pie): tanβ por diferencias
-// centrales a ±kReliefSlopeM y concavidad = (media del anillo a kReliefCurvM
-// − h) / kReliefCurvM, > 0 en canal o vaguada y < 0 en cresta o espolón.
-Palette::Relief Palette::relief_at(float wx, float wz) const {
+// Relieve a escala fija en las facetas cercanas (la normal de una cara de
+// 1-2 m es rizado, no ladera): tanβ por diferencias centrales a
+// ±kReliefSlopeM y concavidad = (media del anillo a kReliefCurvM − h) /
+// kReliefCurvM, > 0 en canal o vaguada y < 0 en cresta o espolón. En facetas
+// mayores que la sonda (LOD lejano, iter. 9) la sonda crece con la cara: con
+// la sonda fija cada cara de 78 m caía al azar en un lado u otro de un
+// barranco más estrecho que ella y la ladera se pintaba en columnas.
+Palette::Relief Palette::relief_at(float wx, float wz, float facet_m) const {
     const auto& hf = data_->height;
-    const float s = kReliefSlopeM;
+    const float s = std::max(kReliefSlopeM, 0.5f * facet_m);
     const float gx = (hf.sample(wx + s, wz) - hf.sample(wx - s, wz)) / (2.0f * s);
     const float gz = (hf.sample(wx, wz + s) - hf.sample(wx, wz - s)) / (2.0f * s);
-    const float r = kReliefCurvM;
+    const float r = std::max(kReliefCurvM, facet_m);
     const float d = r * 0.7071068f;
     const float ring = 0.125f * (hf.sample(wx + r, wz) + hf.sample(wx - r, wz)
                                  + hf.sample(wx, wz + r) + hf.sample(wx, wz - r)
@@ -507,6 +510,36 @@ glm::vec3 Palette::grass_face(glm::vec3 c, Material m, const FaceCtx& f) const {
                     pick(snow_cover(f), f, 0x17u));
 }
 
+// Meteorización de la roca de montaña (iter. 9: la cresta era un único gris
+// plano). Tres capas físicas, todas por cara:
+// - Matiz por macizo (~70 m): óxidos cálidos frente a roca fresca fría; la
+//   cota enfría el matiz (menos alteración química con el frío).
+// - Líquenes crustáceos: en caras estables (ni pared lavada ni canchal), con
+//   lluvia y lejos de la nieve; ocre amarillento, naranja en solana.
+// - Pátina oscura de escorrentía en las paredes de umbría.
+glm::vec3 Palette::rock_weathering(glm::vec3 c, const FaceCtx& f) const {
+    const float alt_k = glm::clamp((f.y - sea_level_ - tree_line_)
+                                       / std::max(data_->max_height_m - sea_level_ - tree_line_, 50.0f),
+                                   0.0f, 1.0f);
+    const float massif = value_noise(f.cx * 0.014f + 23.0f, f.cz * 0.014f - 61.0f)
+                       + 0.35f * (face_hash01(f.id * 3u + 0x51u) - 0.5f) - 0.5f;
+    const float warm = glm::clamp(massif * 1.8f + 0.15f - 0.25f * alt_k, -1.0f, 1.0f);
+    c *= glm::mix(glm::vec3{0.93f, 0.98f, 1.07f}, glm::vec3{1.10f, 1.00f, 0.86f},
+                  0.5f + 0.5f * warm);
+    const float rain = field_at(data_->precipitation, data_->precip_res, f.cx, f.cz, 1.0f);
+    const float stable = glm::smoothstep(0.30f, 0.55f, f.relief.tan_slope)
+                       * (1.0f - glm::smoothstep(0.95f, 1.35f, f.relief.tan_slope));
+    const float lichen = stable * glm::smoothstep(0.75f, 1.25f, rain) * (1.0f - 0.6f * alt_k)
+        * glm::smoothstep(0.50f, 0.70f, value_noise(f.cx * 0.045f - 9.0f, f.cz * 0.045f + 33.0f));
+    const glm::vec3 lichen_c = glm::mix(glm::vec3{0.55f, 0.54f, 0.36f},
+                                        glm::vec3{0.66f, 0.50f, 0.30f},
+                                        glm::smoothstep(0.0f, 0.6f, f.sunny));
+    c = glm::mix(c, lichen_c, 0.55f * lichen);
+    const float stain = glm::smoothstep(0.9f, 1.4f, f.relief.tan_slope)
+                      * glm::smoothstep(0.1f, -0.5f, f.sunny);
+    return c * (1.0f - 0.18f * stain);
+}
+
 // Roca y canchal: lavado de las caras verticales, pátina de solana, forma de
 // la montaña (mountain_rock) y nieve retenida.
 glm::vec3 Palette::rock_face(glm::vec3 c, Material m, const FaceCtx& f) const {
@@ -516,6 +549,9 @@ glm::vec3 Palette::rock_face(glm::vec3 c, Material m, const FaceCtx& f) const {
     c *= glm::mix(glm::vec3{0.90f, 0.89f, 0.86f}, glm::vec3{1.06f, 1.05f, 1.04f}, steep);
     // Solana cálida (pátina de óxido seca), umbría fría.
     c *= glm::vec3{1.0f + 0.12f * f.sunny, 1.0f + 0.05f * f.sunny, 1.0f - 0.08f * f.sunny};
+    if (f.mountain) {
+        c = rock_weathering(c, f);
+    }
     if (m == Material::Rock && f.mountain) {
         c = mountain_rock(c, f);
     }
@@ -534,8 +570,8 @@ glm::vec3 Palette::snow_face(glm::vec3 c, const FaceCtx& f) const {
                                     * glm::smoothstep(-0.4f, 0.4f, f.relief.sunny));
     // La roca que asoma es la de la pared, con sus estratos y su bandeado
     // (con rock_base sola, cada calva era un gris liso sin ninguna cara).
-    return glm::mix(c * snow_aspect_tint(f.sunny), rock(f.y, 0.3f, f.cx, f.cz, f.cx, f.cz) * 0.85f,
-                    pick(bare, f, 0x29u));
+    const glm::vec3 wall = rock_weathering(rock(f.y, 0.3f, f.cx, f.cz, f.cx, f.cz) * 0.85f, f);
+    return glm::mix(c * snow_aspect_tint(f.sunny), wall, pick(bare, f, 0x29u));
 }
 
 // Insolación de la cara relativa a la de un llano (1 = llano, >1 solana,
@@ -544,7 +580,7 @@ glm::vec3 Palette::snow_face(glm::vec3 c, const FaceCtx& f) const {
 // decide algo: montaña (sobre kReliefMinFrac del límite del bosque) o cara
 // empinada.
 glm::vec3 Palette::face(glm::vec3 base, Material m, glm::vec3 n, float y, float cx,
-                        float cz, std::uint32_t id) const {
+                        float cz, std::uint32_t id, float facet_m) const {
     FaceCtx f;
     f.slope = glm::clamp(1.0f - n.y, 0.0f, 1.0f);
     f.sunny = sunny_of(n);
@@ -554,7 +590,7 @@ glm::vec3 Palette::face(glm::vec3 base, Material m, glm::vec3 n, float y, float 
     f.id = id;
     f.mountain = y - sea_level_ > kReliefMinFrac * tree_line_ || f.slope > 0.25f;
     if (f.mountain) {
-        f.relief = relief_at(cx, cz);
+        f.relief = relief_at(cx, cz, facet_m);
     }
     glm::vec3 c = base;
     if (m == Material::Grass || m == Material::Forest) {
@@ -590,7 +626,9 @@ glm::vec3 Palette::face_variation(glm::vec3 c, Material m, float cx, float cz,
     // La nieve hereda el salto de la roca: sus calvas son roca de pared.
     const float jump = (m == Material::Sand) ? 0.04f
                      : (m == Material::Rock || m == Material::Snow ? 0.10f : 0.05f);
-    const float h = 0.10f * hue_patch + 0.03f * hue;
+    // La roca separa más el matiz entre caras (cálida/fría) que el suelo.
+    const float hue_k = (m == Material::Rock) ? 2.0f : 1.0f;
+    const float h = hue_k * (0.10f * hue_patch + 0.03f * hue);
     return c * (1.0f + 0.14f * patch + jump * v)
              * glm::vec3{1.0f + 0.5f * h, 1.0f, 1.0f - 0.5f * h};
 }
