@@ -1,0 +1,15 @@
+# Capturas del portfolio (1920x1080): planos generales y detalles sin repetir encuadre.
+isla_sur          0     6200  -90 -32 2600
+isla_este      7600        0  180 -16 1900
+macizo_norte    800    -4400   90 -16  650
+pico_este      4400        0  180 -12  450
+cordillera_sur    0     4300  -90 -10  380
+costa_oeste   -4400      300    0 -12  450
+playa_boca    -3950    -1542  -40 -20   84
+mar_isla      -4900    -1500    0  -4    6
+costa_vuelo   -5400     2200  -60  -6   70
+bosque_valle   -2600    -400 -150  -9   90
+cresta_cerca   4600    -2000  190 -10  380
+valle_norte     700    -2900   96 -14  420
+orilla_turquesa -5200  -2200  -20  -7   70
+ladera          -500    1500  -90  -4    3
