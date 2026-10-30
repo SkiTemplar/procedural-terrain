@@ -191,19 +191,42 @@ constexpr float kReliefPercentile = 0.85f;
 // Uplift mínimo fuera de la cordillera (fracción del pleno): colinas bajas.
 constexpr float kUpliftFloor = 0.20f;
 
+// Estribaciones transversales (iter. 10): en los flancos el uplift se modula
+// con crestas ridged alargadas A TRAVÉS del eje (λ ~3.3 km a lo largo, ~8 km a
+// través), de espaciado y longitud desiguales. Con el flanco de uplift
+// uniforme el drenaje bajaba en un peine de 12-15 barrancos paralelos,
+// equiespaciados y de igual hondura; con las estribaciones el agua converge
+// en las vaguadas entre ellas: valles mayores con afluentes que bajan
+// oblicuos por los costados de cada espolón. La divisoria no se toca (peso 0
+// en la cresta) y el LEM sigue tallando todas las formas.
+constexpr float kSpurDepth = 0.70f;
+constexpr float kSpurFreqAlong = 0.30f;  // 1/km a lo largo del eje
+constexpr float kSpurFreqAcross = 0.12f; // 1/km a través del eje
+
+float spur_factor(const Noise& noise, float u, float v, float crest_profile) {
+    const float spur = smoothstep(
+        0.35f, 0.95f,
+        noise.ridged(glm::vec3{u * kSpurFreqAlong, 0.0f, v * kSpurFreqAcross}
+                         + glm::vec3{-12.9f, 0.0f, 33.1f},
+                     2));
+    const float flank = 1.0f - smoothstep(0.72f, 0.97f, crest_profile);
+    return 1.0f - kSpurDepth * flank * (1.0f - spur);
+}
+
 float tectonic_relief(const Noise& noise, glm::vec2 axis, glm::vec3 p_km) {
     const glm::vec3 pw = noise.warp(p_km, kCrestWarpKm, 0.12f);
     const float u = pw.x * axis.x + pw.z * axis.y;
     const float v = -pw.x * axis.y + pw.z * axis.x;
     const float crest = noise.ridged(
         glm::vec3{u * 0.08f, 0.0f, v * 0.20f} + glm::vec3{19.3f, 0.0f, -7.4f}, 4);
+    const float crest_profile = std::pow(crest, kCrestGamma);
     const float culmination = smoothstep(
         -0.55f, 0.55f,
         noise.fbm(glm::vec3{u * 0.30f, 0.0f, v * 0.08f} + glm::vec3{-3.3f, 0.0f, 71.2f}, 2));
     const float mass = smoothstep(
         0.25f, 0.75f,
         noise.fbm(p_km * 0.10f + glm::vec3{53.7f, 0.0f, -11.9f}, 2) * 0.5f + 0.5f);
-    return std::pow(crest, kCrestGamma)
+    return crest_profile * spur_factor(noise, u, v, crest_profile)
          * (kCulminationFloor + (1.0f - kCulminationFloor) * culmination)
          * (0.35f + 0.65f * mass);
 }
@@ -677,6 +700,11 @@ void classify_materials(TerrainData& data, const Noise& noise,
         riparian[i] = std::isnan(data.hydrology.water_level[i]) ? 0 : 1;
     }
     std::vector<std::uint8_t> dilated(riparian.size());
+    // Orilla desnuda (iter. 10): solo la primera corona junto al agua. Con la
+    // ribera entera (2 coronas) el limo flanqueaba un cauce de 2 celdas con
+    // 2 celdas por lado y el río se leía como una pista de grava con un hilo
+    // de agua; la segunda corona queda para el bosque de galería.
+    std::vector<std::uint8_t> bank;
     for (int pass = 0; pass < 2; ++pass) {
         std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
             for (int x = 0; x < res; ++x) {
@@ -700,6 +728,9 @@ void classify_materials(TerrainData& data, const Noise& noise,
             }
         });
         std::swap(riparian, dilated);
+        if (pass == 0) {
+            bank = riparian;
+        }
     }
 
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int z) {
@@ -798,7 +829,7 @@ void classify_materials(TerrainData& data, const Noise& noise,
                                                              : Material::LakeBed;
             } else if (is_shore) {
                 m = shore_m;
-            } else if (riparian[i] && slope < 0.35f
+            } else if (bank[i] && slope < 0.35f
                        && h < 50.0f + 24.0f * noise.fbm(
                               p_km * 2.5f + glm::vec3{12.4f, 0.0f, -63.8f}, 2)) {
                 // Orilla de lago/río de tierras bajas: franja de arena/limo.

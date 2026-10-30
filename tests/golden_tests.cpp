@@ -49,8 +49,11 @@ terrain::TerrainConfig golden_config() {
 // Recalibrado (altura y material, iter. 9): diaclasado fino de ~60 m en la
 // erodibilidad del LEM (barrancos de primer orden sin peine). Cumbre de la
 // seed 20260711: 1370 m.
-constexpr std::uint64_t kGoldenHeight = 0x11ae7c06a7e93272ull;
-constexpr std::uint64_t kGoldenMaterial = 0x401d6afdfb57c0b3ull;
+// Recalibrado (altura y material, iter. 10): estribaciones transversales en
+// el uplift de los flancos y orilla de limo de una sola corona junto al agua.
+// Cumbre de la seed 20260711: 1306 m.
+constexpr std::uint64_t kGoldenHeight = 0x6dcb5cb93ebbbd71ull;
+constexpr std::uint64_t kGoldenMaterial = 0x0dee0c58d69ef6c2ull;
 
 } // namespace
 
