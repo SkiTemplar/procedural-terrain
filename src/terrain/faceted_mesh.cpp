@@ -95,11 +95,32 @@ FaceShade shade_face(const DetailSampler& sampler, const Palette& palette,
             {sampler.shadow_at(c.x, c.z), sampler.sky_ao_at(c.x, c.z)}};
 }
 
+// Desde este paso de rejilla la faceta cubre decenas de metros: su color es
+// la media de cuatro muestras (centroide y puntos medios hacia cada vértice)
+// en vez de la del centroide, que en lenguas finas lejanas (flechas, puntas)
+// alternaba arena/hierba/roca cara a cara en un perfil de sierra.
+constexpr int kAverageColourStride = 4;
+
+FaceShade shade_face_area(const DetailSampler& sampler, const Palette& palette,
+                          const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
+                          const glm::vec3& n, std::uint32_t id) {
+    const glm::vec3 g = (a + b + c) / 3.0f;
+    FaceShade acc = shade_face(sampler, palette, g, n, id);
+    for (const glm::vec3* v : {&a, &b, &c}) {
+        const FaceShade s = shade_face(sampler, palette, (g + *v) * 0.5f, n, id);
+        acc.color += s.color;
+        acc.light += s.light;
+    }
+    return {acc.color * 0.25f, acc.light * 0.25f};
+}
+
 void emit_triangle(const DetailSampler& sampler, const Palette& palette,
                    const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
-                   std::uint32_t id, render::Vertex* out) {
+                   std::uint32_t id, int stride, render::Vertex* out) {
     const glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
-    const FaceShade s = shade_face(sampler, palette, (a + b + c) / 3.0f, n, id);
+    const FaceShade s = stride >= kAverageColourStride
+        ? shade_face_area(sampler, palette, a, b, c, n, id)
+        : shade_face(sampler, palette, (a + b + c) / 3.0f, n, id);
     out[0] = render::Vertex{a, s.color, n, s.light};
     out[1] = render::Vertex{b, s.color, n, s.light};
     out[2] = render::Vertex{c, s.color, n, s.light};
@@ -139,11 +160,11 @@ render::Mesh build_faceted_mesh(const TerrainData& data, const DetailSampler& sa
             // Diagonal por hash del quad global: la triangulación no dibuja
             // rayas paralelas a la rejilla.
             if (hash01(gx * 13 + 5, gz * 17 + 3) < 0.5f) {
-                emit_triangle(sampler, palette, tl, bl, tr, id * 2u, out);
-                emit_triangle(sampler, palette, tr, bl, br, id * 2u + 1u, out + 3);
+                emit_triangle(sampler, palette, tl, bl, tr, id * 2u, region.stride, out);
+                emit_triangle(sampler, palette, tr, bl, br, id * 2u + 1u, region.stride, out + 3);
             } else {
-                emit_triangle(sampler, palette, tl, bl, br, id * 2u, out);
-                emit_triangle(sampler, palette, tl, br, tr, id * 2u + 1u, out + 3);
+                emit_triangle(sampler, palette, tl, bl, br, id * 2u, region.stride, out);
+                emit_triangle(sampler, palette, tl, br, tr, id * 2u + 1u, region.stride, out + 3);
             }
         }
     });

@@ -27,7 +27,7 @@ inline float stand_mosaic(float wx, float wz) noexcept {
 // Intensidad de claro [0, 1]: 1 = claro abierto (pradera), 0 = rodal intacto.
 inline float stand_gap(float wx, float wz, float forest_density) noexcept {
     const float threshold = 0.58f + 0.10f * glm::clamp(forest_density, 0.0f, 1.0f);
-    return glm::smoothstep(threshold, threshold + 0.07f, stand_mosaic(wx, wz));
+    return glm::smoothstep(threshold - 0.03f, threshold + 0.11f, stand_mosaic(wx, wz));
 }
 
 // Factor de espesura del rodal (0.6 a 1.4): rodales maduros densos frente a

@@ -20,7 +20,7 @@
 // - Dispersión simple con la proporción entre capas constante a lo largo del
 //   rayo: L_in = E_sol·T_sol·(Σ β_i·col_i·P_i / τ)·(1 − e^-τ). Es exacta en un
 //   medio de composición uniforme; la transmitancia hacia el sol se evalúa a
-//   la altura de la cámara (el sol está fijo a 40°: varía <10 % en la isla).
+//   la altura de la cámara (el sol está fijo a 30°: varía <10 % en la isla).
 // - Las órdenes de dispersión múltiple se aproximan con una fase isótropa
 //   añadida (kMultiScatter / 4π): aclara el horizonte y la sombra del cielo.
 #define PT_GLSL_SKY_COMMON R"glsl(
@@ -104,10 +104,29 @@ vec3 atmosphere_segment(vec3 radiance, vec3 cam, vec3 dir, float dist) {
          + inscattered(col_ratio, 1.0 - trans, dot(dir, u_sun_dir), cam.y);
 }
 
+// Estilización de la perspectiva aérea de las SUPERFICIES (dirección de arte
+// low-poly): a media distancia y mirando hacia abajo el espesor óptico se
+// reduce (kAerialNear, kAerialDown) para que la isla vista desde el aire
+// conserve contraste y saturación; a partir de kAerialFullM vuelve al modelo
+// completo, de modo que en el horizonte el terreno sigue convergiendo al
+// color del cielo de su dirección sin costura.
+const float kAerialNear = 0.6;
+const float kAerialDown = 0.65;
+const float kAerialFullStartM = 5000.0;
+const float kAerialFullM = 18000.0;
+
 vec3 apply_atmosphere(vec3 radiance, vec3 cam, vec3 pos) {
     vec3 d = pos - cam;
     float dist = length(d);
-    return atmosphere_segment(radiance, cam, d / max(dist, 1e-4), dist);
+    vec3 dir = d / max(dist, 1e-4);
+    float k = mix(kAerialNear, 1.0, smoothstep(kAerialFullStartM, kAerialFullM, dist))
+            * mix(1.0, kAerialDown, smoothstep(0.05, 0.45, -dir.y));
+    vec3 col = density_columns(cam.y, dir.y * dist, dist);
+    vec3 col_ratio = dist > kRatioLength
+        ? density_columns(cam.y, dir.y * kRatioLength, kRatioLength) : col;
+    vec3 trans = exp(-optical_depth(col) * k);
+    return radiance * trans
+         + inscattered(col_ratio, 1.0 - trans, dot(dir, u_sun_dir), cam.y);
 }
 
 // Radiancia del cielo (HDR, sin tonemap) vista desde la cámara: el mismo
@@ -140,7 +159,19 @@ vec3 aces(vec3 x) {
 
 // Exposición + ACES comunes a todos los pases: la radiancia de cualquier
 // material y la del cielo pasan por la misma curva.
+// Gradación final de estilo juego: algo más de saturación y una curva S
+// suave sobre la salida de ACES (que desatura los medios tonos).
+const float kGradeSaturation = 1.10;
+const float kGradeContrast = 0.22;
+
+vec3 grade(vec3 c) {
+    float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = max(mix(vec3(luma), c, kGradeSaturation), vec3(0.0));
+    c = clamp(c, 0.0, 1.0);
+    return mix(c, c * c * (3.0 - 2.0 * c), kGradeContrast);
+}
+
 vec3 tonemap(vec3 radiance) {
-    return aces(radiance * kExposure);
+    return grade(aces(radiance * kExposure));
 }
 )glsl"

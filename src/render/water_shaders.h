@@ -194,24 +194,23 @@ struct WaterSurf {
 // Rugosidad del rizado capilar no resuelto (α de GGX) en mar y lagos.
 const float kMicroAlpha = 0.07;
 
-// OLEAJE: cinco trenes de Gerstner alrededor de la dirección de viaje de la
-// rosa de vientos (abanico más cerrado cuanto más focalizado el viento).
-// Espectro de saturación: amplitud ∝ λ, así cada banda tiene la misma
-// pendiente a·k; el tren dominante lleva a = H_s/2 (u_wave_hmax). Dispersión
-// de aguas profundas ω = √(g·k). La fase lleva un jitter de ruido lento que
-// rompe el moiré periódico de los senos puros. ANTIALIASING (LEAN/Toksvig):
-// un tren con menos de ~4 px por longitud de onda se apaga y su varianza de
-// pendiente (s²/2) pasa a α² — a lo lejos el reflejo del sol se ensancha en
-// el camino de destellos real en vez de parpadear.
-const float kTrainLambda[5] = float[](52.0, 29.0, 16.5, 9.3, 5.2);
-const float kTrainAngle[5] = float[](0.0, 0.45, -0.38, 0.80, -0.72);
-// Estilización: la pendiente de las olas resueltas se reduce (con la del
-// espectro completo, cada cara inclinada reflejaba un trozo distinto del
-// cielo y el mar se leía como un rayado blanco de alto contraste) y se
-// aplana con la distancia, donde solo aportaba repetición.
-const float kWaveSlopeScale = 0.55;
-const float kWaveFarStartM = 200.0;
-const float kWaveFarEndM = 2500.0;
+// OLEAJE FACETADO (dirección de arte low-poly 2026-10): el mar se lee como
+// una malla de triángulos planos, no como un espejo con rizado fotográfico.
+// Tres trenes de Gerstner largos alrededor de la dirección de viaje de la
+// rosa de vientos (abanico más cerrado cuanto más focalizado el viento),
+// espectro de saturación (amplitud ∝ λ, misma pendiente a·k por banda, el
+// dominante con a = H_s/2) y dispersión de aguas profundas ω = √(g·k). La
+// pendiente se evalúa UNA vez por faceta, en el centroide de una retícula
+// triangular de kSeaFacetM de lado, así que cada cara refleja un solo trozo de
+// cielo. ANTIALIASING: cuando la faceta baja de ~4 px se funde con la lámina
+// plana y su varianza de pendiente (s²/2) pasa a α² de GGX — a lo lejos el
+// mar es un degradado limpio con el camino de destellos ensanchado, sin moiré.
+const float kTrainLambda[3] = float[](70.0, 41.0, 26.0);
+const float kTrainAngle[3] = float[](0.0, 0.55, -0.48);
+const float kSeaFacetM = 7.0;
+// Estilización: menos pendiente que el espectro físico (con la completa, el
+// contraste cielo/agua entre caras vecinas era de rayado blanco).
+const float kWaveSlopeScale = 0.75;
 
 // Envolvente de grupos de olas: zonas de mar más rizado y más calmo
 // (~250 m y ~90 m) que rompen la periodicidad de los trenes.
@@ -220,36 +219,48 @@ float wave_envelope(vec2 xz, vec2 wd) {
     return 0.45 + 0.75 * w_vnoise(q * 0.004) + 0.35 * (w_vnoise(q * 0.011 + 7.7) - 0.5);
 }
 
-WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint) {
+// Centroide (xz) de la faceta triangular que contiene xz: retícula
+// equilátera en coordenadas oblicuas (e1 = (1, 0), e2 = (½, √3/2)).
+vec2 sea_facet_centroid(vec2 xz) {
+    vec2 b = vec2(xz.x - xz.y * 0.5773503, xz.y * 1.1547005) / kSeaFacetM;
+    vec2 q = floor(b);
+    vec2 f = b - q;
+    vec2 c = q + (f.x + f.y > 1.0 ? vec2(2.0 / 3.0) : vec2(1.0 / 3.0));
+    return vec2(c.x + 0.5 * c.y, 0.8660254 * c.y) * kSeaFacetM;
+}
+
+// Pendiente del oleaje en un punto (x, z) y su varianza (s²/2 sumada).
+vec3 swell_slope(vec2 xz, vec2 wd) {
     vec2 perp = vec2(-wd.y, wd.x);
-    float far_k = smoothstep(kWaveFarStartM, kWaveFarEndM, length(xz - u_camera_pos.xz));
-    float slope_k = kWaveSlopeScale * (1.0 - 0.65 * far_k) * wave_envelope(xz, wd);
-    // Abanico de direcciones: con 0.75 los trenes quedaban casi paralelos y
-    // el mar lejano se leía como rayas regulares (moiré); con 0.4 se cruzan.
+    float slope_k = kWaveSlopeScale * wave_envelope(xz, wd);
     float spread = 1.0 - 0.4 * u_wind_focus;
-    // Fase con dos octavas de ruido (~85 m y ~27 m): las crestas de un mismo
-    // tren se desalinean y el mar no se lee como rayas paralelas.
-    float jit = (w_vnoise(xz * 0.012) + 0.6 * w_vnoise(xz * 0.037 + 17.0)) * 6.2831853;
+    // Fase con ruido lento (~85 m): las crestas de un tren se desalinean.
+    float jit = w_vnoise(xz * 0.012) * 6.2831853;
     float a0 = 0.5 * u_wave_hmax / kTrainLambda[0];
-    vec3 acc = vec3(0.0); // (pendiente x, pendiente z, Σ Q·k·a·sen)
-    float lost = 0.0;
-    for (int i = 0; i < 5; ++i) {
+    vec3 acc = vec3(0.0); // (pendiente x, pendiente z, varianza)
+    for (int i = 0; i < 3; ++i) {
         float ang = kTrainAngle[i] * spread;
         vec2 d = wd * cos(ang) + perp * sin(ang);
         float k = 6.2831853 / kTrainLambda[i];
         float s = a0 * kTrainLambda[i] * k * slope_k; // pendiente a·k del tren
-        float w = smoothstep(2.0, 6.0, kTrainLambda[i] / footprint);
-        float ph = k * dot(xz, d) - sqrt(9.81 * k) * u_time
-                 + jit * (0.6 + 0.35 * float(i));
-        acc += vec3(d * (s * w * cos(ph)), 0.5 * s * w * sin(ph));
-        lost += (1.0 - w * w) * 0.5 * s * s;
+        float ph = k * dot(xz, d) - sqrt(9.81 * k) * u_time + jit * (0.7 + 0.4 * float(i));
+        acc += vec3(d * (s * cos(ph)), 0.5 * s * s);
     }
-    // Rizado capilar arrastrado por el viento, solo donde el píxel lo resuelve.
-    float wr = smoothstep(2.0, 6.0, 0.8 / footprint);
-    vec2 cap = ripple_slope(xz * 0.9 - wd * (u_time * 0.8)) * (wr * slope_k);
-    vec3 n = normalize(vec3(-acc.x - cap.x, 1.0 - acc.z, -acc.y - cap.y));
-    float alpha = kMicroAlpha + 0.05 * (1.0 - wr);
-    return WaterSurf(n, alpha * alpha + lost);
+    return acc;
+}
+
+WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint) {
+    vec2 c = sea_facet_centroid(xz);
+    vec3 sl = swell_slope(c, wd);
+    // Leve inclinación propia de cada cara (hash del centroide): el mosaico
+    // se lee aun donde los trenes se cancelan.
+    vec2 tilt = vec2(w_hash12(c * 0.37), w_hash12(c * 0.53 + 3.1)) - 0.5;
+    vec2 slope = sl.xy + tilt * 0.035;
+    // Faceta resuelta (≥ ~4 px) → plano; si no, lámina lisa con su varianza.
+    float w = smoothstep(1.5, 4.5, kSeaFacetM / footprint);
+    vec3 n = normalize(vec3(-slope.x * w, 1.0, -slope.y * w));
+    float alpha = kMicroAlpha;
+    return WaterSurf(n, alpha * alpha + (1.0 - w * w) * sl.z);
 }
 
 // Lámina interior: normal suave de la malla + rizado. Ríos: rizado advectado
@@ -422,12 +433,18 @@ void main() {
     // opaca los márgenes someros y el río se lee "desbordado").
     float film_k = sea ? 1.0 : 1.0 - exp(-depth * 4.0);
     float cos_v = max(dot(view_dir, surf.n), 0.0);
-    float fresnel = (0.02 + 0.98 * pow(1.0 - cos_v, 5.0)) * film_k;
+    // El mar refleja como el océano infinito del pase de cielo (0.85 del
+    // Fresnel): en el horizonte las dos superficies casan sin costura.
+    float fresnel = (0.02 + 0.98 * pow(1.0 - cos_v, 5.0)) * film_k * (sea ? 0.85 : 1.0);
     vec3 refl = reflect(-view_dir, surf.n);
     refl.y = abs(refl.y); // el espejo del agua nunca mira bajo el horizonte
 
     vec3 trans;
-    vec3 body = water_column(depth, view_dir, trans);
+    // Estilización del mar: la columna óptica se acorta (kSeaOpticalScale)
+    // para que el degradado arena → turquesa → azul marino se extienda más
+    // mar adentro y se lea la batimetría desde lejos.
+    const float kSeaOpticalScale = 0.6;
+    vec3 body = water_column(sea ? depth * kSeaOpticalScale : depth, view_dir, trans);
     vec4 cloud = cloud_layer(refl);
     vec3 sky_refl = mix(sky_color(refl), cloud.rgb, cloud.a);
     vec3 radiance = fresnel * sky_refl + (1.0 - fresnel) * body

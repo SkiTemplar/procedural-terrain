@@ -26,8 +26,9 @@ constexpr glm::vec3 kBankSilt{0.47f, 0.45f, 0.33f};  // limo de ribera húmedo
 constexpr glm::vec3 kWetGravel{0.34f, 0.33f, 0.29f}; // grava de cauce mojada
 constexpr float kSnowBelowM = 280.0f;   // m bajo la línea de nieve con neveros
 constexpr float kSnowSunShiftM = 110.0f; // m que la solana sube la nieve
-constexpr float kSnowReliefFrac = 0.72f; // fracción del relieve que ancla los neveros
+constexpr float kSnowReliefFrac = 0.66f; // fracción del relieve que ancla los neveros
 constexpr float kWetSandBandM = 0.9f; // m sobre el mar que moja el lavado de ola
+constexpr float kBankProbeM = 9.0f;   // paso de la sonda de lámina dulce de la ribera
 
 // Estratos de roca SIN coherencia global (auditoría 2026-07-09): antes un seno
 // puro de la cota en fase global pintaba las MISMAS bandas horizontales a las
@@ -132,15 +133,15 @@ float Palette::water_level_near(float wx, float wz) const {
 glm::vec3 Palette::rock_base(float y, float climate, float cx, float cz) const {
     const float alt_k =
         glm::clamp((y - sea_level_ - rock_low_) / rock_span_, 0.0f, 1.0f);
-    glm::vec3 c = glm::mix(glm::vec3{0.53f, 0.46f, 0.36f},
-                           glm::vec3{0.415f, 0.41f, 0.43f}, alt_k);
+    glm::vec3 c = glm::mix(glm::vec3{0.55f, 0.47f, 0.36f},
+                           glm::vec3{0.45f, 0.435f, 0.42f}, alt_k);
     // El sector cálido tira a ocre; el frío se queda neutro.
     c = glm::mix(c, glm::vec3{0.56f, 0.48f, 0.36f},
                  0.22f * climate * (1.0f - alt_k));
     // Formación dura gris azulada (cristalina), blanda ocre (sedimentaria):
     // la litología del LEM reparte el matiz de la roca por macizos.
-    return c * glm::mix(glm::vec3{0.90f, 0.97f, 1.10f},
-                        glm::vec3{1.18f, 0.99f, 0.76f}, lithology_at(cx, cz));
+    return c * glm::mix(glm::vec3{0.88f, 0.96f, 1.04f},
+                        glm::vec3{1.22f, 1.00f, 0.74f}, lithology_at(cx, cz));
 }
 
 // Canchal de montaña: derrubio de la pared de encima, con su mismo matiz de
@@ -149,6 +150,19 @@ glm::vec3 Palette::rock_base(float y, float climate, float cx, float cz) const {
 glm::vec3 Palette::scree(float y, float climate, float cx, float cz) const {
     return glm::mix(rock_base(y, climate, cx, cz), kScreeFresh, kScreeFreshMix)
          * kScreeBrighten;
+}
+
+// Fracción de una sonda 3×3 (paso kBankProbeM) con lámina de río o lago.
+float Palette::fresh_water_fraction(float wx, float wz) const {
+    int wet = 0;
+    for (int dz = -1; dz <= 1; ++dz) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            const float wl = water_level_near(wx + kBankProbeM * static_cast<float>(dx),
+                                              wz + kBankProbeM * static_cast<float>(dz));
+            wet += std::isnan(wl) ? 0 : 1;
+        }
+    }
+    return static_cast<float>(wet) / 9.0f;
 }
 
 bool Palette::littoral_near(float wx, float wz) const {
@@ -184,7 +198,7 @@ glm::vec3 Palette::rock(float y, float climate, float wx, float wz,
     const float phase = 6.2831853f * value_noise(wx * 0.003f - 17.0f, wz * 0.003f + 4.0f);
     const float band = 0.5f + 0.5f * std::sin(y * 0.09f + phase);
     c = glm::mix(c, c * glm::vec3{1.12f, 0.93f, 0.76f},
-                 0.55f * glm::smoothstep(0.55f, 0.95f, band) * (1.0f - shore_k));
+                 0.75f * glm::smoothstep(0.50f, 0.90f, band) * (1.0f - shore_k));
     return c * rock_banding(y, wx, wz);
 }
 
@@ -233,12 +247,16 @@ glm::vec3 Palette::ground(Material m, float forest_density, float climate,
         const float dryness = glm::clamp(
             alt_dry * 0.30f + 0.30f * deficit + 0.55f * patch, 0.0f, 0.85f);
         c = glm::mix(c, glm::vec3{0.62f, 0.55f, 0.31f}, dryness);
-    } else if (m == Material::Sand && !littoral_near(wx, wz)) {
+    } else if (m == Material::Sand) {
         // Arena de ribera (limo y arena fina húmedos junto a un cauce): parda
         // y oscura, no la arena lavada de playa que leía como raya blanca.
-        c = kBankSilt;
-    } else if (m == Material::Sand) {
-        c = beach_sand(y, climate);
+        // Solo donde hay lámina dulce cerca: la trasplaya abrigada (sin
+        // energía de ola en su celda) sigue siendo playa, no un parche de limo
+        // en mitad de la arena. La mezcla es continua: sin bordes en sierra.
+        const float silt_k = littoral_near(wx, wz)
+            ? 0.0f
+            : glm::smoothstep(0.0f, 0.45f, fresh_water_fraction(wx, wz));
+        c = glm::mix(beach_sand(y, climate), kBankSilt, silt_k);
     } else if (m == Material::Rock) {
         c = rock(y, climate, wx, wz, cx, cz);
     } else if (m == Material::Gravel && !littoral_near(wx, wz)) {
@@ -291,7 +309,7 @@ float Palette::snow_cover(float y, float slope, float sunny) const {
         snow_line_, sea_level_ + kSnowReliefFrac * (data_->max_height_m - sea_level_));
     const float eff_y = y - kSnowSunShiftM * sunny;
     const float alt = glm::smoothstep(anchor - kSnowBelowM, anchor + 40.0f, eff_y);
-    return alt * (1.0f - glm::smoothstep(0.45f, 0.75f, slope));
+    return alt * (1.0f - glm::smoothstep(0.55f, 0.85f, slope));
 }
 
 // Insolación de la cara relativa a la de un llano (1 = llano, >1 solana,

@@ -48,6 +48,7 @@ private:
     float dryness_at(float wx, float wz) const;      // déficit hídrico [0,1]
     float water_level_near(float wx, float wz) const; // NaN si no hay agua
     bool littoral_near(float wx, float wz) const;     // banda de oleaje
+    float fresh_water_fraction(float wx, float wz) const; // lámina dulce cerca [0,1]
     glm::vec3 rock_base(float y, float climate, float cx, float cz) const;
     glm::vec3 rock(float y, float climate, float wx, float wz,
                    float cx, float cz) const;

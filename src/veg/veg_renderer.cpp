@@ -79,15 +79,36 @@ float field_nearest(const std::vector<float>& field, int fres, float size_m,
 // hashes solo reparten la variación individual alrededor de esa media.
 // vigor: tinte común del rodal (terrain::stand_vigor), que desplaza el matiz
 // de toda la mancha: los rodales jóvenes amarillean, los viejos se oscurecen.
+// Lectura por grupo funcional (dirección de arte): conífera perenne oscura y
+// azulada, frondosa clara y amarillenta; vistos de lejos, los rodales de una
+// y otra se distinguen por valor además de por silueta.
+constexpr glm::vec3 kConiferCast{0.78f, 0.86f, 0.92f};
+constexpr glm::vec3 kBroadleafCast{1.10f, 1.08f, 0.88f};
+// Senescencia temprana: en los rodales de menos vigor (edad, suelo pobre) la
+// mayoría de las frondosas vira a amarillo ocre y alguna a cobre. Va por
+// RODAL (manchas de ~110 m), no árbol a árbol: suelta, cada copa naranja se
+// leía como un punto de ruido sobre el dosel.
+constexpr glm::vec3 kSenescentCast[2] = {{1.50f, 1.16f, 0.48f}, {1.70f, 0.98f, 0.45f}};
+constexpr float kSenescentVigorLo = -0.21f; // vigor desde el que el rodal amarillea
+constexpr float kSenescentVigorSpan = 0.08f;
+
 glm::vec3 canopy_tint(float hue_r, float value_r, float dryness, float climate,
                       bool conifer, float vigor) {
-    const float hue = (hue_r - 0.5f) * (conifer ? 0.12f : 0.20f) + 0.22f * vigor;
+    const float hue = (hue_r - 0.5f) * (conifer ? 0.14f : 0.26f) + 0.30f * vigor;
     glm::vec3 t{1.0f + hue, 1.0f + 0.10f * vigor, 1.0f - 1.6f * hue};
+    t *= conifer ? kConiferCast : kBroadleafCast;
     const float stress = std::clamp((dryness - 0.08f) / 0.30f, 0.0f, 1.0f);
     t *= glm::mix(glm::vec3{1.0f}, glm::vec3{1.12f, 1.05f, 0.80f}, 0.6f * stress);
     t *= glm::mix(glm::vec3{1.0f}, glm::vec3{0.92f, 0.96f, 1.05f},
                   0.5f * (1.0f - climate));
-    return t * (0.88f + 0.24f * value_r) * (1.0f + 0.18f * vigor);
+    if (!conifer) {
+        const float senescent =
+            std::clamp((kSenescentVigorLo - vigor) / kSenescentVigorSpan, 0.0f, 1.0f);
+        if (value_r * 1.25f < senescent) {
+            t *= kSenescentCast[hue_r < 0.75f ? 0 : 1];
+        }
+    }
+    return t * (0.82f + 0.36f * value_r) * (1.0f + 0.30f * vigor);
 }
 
 // Probabilidades del sitio para los árboles y arbustos según el rodal:
