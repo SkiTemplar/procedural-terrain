@@ -235,6 +235,9 @@ const float kSwellGain = 3.0;
 const float kSeaReflectance = 0.55;
 // Peso de la nube reflejada en el mar: el oleaje la rompe en manchas.
 const float kSeaCloudRefl = 0.12;
+// Ríos y lagos (iter. 10): la nube reflejada entera era una mancha blanca
+// borrosa sobre la lámina facetada; queda un reflejo tenue.
+const float kInlandCloudRefl = 0.35;
 
 // Envolvente de grupos de olas: zonas de mar más rizado y más calmo
 // (~250 m y ~90 m) que rompen la periodicidad de los trenes.
@@ -302,7 +305,7 @@ float sea_whitecap(vec2 xz, vec2 c, float facet_m, float crest, float cap_p, flo
                    float footprint, vec2 wd) {
     float mean_cap = cap_p * 0.18 * 0.5;
     vec2 parent = sea_facet_centroid(c, 4.0 * facet_m);
-    float group = step(w_hash12(parent * 0.71 + 9.3), 1.6 * cap_p);
+    float group = step(w_hash12(parent * 0.71 + 9.3), 0.9 * cap_p);
     if (group * w <= 0.0) {
         return mean_cap * (1.0 - w);
     }
@@ -316,7 +319,7 @@ float sea_whitecap(vec2 xz, vec2 c, float facet_m, float crest, float cap_p, flo
         crest_f = mix(crest, crest_s + 0.12 * (w_hash12(cs * 0.29 + 1.7) - 0.5), ws);
         at = mix(c, cs, ws);
     }
-    float thr = 0.55 + 0.40 * smoothstep(0.3, 1.6, length(at - parent) / facet_m);
+    float thr = 0.62 + 0.33 * smoothstep(0.3, 1.6, length(at - parent) / facet_m);
     return mix(mean_cap, step(thr, crest_f), w);
 }
 
@@ -381,24 +384,34 @@ WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint, float cap_p) {
 // por la corriente real (flow map), más picado cuanto más rápida. Lagos y
 // remansos quietos: rizado de viento. El remanso del estuario hereda el
 // oleaje del mar para que la costura entre las dos mallas no se lea.
+// Iter. 10: la lámina interior también es facetada (dirección de arte
+// low-poly): el rizado se evalúa en el centroide de una retícula triangular
+// de kInlandFacetM más una inclinación propia por cara. Con el rizado
+// continuo por píxel el río se leía como una mancha borrosa junto al jugador.
+const float kInlandFacetM = 1.4;
+const float kInlandFacetTilt = 0.10;
+
 WaterSurf inland_surface(vec2 xz, vec2 wd, float footprint) {
     vec3 n = normalize(v_surf_n);
     vec2 vel = v_river.xz;
     float speed = length(vel);
-    float wr = smoothstep(2.0, 6.0, 0.6 / footprint); // rizado resuelto
+    float wr = smoothstep(2.0, 6.0, kInlandFacetM / footprint); // faceta resuelta
+    vec2 c = sea_facet_centroid(xz, kInlandFacetM);
     vec2 slope;
     float rough = mix(0.45, 1.0, smoothstep(0.2, 2.0, speed));
     if (speed > 0.02) {
-        vec3 ph = flow_phases(xz);
+        vec3 ph = flow_phases(c);
         vec2 adv = flow_advection(vel);
-        vec2 s0 = ripple_slope(xz - adv * (ph.x * kFlowPeriod));
-        vec2 s1 = ripple_slope(xz - adv * (ph.y * kFlowPeriod) + vec2(31.7, 12.9));
+        vec2 s0 = ripple_slope(c - adv * (ph.x * kFlowPeriod));
+        vec2 s1 = ripple_slope(c - adv * (ph.y * kFlowPeriod) + vec2(31.7, 12.9));
         slope = mix(s0, s1, ph.z) * rough;
     } else {
-        slope = ripple_slope(xz * 0.7 - wd * (u_time * 0.5)) * 0.5;
+        slope = ripple_slope(c * 0.7 - wd * (u_time * 0.5)) * 0.5;
     }
+    slope += (w_hash22(c + 23.0) - 0.5) * (kInlandFacetTilt * rough);
     n = normalize(n + vec3(-slope.x, 0.0, -slope.y) * wr);
-    float alpha = mix(0.04, 0.14, rough) + 0.04 * (1.0 - wr);
+    float alpha = mix(0.04, 0.14, rough) + 0.04 * (1.0 - wr)
+                + kInlandFacetTilt * 0.4 * (1.0 - wr);
     WaterSurf s = WaterSurf(n, alpha * alpha, 0.0);
     if (v_remanso > 0.0) {
         WaterSurf sea = sea_waves(xz, wd, footprint, 0.0);
@@ -446,7 +459,10 @@ vec3 water_column(float h, vec3 view_dir, float marine, out vec3 trans) {
     float b = mix(0.25, 0.06, marine);
     // Mar con partícula fina: azul verdoso hondo (iter. 7: menos verde y
     // retrodispersión que antes, el mar abierto se leía turquesa de piscina).
-    vec3 b_b = mix(vec3(0.022), vec3(0.012, 0.050, 0.070), marine);
+    // Agua dulce (iter. 10): retrodispersión verde azulada de limo fino, no
+    // gris neutro; con la columna alargada el cauce se lee como cinta de agua
+    // de color propio y no como lecho de grava visto a través de un cristal.
+    vec3 b_b = mix(vec3(0.020, 0.045, 0.055), vec3(0.012, 0.050, 0.070), marine);
     float inv_n2 = 1.0 / (kWaterIor * kWaterIor);
     float cv = sqrt(1.0 - (1.0 - view_dir.y * view_dir.y) * inv_n2);
     float sy = max(u_sun_dir.y, 0.0);
@@ -620,11 +636,32 @@ void main() {
     // Estilización del mar: la columna óptica se acorta (kSeaOpticalScale)
     // para que el degradado arena → turquesa → azul marino se extienda más
     // mar adentro y se lea la batimetría desde lejos.
+    // Ríos y lagos (iter. 10): al revés, la columna se alarga ×kInlandOpticalScale
+    // (menos en la boca, que ya es agua clara de mar). Con el calado físico un
+    // cauce de 0.3-1 m transmitía el 60-80 % y toda la sección se leía como una
+    // banda de grava gris; así el núcleo es una cinta opaca y solo el margen
+    // de pocos centímetros deja ver el lecho.
     const float kSeaOpticalScale = 0.6;
-    vec3 body = water_column(sea ? depth * kSeaOpticalScale : depth, view_dir, marine, trans);
-    float facet_light = sea ? sea_facet_light(surf.n) : 1.0;
+    const float kInlandOpticalScale = 5.0;
+    float optical = sea ? depth * kSeaOpticalScale
+                        : depth * mix(kInlandOpticalScale, 1.0, marine);
+    vec3 body = water_column(optical, view_dir, marine, trans);
+    // Iter. 10: en la plataforma somera el cuerpo turquesa es claro y el ±35 %
+    // por cara pintaba las caras de 28 m (de borde sin antialiasing) como un
+    // damero de escalones; ahí la cara se separa sobre todo por su reflejo.
+    float facet_light = sea ? mix(1.0, sea_facet_light(surf.n),
+                                  mix(0.35, 1.0, smoothstep(2.0, 8.0, depth)))
+                            : 1.0;
     vec4 cloud = cloud_layer(refl);
-    vec3 sky_refl = mix(sky_color(refl), cloud.rgb, cloud.a * (sea ? kSeaCloudRefl : 1.0));
+    vec3 sky_refl = mix(sky_color(refl), cloud.rgb,
+                        cloud.a * (sea ? kSeaCloudRefl : kInlandCloudRefl));
+    // Reflejo rasante del mar (iter. 10): sin la isla en el reflejo, el agua a
+    // 1-3 km reflejaba el cielo blanquecino del horizonte y dibujaba una banda
+    // pálida bajo la costa. El ángulo rasante pierde parte del cielo (lo
+    // taparían la costa y el propio oleaje) y la perspectiva aérea hace el resto.
+    if (sea) {
+        sky_refl *= mix(0.68, 1.0, smoothstep(0.0, 0.10, refl.y));
+    }
     vec3 radiance = fresnel * sky_refl + (1.0 - fresnel) * body * facet_light
                   + sun_glint(surf.n, view_dir, surf.alpha2) * film_k * (1.0 - wall_k)
                     * (1.0 - 0.7 * far_river);

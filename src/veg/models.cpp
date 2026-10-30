@@ -9,7 +9,9 @@ namespace veg {
 
 namespace {
 
-const glm::vec3 kTrunkColor{0.42f, 0.30f, 0.19f};
+// Corteza parda grisácea (iter. 10): 0.42/0.30/0.19 se leía naranja saturado
+// con el sol cálido y el ACES.
+const glm::vec3 kTrunkColor{0.34f, 0.28f, 0.22f};
 const glm::vec3 kPineColor = kPineFoliage; // algo más clara: la umbría de la copa no cae a negro
 const glm::vec3 kLeafColor = kLeafFoliage;
 const glm::vec3 kRockColor{0.52f, 0.50f, 0.47f};

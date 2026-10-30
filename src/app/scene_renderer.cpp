@@ -109,6 +109,7 @@ void SceneRenderer::draw(World* world, const render::Camera& camera, float aspec
         set_shadow_uniforms(terrain_shader_, camera, state.csm_shadows);
         terrain_shader_.set_float("u_smooth_blend", 1.0f);
         terrain_shader_.set_int("u_smooth_shading", state.smooth_shading ? 1 : 0);
+        terrain_shader_.set_float("u_sea_level", world->data.config.sea_level);
         set_veg_fade_uniforms(terrain_shader_, state);
         world->vegetation.bind_canopy(PT_CANOPY_UNIT);
         world->ground.bind_detail_textures(terrain_shader_, state.detail_textures,
@@ -122,6 +123,7 @@ void SceneRenderer::draw(World* world, const render::Camera& camera, float aspec
         set_shadow_uniforms(veg_shader_, camera, state.csm_shadows);
         veg_shader_.set_float("u_smooth_blend", 0.0f);
         veg_shader_.set_int("u_smooth_shading", 0);
+        veg_shader_.set_float("u_sea_level", -1.0e6f);
         veg_shader_.set_int("u_detail_enabled", 0);
         set_veg_fade_uniforms(veg_shader_, state);
         world->vegetation.draw(camera.position, state.veg_draw_distance);

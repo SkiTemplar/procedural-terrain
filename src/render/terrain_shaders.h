@@ -91,6 +91,7 @@ flat in vec4 v_canopy;       // dosel lejano (solo terreno; la vegetación da 0)
 uniform vec3 u_camera_pos;
 uniform float u_smooth_blend; // 1 = sombreado suave; 0 = solo flat (vegetacion o comparacion)
 uniform int u_smooth_shading; // 1 = sombreado suave con normal map; 0 = flat
+uniform float u_sea_level;    // m; la vegetación lo deja muy bajo (sin efecto)
 uniform int u_detail_enabled;
 uniform float u_detail_intensity;
 uniform float u_terrain_half;
@@ -383,6 +384,12 @@ void main() {
     vec3 n_map = normalize(vec3(n_xz.x, n_y, n_xz.y));
 
     float blend = (u_smooth_shading != 0) ? u_smooth_blend : 0.0;
+    // Fondo sumergido (iter. 10): bajo el mar el lecho se sombrea suave y sin
+    // exagerar sus caras; el agua somera lo deja ver casi entero y las caras
+    // del LOD (10-40 m, alineadas con la rejilla) competían con las facetas
+    // del propio mar. La faceta del agua la pone su superficie, no el fondo.
+    float underwater = smoothstep(0.05, 0.60, u_sea_level - v_world_pos.y);
+    blend = max(blend, underwater);
     vec3 normal = normalize(mix(n_flat, n_map, blend));
     // Relieve de faceta (dirección de arte low-poly): la desviación de la cara
     // respecto a la ladera que la rodea (v_normal_ref, calculada en CPU a la
@@ -394,10 +401,21 @@ void main() {
     float relief = mix(kFacetReliefNear, kFacetReliefFar,
                        smoothstep(kFacetReliefRampM.x, kFacetReliefRampM.y, dist_cam));
     normal = normalize(normal + (relief * has_ref) * (n_flat - v_normal_ref));
+    // Iter. 10: la exageración no tumba una cara bajo la horizontal. En las
+    // aristas (cara muy distinta de su ladera media) la normal acababa mirando
+    // al suelo, sin cielo ni sol: una raya negra a lo largo de la cresta.
+    normal = normalize(vec3(normal.x, max(normal.y, min(n_flat.y, 0.25)), normal.z));
     vec3 albedo = mix(v_color, v_color_smooth, blend);
     // Dosel lejano: donde los árboles ya no se dibujan, la faceta toma el color
     // medio de las copas que hay encima (misma población que de cerca).
     albedo = mix(albedo, v_canopy.rgb, v_canopy.a);
+    // Lecho marino (iter. 10): color continuo por calado, el mismo degradado
+    // que Palette::ground da a Material::Seabed (kSeaDepthRange = 25 m) sin el
+    // moteado por vértice. Interpolado en las caras del LOD, ese moteado se
+    // veía a través del agua somera como un damero alineado con la rejilla.
+    vec3 seabed = mix(vec3(0.55, 0.53, 0.38), vec3(0.33, 0.36, 0.30),
+                      clamp((u_sea_level - v_world_pos.y) / 25.0, 0.0, 1.0));
+    albedo = mix(albedo, seabed, underwater);
 
     // Sin detalle (desactivado, lejos o sin assets) devuelve ratio 1 y la
     // normal base: el resultado es idéntico al render solo-paleta.
@@ -437,15 +455,22 @@ void main() {
     // cascadas y, más allá, csm_visibility vale 1 y manda la precomputada
     // (las montañas siguen sombreando los valles lejanos). Solo se consulta
     // donde el sol llega: en las caras de espaldas diffuse ya es 0.
+    // El lecho sumergido no consulta las cascadas: casi llano y a incidencia
+    // rasante, el texel de 5-10 m de la cascada lejana daba acné en escalera
+    // que el agua somera dejaba ver como damero. Bajo el agua basta la sombra
+    // precomputada del relieve (la luz llega difusa por el oleaje).
     float sun_vis = v_light.x;
-    if (diffuse > 0.0) {
+    if (diffuse > 0.0 && underwater < 0.5) {
         sun_vis = min(sun_vis, csm_visibility(v_world_pos, n_flat))
                 * cloud_shadow(v_world_pos);
     }
     // Ambiente 0.55 (antes 0.34): con sombras en tiempo real la cara en
     // sombra solo recibe cielo, y a 0.34 los sotobosques quedaban casi
     // negros. Sombra azulada y legible, como la luz de exterior de un juego.
-    vec3 lit = albedo * (0.55 * hemi * v_light.y
+    // Iter. 10: ambiente 0.60 y el AO de cielo deja un suelo de 0.30 (rebote de
+    // las laderas de enfrente): las umbrías junto a la cámara eran casi negras.
+    float sky_ao = mix(0.30 + 0.70 * v_light.y, 1.0, underwater);
+    vec3 lit = albedo * (0.60 * hemi * sky_ao
                          + 1.15 * diffuse * sun_color * sun_vis);
 
     // Textura procedural sutil en dos escalas (~1.5 m y ~9 m), solo en el

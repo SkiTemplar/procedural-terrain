@@ -273,11 +273,13 @@ glm::vec3 Palette::rock(float y, float climate, float wx, float wz,
 }
 
 // Nieve con gradiente de cota: sucia y azulada-gris junto al límite (polvo de
-// roca, hielo viejo), blanca pura hacia la cumbre real de este mundo.
+// roca, hielo viejo), más limpia hacia la cumbre real de este mundo. Iter. 10:
+// albedo máximo 0.90 (antes 0.98): con el sol a 1.15 la nieve al sol saturaba
+// en el ACES y las caras de un nevero perdían su lado de luz y de sombra.
 glm::vec3 Palette::snow(float y) const {
     const float alt_k = glm::clamp((y - snow_line_) / snow_span_, 0.0f, 1.0f);
-    return glm::mix(glm::vec3{0.88f, 0.89f, 0.90f},
-                    glm::vec3{0.98f, 0.97f, 0.95f}, alt_k);
+    return glm::mix(glm::vec3{0.80f, 0.82f, 0.85f},
+                    glm::vec3{0.90f, 0.90f, 0.88f}, alt_k);
 }
 
 // Arena de playa cálida (cuarzo con feldespato y conchas): dorada en clima
