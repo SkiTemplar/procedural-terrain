@@ -5,11 +5,14 @@
 #include "terrain/detail.h"
 #include "terrain/generator.h"
 
+#include <glad/glad.h>
 #include <glm/glm.hpp>
 
 #include <vector>
 
 namespace veg {
+
+class CanopyAccumulator;
 
 // Puebla la isla con pinos, frondosos y rocas (instanciados) y los dibuja
 // con culling por celdas de 512 m. La colocación es determinista por seed y
@@ -17,6 +20,15 @@ namespace veg {
 class VegRenderer {
 public:
     VegRenderer(const terrain::TerrainData& data, const terrain::DetailSampler& sampler);
+    ~VegRenderer();
+
+    VegRenderer(const VegRenderer&) = delete;
+    VegRenderer& operator=(const VegRenderer&) = delete;
+
+    // Dosel lejano (veg/canopy_layer): rgb = follaje medio, a = cobertura de
+    // copa, en una textura del dominio que el terreno lee más allá de la
+    // distancia de dibujo de los árboles.
+    void bind_canopy(int unit) const;
 
     // El shader (kVegVert + kTerrainFrag) debe estar activo con sus uniforms.
     void draw(const glm::vec3& camera_pos, float max_distance) const;
@@ -50,7 +62,10 @@ private:
         std::vector<render::InstancedMesh> batches_near; // matas y arbustos
     };
 
+    void upload_canopy(const CanopyAccumulator& canopy);
+
     std::vector<Cell> cells_;
+    GLuint canopy_texture_ = 0;
     size_t total_instances_ = 0;
     TypeCounts counts_;
 };

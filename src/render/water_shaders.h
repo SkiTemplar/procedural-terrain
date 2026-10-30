@@ -263,6 +263,17 @@ WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint) {
     return WaterSurf(n, alpha * alpha + (1.0 - w * w) * sl.z);
 }
 
+// Normal con que la faceta del mar REFLEJA: la de la faceta acercada a la
+// vertical. El facetado se lee en el Fresnel (valor de cada cara), pero el
+// reflejo de cielo y nubes sale de una normal suavizada: con la normal
+// completa cada triángulo reflejaba un trozo distinto de nube y el mar se
+// leía como un mosaico blanco/negro de aliasing. Con la distancia la faceta
+// pesa menos (más allá de ~250 m el reflejo es el del mar en calma).
+vec3 sea_reflect_normal(vec3 n, float dist, float facet_k) {
+    float calm = smoothstep(60.0, 260.0, dist);
+    return normalize(mix(vec3(0.0, 1.0, 0.0), n, facet_k * mix(1.0, 0.30, calm)));
+}
+
 // Lámina interior: normal suave de la malla + rizado. Ríos: rizado advectado
 // por la corriente real (flow map), más picado cuanto más rápida. Lagos y
 // remansos quietos: rizado de viento. El remanso del estuario hereda el
@@ -432,11 +443,14 @@ void main() {
     // la reflexión especular escala con el calado (sin esto el ángulo rasante
     // opaca los márgenes someros y el río se lee "desbordado").
     float film_k = sea ? 1.0 : 1.0 - exp(-depth * 4.0);
-    float cos_v = max(dot(view_dir, surf.n), 0.0);
+    float dist = length(u_camera_pos - v_world_pos);
+    vec3 n_fresnel = sea ? sea_reflect_normal(surf.n, dist, 0.70) : surf.n;
+    vec3 n_mirror = sea ? sea_reflect_normal(surf.n, dist, 0.50) : surf.n;
+    float cos_v = max(dot(view_dir, n_fresnel), 0.0);
     // El mar refleja como el océano infinito del pase de cielo (0.85 del
     // Fresnel): en el horizonte las dos superficies casan sin costura.
     float fresnel = (0.02 + 0.98 * pow(1.0 - cos_v, 5.0)) * film_k * (sea ? 0.85 : 1.0);
-    vec3 refl = reflect(-view_dir, surf.n);
+    vec3 refl = reflect(-view_dir, n_mirror);
     refl.y = abs(refl.y); // el espejo del agua nunca mira bajo el horizonte
 
     vec3 trans;
@@ -446,7 +460,9 @@ void main() {
     const float kSeaOpticalScale = 0.6;
     vec3 body = water_column(sea ? depth * kSeaOpticalScale : depth, view_dir, trans);
     vec4 cloud = cloud_layer(refl);
-    vec3 sky_refl = mix(sky_color(refl), cloud.rgb, cloud.a);
+    // Nube reflejada algo más transparente en el mar: el agua rizada la
+    // desdibuja y su contraste con el cielo es menor que mirando arriba.
+    vec3 sky_refl = mix(sky_color(refl), cloud.rgb, cloud.a * (sea ? 0.55 : 1.0));
     vec3 radiance = fresnel * sky_refl + (1.0 - fresnel) * body
                   + sun_glint(surf.n, view_dir, surf.alpha2) * film_k * (1.0 - wall_k);
     trans *= 1.0 - fresnel;

@@ -1,6 +1,7 @@
 #include "veg/veg_renderer.h"
 
 #include "terrain/stand.h"
+#include "veg/canopy_layer.h"
 #include "veg/models.h"
 
 #include <algorithm>
@@ -12,6 +13,11 @@ namespace veg {
 namespace {
 
 constexpr float kCellSize = 512.0f; // m: unidad de culling
+// Texel del dosel lejano (m): del orden de un rodal pequeño, por debajo de
+// la faceta del LOD lejano (paso >= 4, ~10 m).
+constexpr float kCanopyTexelM = 8.0f;
+// Brillo medio de las tres capas de conos del pino (1.00, 1.06, 1.12).
+constexpr float kPineFoliageMean = 1.06f;
 
 float hash01(std::uint32_t x, std::uint32_t z, std::uint32_t salt) {
     std::uint32_t h = x * 374761393u + z * 668265263u + salt * 2246822519u;
@@ -84,31 +90,29 @@ float field_nearest(const std::vector<float>& field, int fres, float size_m,
 // y otra se distinguen por valor además de por silueta.
 constexpr glm::vec3 kConiferCast{0.78f, 0.86f, 0.92f};
 constexpr glm::vec3 kBroadleafCast{1.10f, 1.08f, 0.88f};
-// Senescencia temprana: en los rodales de menos vigor (edad, suelo pobre) la
-// mayoría de las frondosas vira a amarillo ocre y alguna a cobre. Va por
-// RODAL (manchas de ~110 m), no árbol a árbol: suelta, cada copa naranja se
-// leía como un punto de ruido sobre el dosel.
-constexpr glm::vec3 kSenescentCast[2] = {{1.50f, 1.16f, 0.48f}, {1.70f, 0.98f, 0.45f}};
-constexpr float kSenescentVigorLo = -0.21f; // vigor desde el que el rodal amarillea
-constexpr float kSenescentVigorSpan = 0.08f;
+// Senescencia temprana: en los rodales de menos vigor (edad, suelo pobre) casi
+// todas las frondosas viran a la vez, a ocre o a cobre según el rodal. Va por
+// RODAL entero con borde neto (no árbol a árbol ni con un degradado de copas
+// sueltas): una copa naranja aislada se leía como un punto de ruido.
+constexpr glm::vec3 kSenescentCast[2] = {{1.38f, 1.12f, 0.56f}, {1.52f, 0.98f, 0.54f}};
+constexpr float kSenescentVigorLo = -0.25f; // vigor bajo el que el rodal amarillea
+constexpr float kSenescentShare = 0.85f;    // fracción de frondosas que viran en él
 
+// Variación individual pequeña frente a la del rodal: a media distancia un
+// jitter fuerte árbol a árbol se convertía en un moteado de alta frecuencia.
 glm::vec3 canopy_tint(float hue_r, float value_r, float dryness, float climate,
-                      bool conifer, float vigor) {
-    const float hue = (hue_r - 0.5f) * (conifer ? 0.14f : 0.26f) + 0.30f * vigor;
+                      bool conifer, float vigor, float stand_cast) {
+    const float hue = (hue_r - 0.5f) * (conifer ? 0.06f : 0.10f) + 0.30f * vigor;
     glm::vec3 t{1.0f + hue, 1.0f + 0.10f * vigor, 1.0f - 1.6f * hue};
     t *= conifer ? kConiferCast : kBroadleafCast;
     const float stress = std::clamp((dryness - 0.08f) / 0.30f, 0.0f, 1.0f);
     t *= glm::mix(glm::vec3{1.0f}, glm::vec3{1.12f, 1.05f, 0.80f}, 0.6f * stress);
     t *= glm::mix(glm::vec3{1.0f}, glm::vec3{0.92f, 0.96f, 1.05f},
                   0.5f * (1.0f - climate));
-    if (!conifer) {
-        const float senescent =
-            std::clamp((kSenescentVigorLo - vigor) / kSenescentVigorSpan, 0.0f, 1.0f);
-        if (value_r * 1.25f < senescent) {
-            t *= kSenescentCast[hue_r < 0.75f ? 0 : 1];
-        }
+    if (!conifer && vigor < kSenescentVigorLo && value_r < kSenescentShare) {
+        t *= kSenescentCast[stand_cast < 0.6f ? 0 : 1];
     }
-    return t * (0.82f + 0.36f * value_r) * (1.0f + 0.30f * vigor);
+    return t * (0.92f + 0.16f * value_r) * (1.0f + 0.30f * vigor);
 }
 
 // Probabilidades del sitio para los árboles y arbustos según el rodal:
@@ -163,6 +167,8 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
     const std::uint32_t salt = cfg.seed;
     const float tree_line =
         std::max(data.treeline_m > 0.0f ? data.treeline_m : cfg.treeline_m, 1.0f);
+    CanopyAccumulator crowns(
+        cfg.size_m, std::clamp(static_cast<int>(cfg.size_m / kCanopyTexelM), 64, 2048));
     for (int z = 2; z < res - 2; ++z) {
         for (int x = 2; x < res - 2; ++x) {
             const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
@@ -278,15 +284,22 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                                                  cfg.size_m, wx, wz, 0.1f);
             const float site_climate = data.climate[i];
             const float vigor = terrain::stand_vigor(wx, wz);
+            // Ocre o cobre por rodal (~110 m), no por árbol.
+            const float stand_cast = terrain::value_noise(wx * 0.009f - 23.0f,
+                                                          wz * 0.009f + 11.0f);
 
             Placement& cell = cell_of(wx, wz);
             if (roll < tree_p) {
                 // Arriba dominan las coníferas; abajo se mezclan frondosos.
                 // La composición va por rodales (manchas de ~250 m), no
-                // árbol a árbol: a lo lejos se leen bosques distintos.
+                // árbol a árbol: a lo lejos se leen bosques distintos. La
+                // rampa es empinada (x2.2 alrededor del 50 %): casi todos los
+                // rodales son puros y la mezcla queda en sus bordes, en vez
+                // del salpicado oscuro/claro de copas sueltas.
                 const float conifer_bias = std::clamp(
-                    (wy - 120.0f) / 250.0f + 1.3f * terrain::stand_composition(wx, wz),
-                    0.04f, 0.97f);
+                    0.5f + 2.2f * ((wy - 245.0f) / 250.0f
+                                   + 1.3f * terrain::stand_composition(wx, wz)),
+                    0.03f, 0.97f);
                 const bool pine = hash01(static_cast<std::uint32_t>(x),
                                          static_cast<std::uint32_t>(z), salt + 6)
                                 < conifer_bias;
@@ -296,10 +309,16 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 // rango estrecho y uniforme anterior.
                 const float scale = (0.5f + 1.5f * scale_r * scale_r) * site.scale_mult;
                 // Base bien hundida: en pendiente los troncos no quedan al aire.
-                const glm::vec3 t = canopy_tint(hue_r, value_r, site_dry,
-                                                site_climate, pine, vigor) * veg_light;
+                const glm::vec3 crown = canopy_tint(hue_r, value_r, site_dry, site_climate,
+                                                    pine, vigor, stand_cast);
+                const glm::vec3 t = crown * veg_light;
                 render::Instance inst{{wx, wy - 0.35f * scale, wz, scale},
                                       {t.r, t.g, t.b, yaw}};
+                // El dosel lejano recibe el color sin la luz horneada: el
+                // terreno ya aplica la suya (sombra y AO) a la faceta.
+                crowns.add(wx, wz,
+                           (pine ? kPineCrownRadiusM : kLeafCrownRadiusM) * scale,
+                           crown * (pine ? kPineFoliage * kPineFoliageMean : kLeafFoliage));
                 (pine ? cell.pines : cell.broadleafs).push_back(inst);
             } else if (roll < tree_p + rock_p) {
                 const float scale = 0.4f + 1.8f * scale_r;
@@ -318,8 +337,8 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                     render::Instance{{wx, wy - 0.04f, wz, scale}, {t.r, t.g, t.b, yaw}});
             } else if (roll < tree_p + rock_p + tuft_p + bush_p) {
                 const float scale = 0.6f + 0.9f * scale_r;
-                const glm::vec3 t = canopy_tint(hue_r, value_r, site_dry,
-                                                site_climate, false, vigor) * veg_light;
+                const glm::vec3 t = canopy_tint(hue_r, value_r, site_dry, site_climate,
+                                                false, vigor, stand_cast) * veg_light;
                 cell.bushes.push_back(render::Instance{{wx, wy - 0.08f, wz, scale},
                                                        {t.r, t.g, t.b, yaw}});
             } else if (roll < tree_p + rock_p + tuft_p + bush_p + boulder_p) {
@@ -363,6 +382,8 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             }
         }
     }
+
+    upload_canopy(crowns);
 
     // Un lote instanciado por (celda, tipo): draw call por lote, culling por
     // distancia al centro de la celda. Las matas/arbustos van en lotes "near"
@@ -408,6 +429,35 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             cells_.push_back(std::move(cell));
         }
     }
+}
+
+VegRenderer::~VegRenderer() {
+    if (canopy_texture_ != 0) {
+        glDeleteTextures(1, &canopy_texture_);
+    }
+}
+
+// RGBA16F con mipmaps: el terreno lejano lee el dosel por vértice con un LOD
+// que crece con la distancia (sin centelleo de texeles sueltos).
+void VegRenderer::upload_canopy(const CanopyAccumulator& canopy) {
+    const std::vector<glm::vec4> texels = canopy.resolve();
+    const int res = canopy.resolution();
+    glGenTextures(1, &canopy_texture_);
+    glBindTexture(GL_TEXTURE_2D, canopy_texture_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, res, res, 0, GL_RGBA, GL_FLOAT,
+                 texels.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void VegRenderer::bind_canopy(int unit) const {
+    glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
+    glBindTexture(GL_TEXTURE_2D, canopy_texture_);
+    glActiveTexture(GL_TEXTURE0);
 }
 
 void VegRenderer::draw(const glm::vec3& camera_pos, float max_distance) const {

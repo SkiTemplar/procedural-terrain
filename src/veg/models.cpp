@@ -10,8 +10,8 @@ namespace veg {
 namespace {
 
 const glm::vec3 kTrunkColor{0.42f, 0.30f, 0.19f};
-const glm::vec3 kPineColor{0.19f, 0.38f, 0.20f}; // algo más clara: la umbría de la copa no cae a negro
-const glm::vec3 kLeafColor{0.30f, 0.50f, 0.22f};
+const glm::vec3 kPineColor = kPineFoliage; // algo más clara: la umbría de la copa no cae a negro
+const glm::vec3 kLeafColor = kLeafFoliage;
 const glm::vec3 kRockColor{0.52f, 0.50f, 0.47f};
 
 // Hash determinista para deformaciones (sin RNG: modelos reproducibles).
@@ -118,7 +118,7 @@ void add_deformed_icosphere(ModelData& out, float radius, float y_center,
 ModelData make_pine() {
     ModelData out;
     add_trunk(out, 0.28f, 0.0f, 2.2f, 6);
-    add_cone(out, 2.4f, 1.8f, 4.6f, 8, kPineColor, 11u);
+    add_cone(out, kPineCrownRadiusM, 1.8f, 4.6f, 8, kPineColor, 11u);
     add_cone(out, 1.8f, 3.8f, 6.6f, 8, kPineColor * 1.06f, 23u);
     add_cone(out, 1.15f, 5.8f, 9.0f, 8, kPineColor * 1.12f, 37u);
     return out;
@@ -127,7 +127,7 @@ ModelData make_pine() {
 ModelData make_broadleaf() {
     ModelData out;
     add_trunk(out, 0.32f, 0.0f, 2.6f, 6);
-    add_deformed_icosphere(out, 2.6f, 4.6f, 0.82f, 0.45f, kLeafColor, 51u);
+    add_deformed_icosphere(out, kLeafCrownRadiusM, 4.6f, 0.82f, 0.45f, kLeafColor, 51u);
     return out;
 }
 

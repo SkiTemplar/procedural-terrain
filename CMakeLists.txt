@@ -65,6 +65,7 @@ add_executable(ProceduralTerrain
         src/terrain/faceted_mesh.cpp
         src/veg/models.cpp
         src/veg/veg_renderer.cpp
+        src/veg/canopy_layer.cpp
         src/veg/grass_field.cpp
         src/player/controller.cpp
         src/ui/debug_ui.cpp
@@ -113,6 +114,8 @@ add_executable(terrain_tests
         tests/camera_path_tests.cpp
         tests/world_cache_tests.cpp
         tests/shadow_cascade_tests.cpp
+        tests/canopy_tests.cpp
+        src/veg/canopy_layer.cpp
         src/app/camera_path.cpp
         src/render/shadow_cascades.cpp
         src/render/terrain_texture_data.cpp

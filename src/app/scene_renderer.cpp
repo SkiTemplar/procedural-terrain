@@ -35,9 +35,17 @@ constexpr float kCasterHeadroomM = 60.0f;
 constexpr float kNormalOffsetTexels = 1.5f;
 constexpr float kDepthBiasTexels = 1.0f;
 constexpr float kSlopeBiasFactor = 2.0f;
+// Franja de desvanecido de los árboles instanciados, en fracción de la
+// distancia de dibujo: desde ahí encogen y el terreno pasa al dosel lejano.
+constexpr float kVegFadeStartFrac = 0.70f;
 
 std::string indexed(const char* name, int i) {
     return std::string(name) + "[" + std::to_string(i) + "]";
+}
+
+void set_veg_fade_uniforms(const render::Shader& shader, const ui::DebugState& state) {
+    shader.set_float("u_veg_fade_start", kVegFadeStartFrac * state.veg_draw_distance);
+    shader.set_float("u_veg_fade_end", state.veg_draw_distance);
 }
 
 void set_common_uniforms(const render::Shader& shader, const render::Camera& camera,
@@ -101,6 +109,8 @@ void SceneRenderer::draw(World* world, const render::Camera& camera, float aspec
         set_shadow_uniforms(terrain_shader_, camera, state.csm_shadows);
         terrain_shader_.set_float("u_smooth_blend", 1.0f);
         terrain_shader_.set_int("u_smooth_shading", state.smooth_shading ? 1 : 0);
+        set_veg_fade_uniforms(terrain_shader_, state);
+        world->vegetation.bind_canopy(PT_CANOPY_UNIT);
         world->ground.bind_detail_textures(terrain_shader_, state.detail_textures,
                                            state.detail_texture_intensity);
         for (const render::Mesh* chunk : world->ground.visible_meshes()) {
@@ -113,6 +123,7 @@ void SceneRenderer::draw(World* world, const render::Camera& camera, float aspec
         veg_shader_.set_float("u_smooth_blend", 0.0f);
         veg_shader_.set_int("u_smooth_shading", 0);
         veg_shader_.set_int("u_detail_enabled", 0);
+        set_veg_fade_uniforms(veg_shader_, state);
         world->vegetation.draw(camera.position, state.veg_draw_distance);
 
         // Césped del LOD cercano: shader propio con viento + desvanecido
@@ -175,6 +186,8 @@ void SceneRenderer::render_shadows(World& world, const render::Camera& camera, f
 
         shadow_veg_shader_.use();
         shadow_veg_shader_.set_mat4("u_light_vp", c.light_vp);
+        shadow_veg_shader_.set_vec3("u_camera_pos", camera.position);
+        set_veg_fade_uniforms(shadow_veg_shader_, state);
         world.vegetation.draw_casters(light, camera.position, state.veg_draw_distance);
     }
     glDisable(GL_POLYGON_OFFSET_FILL);

@@ -41,7 +41,7 @@ float rock_banding(float y, float wx, float wz) {
     const float tilt =
         0.10f * (value_noise(wx * 0.012f - 5.0f, wz * 0.012f + 3.0f) - 0.5f);
     const float yb = y * (0.35f + tilt) + phase;
-    return 0.93f + 0.05f * std::sin(yb) + 0.02f * std::sin(yb * 2.3f + 1.7f);
+    return 0.90f + 0.08f * std::sin(yb) + 0.03f * std::sin(yb * 2.3f + 1.7f);
 }
 
 // Tinte de suelo COHERENTE (~3.3 m): el hash por nodo con color flat pintaba
@@ -133,14 +133,16 @@ float Palette::water_level_near(float wx, float wz) const {
 glm::vec3 Palette::rock_base(float y, float climate, float cx, float cz) const {
     const float alt_k =
         glm::clamp((y - sea_level_ - rock_low_) / rock_span_, 0.0f, 1.0f);
+    // La alta no llega al gris neutro: bajo el ambiente azul del cielo un gris
+    // frío se leía violeta y lavado junto al bosque saturado.
     glm::vec3 c = glm::mix(glm::vec3{0.55f, 0.47f, 0.36f},
-                           glm::vec3{0.45f, 0.435f, 0.42f}, alt_k);
+                           glm::vec3{0.50f, 0.465f, 0.42f}, alt_k);
     // El sector cálido tira a ocre; el frío se queda neutro.
     c = glm::mix(c, glm::vec3{0.56f, 0.48f, 0.36f},
                  0.22f * climate * (1.0f - alt_k));
     // Formación dura gris azulada (cristalina), blanda ocre (sedimentaria):
     // la litología del LEM reparte el matiz de la roca por macizos.
-    return c * glm::mix(glm::vec3{0.88f, 0.96f, 1.04f},
+    return c * glm::mix(glm::vec3{0.93f, 0.97f, 1.01f},
                         glm::vec3{1.22f, 1.00f, 0.74f}, lithology_at(cx, cz));
 }
 
@@ -197,7 +199,7 @@ glm::vec3 Palette::rock(float y, float climate, float wx, float wz,
     // (~330 m) para que dos laderas lejanas no rimen.
     const float phase = 6.2831853f * value_noise(wx * 0.003f - 17.0f, wz * 0.003f + 4.0f);
     const float band = 0.5f + 0.5f * std::sin(y * 0.09f + phase);
-    c = glm::mix(c, c * glm::vec3{1.12f, 0.93f, 0.76f},
+    c = glm::mix(c, c * glm::vec3{1.16f, 0.92f, 0.72f},
                  0.75f * glm::smoothstep(0.50f, 0.90f, band) * (1.0f - shore_k));
     return c * rock_banding(y, wx, wz);
 }
@@ -339,7 +341,7 @@ glm::vec3 Palette::face(glm::vec3 base, Material m, glm::vec3 n, float y, float 
         const float steep = glm::smoothstep(0.25f, 0.65f, slope);
         c *= glm::mix(glm::vec3{0.90f, 0.89f, 0.86f}, glm::vec3{1.06f, 1.05f, 1.04f}, steep);
         // Solana cálida (pátina de óxido seca), umbría fría.
-        c *= glm::vec3{1.0f + 0.08f * sunny, 1.0f + 0.04f * sunny, 1.0f - 0.05f * sunny};
+        c *= glm::vec3{1.0f + 0.12f * sunny, 1.0f + 0.05f * sunny, 1.0f - 0.08f * sunny};
         c = glm::mix(c, snow(y), snow_cover(y, slope, sunny));
     }
     // Salto de valor por cara (±8 %) y leve de matiz: el mosaico facetado
@@ -355,7 +357,8 @@ glm::vec3 Palette::face(glm::vec3 base, Material m, glm::vec3 n, float y, float 
         c = glm::mix(c, glm::vec3{0.36f, 0.29f, 0.19f}, 0.45f * litter);
     }
     // En la arena el salto por cara se reduce: de cerca dibujaba triángulos.
-    const float jump = (m == Material::Sand) ? 0.07f : 0.16f;
+    // En la roca, algo mayor: las caras de una pared se separan en valor.
+    const float jump = (m == Material::Sand) ? 0.07f : (m == Material::Rock ? 0.22f : 0.16f);
     c *= (1.0f + jump * v) * glm::vec3{1.0f + 0.03f * hue, 1.0f, 1.0f - 0.03f * hue};
     return glm::clamp(c, glm::vec3{0.0f}, glm::vec3{1.0f});
 }

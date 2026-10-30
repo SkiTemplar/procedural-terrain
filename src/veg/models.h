@@ -2,6 +2,8 @@
 
 #include "render/mesh.h"
 
+#include <glm/glm.hpp>
+
 #include <cstdint>
 #include <vector>
 
@@ -11,6 +13,13 @@ struct ModelData {
     std::vector<render::Vertex> vertices;
     std::vector<std::uint32_t> indices;
 };
+
+// Follaje base (color lineal) y radio de copa a escala 1 de los dos árboles:
+// los comparte el dosel lejano (veg/canopy_layer) con los modelos.
+inline constexpr glm::vec3 kPineFoliage{0.19f, 0.38f, 0.20f};
+inline constexpr glm::vec3 kLeafFoliage{0.30f, 0.50f, 0.22f};
+inline constexpr float kPineCrownRadiusM = 2.4f;
+inline constexpr float kLeafCrownRadiusM = 2.6f;
 
 // Modelos low-poly generados por código (sin assets externos). Unidades en
 // metros a escala 1; la variación por individuo va en la instancia.

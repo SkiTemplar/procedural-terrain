@@ -84,10 +84,16 @@ layout (location = 0) in vec3 a_pos;
 layout (location = 2) in vec4 i_pos_scale; // xyz posición, w escala
 layout (location = 3) in vec4 i_tint_yaw;  // rgb tinte, w giro (rad)
 uniform mat4 u_light_vp;
+uniform vec3 u_camera_pos;
+uniform float u_veg_fade_start;
+uniform float u_veg_fade_end;
 void main() {
     float c = cos(i_tint_yaw.w);
     float s = sin(i_tint_yaw.w);
-    vec3 p = a_pos * i_pos_scale.w;
+    // Mismo desvanecido lejano que kVegVert: la sombra encoge con su árbol.
+    float d = length(i_pos_scale.xz - u_camera_pos.xz);
+    float fade = 1.0 - smoothstep(u_veg_fade_start, u_veg_fade_end, d);
+    vec3 p = a_pos * (i_pos_scale.w * fade);
     p = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z) + i_pos_scale.xyz;
     gl_Position = u_light_vp * vec4(p, 1.0);
 }

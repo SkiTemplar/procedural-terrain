@@ -18,14 +18,47 @@ layout (location = 3) in vec2 a_light; // x = sombra arrojada, y = AO de cielo
 
 uniform mat4 u_view;
 uniform mat4 u_proj;
+uniform vec3 u_camera_pos;
+uniform float u_terrain_half;
+// Distancia horizontal (m) en que los árboles instanciados encogen hasta
+// desaparecer (kVegVert); en la misma franja entra el dosel lejano.
+uniform float u_veg_fade_start;
+uniform float u_veg_fade_end;
+layout(binding = )glsl" PT_GLSL_STR(PT_CANOPY_UNIT) R"glsl() uniform sampler2D u_canopy;
 
 out vec3 v_world_pos;
 flat out vec3 v_color;
 out vec3 v_color_smooth;
 out vec3 v_normal_smooth;
 out vec2 v_light;
+flat out vec4 v_canopy; // rgb follaje del dosel, a = peso de mezcla
+
+// Sombreado propio del dosel visto desde lejos: copas con cara de sombra y
+// huecos sombreados entre ellas devuelven menos luz que un plano del mismo
+// albedo. La cobertura satura antes del 100 % (las copas se solapan).
+const float kCanopySelfShade = 0.76;
+// Sotobosque a media distancia: el suelo entre copas está en su sombra y
+// toma la mitad del tono del dosel; sin esto la pradera clara entre árboles
+// sueltos convertía el bosque en un moteado de alto contraste.
+const float kUnderstoryShade = 0.5;
+
+vec4 far_canopy(vec3 p) {
+    float d = length(p.xz - u_camera_pos.xz);
+    float far_k = max(smoothstep(u_veg_fade_start, u_veg_fade_end, d),
+                      kUnderstoryShade * smoothstep(150.0, 700.0, d));
+    if (far_k <= 0.0) return vec4(0.0);
+    vec2 uv = p.xz / (2.0 * u_terrain_half) + 0.5;
+    float lod = clamp(log2(d / 2500.0) + 0.5, 0.0, 4.0);
+    vec4 c = textureLod(u_canopy, uv, lod);
+    // Brillo propio de cada faceta (hash del vértice que la provoca): el
+    // dosel lejano conserva el grano facetado del terreno.
+    float jitter = 0.92 + 0.16 * fract(sin(dot(p.xz, vec2(12.9898, 78.233))) * 43758.5453);
+    return vec4(c.rgb * kCanopySelfShade * jitter,
+                smoothstep(0.08, 0.55, c.a) * far_k);
+}
 
 void main() {
+    v_canopy = far_canopy(a_pos);
     v_world_pos = a_pos;
     v_color = a_color;
     v_color_smooth = a_color;
@@ -42,6 +75,7 @@ flat in vec3 v_color;
 in vec3 v_color_smooth;
 in vec3 v_normal_smooth;
 in vec2 v_light;             // x = sombra arrojada (1=al sol), y = AO de cielo
+flat in vec4 v_canopy;       // dosel lejano (solo terreno; la vegetación da 0)
 
 uniform vec3 u_camera_pos;
 uniform float u_smooth_blend; // 1 = sombreado suave; 0 = solo flat (vegetacion o comparacion)
@@ -330,6 +364,9 @@ void main() {
     float blend = (u_smooth_shading != 0) ? u_smooth_blend : 0.0;
     vec3 normal = normalize(mix(n_flat, n_map, blend));
     vec3 albedo = mix(v_color, v_color_smooth, blend);
+    // Dosel lejano: donde los árboles ya no se dibujan, la faceta toma el color
+    // medio de las copas que hay encima (misma población que de cerca).
+    albedo = mix(albedo, v_canopy.rgb, v_canopy.a);
 
     // Sin detalle (desactivado, lejos o sin assets) devuelve ratio 1 y la
     // normal base: el resultado es idéntico al render solo-paleta.
@@ -402,12 +439,15 @@ layout (location = 3) in vec4 i_tint_yaw;  // rgb tinte, w giro (rad)
 uniform mat4 u_view;
 uniform mat4 u_proj;
 uniform vec3 u_camera_pos;
+uniform float u_veg_fade_start;
+uniform float u_veg_fade_end;
 
 out vec3 v_world_pos;
 flat out vec3 v_color;
 out vec3 v_color_smooth;
 out vec3 v_normal_smooth;
 out vec2 v_light;
+flat out vec4 v_canopy;
 
 // Cámara dentro de la copa: la instancia se pliega a su base. Sin esto, una
 // cámara a ras de suelo junto a un tronco ve la cara interior de un cono
@@ -422,16 +462,25 @@ float camera_clearance(vec4 pos_scale) {
     return mix(1.0, smoothstep(0.9 * r, 1.4 * r, d), below_top);
 }
 
+// Desvanecido lejano por instancia (no por celda de culling): el árbol encoge
+// hacia su base en la franja en que el terreno pasa al dosel lejano, así que
+// el borde del bosque dibujado no forma cuadrados.
+float far_fade(vec4 pos_scale) {
+    float d = length(pos_scale.xz - u_camera_pos.xz);
+    return 1.0 - smoothstep(u_veg_fade_start, u_veg_fade_end, d);
+}
+
 void main() {
     float c = cos(i_tint_yaw.w);
     float s = sin(i_tint_yaw.w);
-    vec3 p = a_pos * (i_pos_scale.w * camera_clearance(i_pos_scale));
+    vec3 p = a_pos * (i_pos_scale.w * camera_clearance(i_pos_scale) * far_fade(i_pos_scale));
     p = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z) + i_pos_scale.xyz;
     v_world_pos = p;
     v_color = a_color * i_tint_yaw.rgb;
     v_color_smooth = v_color;
     v_normal_smooth = vec3(0.0, 1.0, 0.0); // sin uso: la vegetación va con u_smooth_blend=0
     v_light = vec2(1.0); // la vegetación no recibe sombra/AO precomputados
+    v_canopy = vec4(0.0);
     gl_Position = u_proj * u_view * vec4(p, 1.0);
 }
 )glsl";

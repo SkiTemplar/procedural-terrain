@@ -28,3 +28,5 @@
 #define PT_DETAIL_NORMAL_UNIT 2
 #define PT_MATERIAL_GRID_UNIT 3
 #define PT_TERRAIN_NORMAL_MAP_UNIT 4
+// Dosel lejano (veg::VegRenderer::bind_canopy): solo lo lee kTerrainVert.
+#define PT_CANOPY_UNIT 5
