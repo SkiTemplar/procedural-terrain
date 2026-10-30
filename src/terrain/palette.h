@@ -55,7 +55,31 @@ private:
     glm::vec3 scree(float y, float climate, float cx, float cz) const;
     glm::vec3 snow(float y) const;
     glm::vec3 beach_sand(float y, float climate) const;
-    float snow_cover(float y, float slope, float sunny, float cx, float cz) const;
+    // Relieve a escala fija (no depende del LOD de la faceta).
+    struct Relief {
+        float tan_slope = 0.0f;  // tanβ a ~12 m
+        float concavity = 0.0f;  // > 0 canal o vaguada, < 0 cresta (anillo de 30 m)
+    };
+    // Lo que una cara aporta a su color además del material.
+    struct FaceCtx {
+        float slope = 0.0f;  // 1 − n.y de la cara
+        float sunny = 0.0f;  // insolación relativa a un llano, [-1, 1]
+        float y = 0.0f;
+        float cx = 0.0f;
+        float cz = 0.0f;
+        std::uint32_t id = 0;
+        bool mountain = false; // se midió el relieve
+        Relief relief;
+    };
+    Relief relief_at(float wx, float wz) const;
+    float snow_cover(const FaceCtx& f) const;
+    glm::vec3 alpine_turf(float y, float sunny) const;
+    glm::vec3 mountain_rock(glm::vec3 c, const FaceCtx& f) const;
+    glm::vec3 grass_outcrop(glm::vec3 c, Material m, const Relief& r, float y, float cx,
+                            float cz) const;
+    glm::vec3 grass_face(glm::vec3 c, Material m, const FaceCtx& f) const;
+    glm::vec3 rock_face(glm::vec3 c, Material m, const FaceCtx& f) const;
+    glm::vec3 snow_face(glm::vec3 c, const FaceCtx& f) const;
     glm::vec3 face_variation(glm::vec3 c, Material m, float cx, float cz,
                              std::uint32_t id) const;
 };
