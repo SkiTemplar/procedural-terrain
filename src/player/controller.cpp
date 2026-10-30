@@ -21,6 +21,10 @@ void Controller::update(render::Camera& camera, const core::Input& input,
 
     camera.update_look(input);
 
+    if (input.was_pressed(GLFW_KEY_LEFT_SHIFT)) {
+        sprinting = !sprinting;
+    }
+
     // Dirección de marcha en el plano XZ (el pitch no influye al andar).
     const glm::vec3 fwd3 = camera.forward();
     glm::vec3 fwd{fwd3.x, 0.0f, fwd3.z};
@@ -37,10 +41,7 @@ void Controller::update(render::Camera& camera, const core::Input& input,
     if (input.is_down(GLFW_KEY_A)) move -= right;
 
     if (glm::dot(move, move) > 0.0f) {
-        float speed = walk_speed;
-        if (input.is_down(GLFW_KEY_LEFT_SHIFT)) {
-            speed *= sprint_factor;
-        }
+        const float speed = sprinting ? walk_speed * sprint_factor : walk_speed;
         camera.position += glm::normalize(move) * speed * dt;
     }
 

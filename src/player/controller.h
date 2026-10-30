@@ -10,11 +10,13 @@ class Input;
 namespace player {
 
 // Andar/volar. F alterna. Caminando: gravedad, suelo del DetailSampler (la
-// misma superficie que dibuja la malla fina), Espacio salta, Shift esprinta.
+// misma superficie que dibuja la malla fina), Espacio salta, Shift alterna el
+// sprint (toggle: una isla de 10 km no se recorre con la tecla pisada).
 class Controller {
 public:
     bool flying = true;
-    float walk_speed = 5.0f;   // m/s
+    bool sprinting = false;
+    float walk_speed = 7.0f;   // m/s
     float sprint_factor = 2.0f;
 
     void update(render::Camera& camera, const core::Input& input,
