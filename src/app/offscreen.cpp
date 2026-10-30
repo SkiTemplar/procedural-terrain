@@ -225,7 +225,10 @@ int run_record(Session& s, const OffscreenArgs& args) {
         " -pix_fmt rgb24 -s " + std::to_string(args.width) + "x" + std::to_string(args.height)
         + " -r " + std::to_string(args.fps) + " -i - -vf vflip -c:v libx264 -threads 4 -preset slow"
         " -crf 16 -pix_fmt yuv420p -movflags +faststart \"" + args.output + "\"";
-    FILE* pipe = _popen(cmd.c_str(), "wb");
+    // cmd.exe /c quita la primera y la última comilla si hay más de dos: se
+    // envuelve la orden entera en otro par para que las rutas citadas lleguen
+    // intactas.
+    FILE* pipe = _popen(("\"" + cmd + "\"").c_str(), "wb");
     if (!pipe) {
         std::cerr << "no se pudo lanzar ffmpeg: " << cmd << std::endl;
         return 1;

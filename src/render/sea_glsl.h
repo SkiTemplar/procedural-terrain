@@ -223,7 +223,13 @@ float sea_facet_light(vec3 n) {
 // reflectancia sube de kSeaReflectance junto a la cámara a kSeaGrazingRefl
 // en incidencia rasante: degradado continuo del azul hondo a la bruma.
 float sea_fresnel(vec3 n, vec3 view_dir, out vec3 refl) {
-    vec3 n_r = normalize(mix(vec3(0.0, 1.0, 0.0), n, 0.7));
+    // A contraluz el cielo cambia muy deprisa junto al sol (aureola de Mie):
+    // con la faceta entera cada cara de 7-28 m reflejaba un trozo distinto y
+    // el mar salía en damero de cuadros blancos. Hacia el sol la faceta pesa
+    // menos en la dirección del reflejo.
+    vec3 r_flat = reflect(-view_dir, vec3(0.0, 1.0, 0.0));
+    float toward_sun = smoothstep(0.55, 0.95, max(dot(r_flat, u_sun_dir), 0.0));
+    vec3 n_r = normalize(mix(vec3(0.0, 1.0, 0.0), n, mix(0.7, 0.2, toward_sun)));
     refl = reflect(-view_dir, n_r);
     float cos_v = max(dot(view_dir, n_r), 0.0);
     float k = mix(kSeaReflectance, kSeaGrazingRefl, smoothstep(0.80, 0.985, 1.0 - cos_v));

@@ -285,6 +285,7 @@ vec2 sea_depth_energy() {
 const vec3 kSigmaA = vec3(0.45, 0.065, 0.02);
 const vec3 kCdomA = vec3(0.01, 0.04, 0.13);
 const float kWaterIor = 1.333;
+const float kSeaGlintMinAlpha2 = 0.08; // α ≈ 0.28
 
 // Radiancia que sale del agua (sin fondo) y transmitancia del camino
 // sol → lecho → cámara para un calado h. Ángulos refractados por Snell sobre
@@ -480,8 +481,13 @@ void main() {
         vec4 isl = island_reflection(v_world_pos, r_isl);
         sky_refl = mix(sky_refl, isl.rgb, isl.a * smoothstep(0.03, 0.05, fresnel));
     }
+    // Mar a contraluz: con la rugosidad de una faceta lisa cada cara de 7-28 m
+    // que caía en el lóbulo especular se encendía entera y el destello salía
+    // como un damero de cuadros blancos. Rugosidad mínima en el mar: el
+    // destello se reparte en una estela continua.
+    float glint_a2 = sea ? max(surf.alpha2, kSeaGlintMinAlpha2) : surf.alpha2;
     vec3 radiance = fresnel * sky_refl + (1.0 - fresnel) * body * facet_light
-                  + sun_glint(surf.n, view_dir, surf.alpha2) * film_k * (1.0 - wall_k)
+                  + sun_glint(surf.n, view_dir, glint_a2) * film_k * (1.0 - wall_k)
                     * (1.0 - 0.3 * far_river);
     trans *= 1.0 - fresnel;
 
