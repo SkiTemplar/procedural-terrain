@@ -28,10 +28,13 @@ struct OffscreenArgs {
     int samples = 8;          // MSAA del framebuffer offscreen
     int bench_frames = 240;   // frames medidos por toma (Bench)
     std::string ffmpeg = "ffmpeg";
+    std::string cache;        // caché del mundo (vacío = generar siempre)
 };
 
 // Parsea `--shots|--record|--bench <entrada> <salida> [--seed N]
-// [--size WxH] [--fps N] [--samples N] [--frames N] [--ffmpeg ruta]`.
+// [--size WxH] [--fps N] [--samples N] [--frames N] [--ffmpeg ruta]
+// [--cache fichero.bin]`. Con --cache se carga el mundo si la caché casa con
+// el config y, si no, se genera y se guarda.
 // nullopt si argv[1] no es un modo offscreen; lanza std::invalid_argument
 // ante argumentos mal formados.
 std::optional<OffscreenArgs> parse_offscreen_args(int argc, char** argv);

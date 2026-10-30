@@ -6,6 +6,7 @@
 #include "core/window.h"
 #include "render/camera.h"
 #include "terrain/generator.h"
+#include "terrain/world_cache.h"
 #include "ui/debug_ui.h"
 
 #include <glad/glad.h>
@@ -107,6 +108,30 @@ private:
     }
 };
 
+// Mundo desde la caché si casa con el config; si no, se genera (y se guarda
+// cuando se pidió caché).
+terrain::TerrainData obtain_world(const terrain::TerrainConfig& cfg, const std::string& cache) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto secs = [&t0]() {
+        return std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
+    };
+    if (!cache.empty()) {
+        if (auto cached = terrain::load_world_cache(cache, cfg)) {
+            std::cout << "mundo cargado de la cache " << cache << " en " << secs() << " s"
+                      << std::endl;
+            return std::move(*cached);
+        }
+    }
+    terrain::TerrainData data = terrain::generate(cfg, [](const char* phase) {
+        std::cout << "  fase: " << phase << std::endl;
+    });
+    std::cout << "terreno generado en " << secs() << " s (seed " << cfg.seed << ")" << std::endl;
+    if (!cache.empty() && !terrain::save_world_cache(cache, data)) {
+        std::cerr << "aviso: no se pudo escribir la cache " << cache << std::endl;
+    }
+    return data;
+}
+
 // Todo lo que vive mientras dura el modo: contexto, mundo y renderizador.
 struct Session {
     core::Window window;
@@ -122,14 +147,7 @@ struct Session {
         if (args.seed) {
             cfg.seed = *args.seed;
         }
-        const auto t0 = std::chrono::steady_clock::now();
-        terrain::TerrainData data = terrain::generate(cfg, [](const char* phase) {
-            std::cout << "  fase: " << phase << std::endl;
-        });
-        std::cout << "terreno generado en "
-                  << std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count()
-                  << " s (seed " << cfg.seed << ")" << std::endl;
-        world = std::make_unique<World>(std::move(data));
+        world = std::make_unique<World>(obtain_world(cfg, args.cache));
         renderer = std::make_unique<SceneRenderer>();
         target = std::make_unique<OffscreenTarget>(args.width, args.height, args.samples);
         glEnable(GL_DEPTH_TEST);
@@ -312,6 +330,8 @@ void parse_option(OffscreenArgs& a, const std::string& key, const std::string& v
         a.bench_frames = parse_int(v, "--frames");
     } else if (key == "--ffmpeg") {
         a.ffmpeg = v;
+    } else if (key == "--cache") {
+        a.cache = v;
     } else {
         throw std::invalid_argument("opcion desconocida: " + key);
     }

@@ -37,6 +37,7 @@ add_library(terrain_gen STATIC
         src/terrain/water_flow.cpp
         src/terrain/water_metrics.cpp
         src/terrain/water_surface.cpp
+        src/terrain/world_cache.cpp
 )
 target_include_directories(terrain_gen PUBLIC src)
 target_link_libraries(terrain_gen PUBLIC glm::glm nlohmann_json::nlohmann_json)
@@ -107,6 +108,7 @@ add_executable(terrain_tests
         tests/water_tests.cpp
         tests/terrain_texture_tests.cpp
         tests/camera_path_tests.cpp
+        tests/world_cache_tests.cpp
         src/app/camera_path.cpp
         src/render/terrain_texture_data.cpp
         src/render/terrain_normal_map.cpp
