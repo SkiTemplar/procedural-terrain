@@ -1,5 +1,7 @@
 #include "veg/grass_field.h"
 
+#include "terrain/mesher.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -14,7 +16,15 @@ namespace {
 // dibujan a altura ~0 y reconstruir el campo al moverse no produce "pop".
 constexpr float kRadius = 108.0f;      // m: alcance de generación
 constexpr float kRebuildMove = 24.0f;  // m: reconstruir al desplazarse esto
-constexpr int kPerCell = 9;            // grass cards por celda (~2.4 m): solapan
+constexpr int kPerCell = 16;           // candidatos a card por celda (~2.4 m)
+
+// Matas agrupadas (iter. 5 del bucle de arte): con densidad uniforme el
+// césped se leía como briznas sueltas sobre caras lisas. Un ruido de ~3 m
+// reparte manchas densas y altas y huecos ralos; el 20 % de los candidatos
+// sobrevive siempre, el resto según la mancha.
+float clump_at(float wx, float wz) {
+    return terrain::value_noise(wx * 0.33f + 41.0f, wz * 0.33f - 17.0f);
+}
 
 float hash01(std::uint32_t x, std::uint32_t z, std::uint32_t salt) {
     std::uint32_t h = x * 374761393u + z * 668265263u + salt * 2246822519u;
@@ -156,12 +166,18 @@ void GrassField::rebuild(const glm::vec3& camera_pos) {
                 if (dx * dx + dz * dz > r2) {
                     continue;
                 }
+                const float clump = clump_at(wx, wz);
+                const float keep = 0.20f + 0.80f * std::clamp((clump - 0.30f) / 0.40f, 0.0f, 1.0f);
+                if (hash01(static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(z),
+                           salt + 31u + ku) > keep) {
+                    continue;
+                }
                 const float wy = sampler_->height(wx, wz);
                 if (wy < data_->config.sea_level + 0.3f) {
                     continue;
                 }
                 // Altura final en METROS (la instancia escala el modelo ~1.0).
-                const float height = base_h * (0.75f + 0.5f * hash01(
+                const float height = base_h * (0.75f + 0.7f * clump) * (0.75f + 0.5f * hash01(
                     static_cast<std::uint32_t>(x) * 7u + ku,
                     static_cast<std::uint32_t>(z) * 3u, salt + 9u));
                 const float yaw = hash01(static_cast<std::uint32_t>(x) + ku,

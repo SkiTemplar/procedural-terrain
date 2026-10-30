@@ -56,6 +56,14 @@ float ground_tint(float wx, float wz) {
     return 0.87f + 0.14f * fine + 0.10f * coarse;
 }
 
+// Matiz de la nieve según la cara mire al sol (sunny en [-1, 1]): la solana
+// crema cálida, la umbría azulada (la ilumina el cielo, no el sol). Exagera el
+// contraste luz/sombra que el sombreado solo dejaba en un gris lavanda.
+glm::vec3 snow_aspect_tint(float sunny) {
+    return glm::mix(glm::vec3{0.76f, 0.87f, 1.02f}, glm::vec3{1.03f, 1.00f, 0.93f},
+                    glm::smoothstep(-0.6f, 0.6f, sunny));
+}
+
 } // namespace
 
 Palette::Palette(const TerrainData& data)
@@ -208,8 +216,8 @@ glm::vec3 Palette::rock(float y, float climate, float wx, float wz,
 // roca, hielo viejo), blanca pura hacia la cumbre real de este mundo.
 glm::vec3 Palette::snow(float y) const {
     const float alt_k = glm::clamp((y - snow_line_) / snow_span_, 0.0f, 1.0f);
-    return glm::mix(glm::vec3{0.80f, 0.83f, 0.88f},
-                    glm::vec3{0.95f, 0.96f, 0.99f}, alt_k);
+    return glm::mix(glm::vec3{0.82f, 0.84f, 0.87f},
+                    glm::vec3{0.97f, 0.96f, 0.94f}, alt_k);
 }
 
 // Arena de playa cálida (cuarzo con feldespato y conchas): dorada en clima
@@ -342,9 +350,14 @@ glm::vec3 Palette::face(glm::vec3 base, Material m, glm::vec3 n, float y, float 
         c *= glm::mix(glm::vec3{0.90f, 0.89f, 0.86f}, glm::vec3{1.06f, 1.05f, 1.04f}, steep);
         // Solana cálida (pátina de óxido seca), umbría fría.
         c *= glm::vec3{1.0f + 0.12f * sunny, 1.0f + 0.05f * sunny, 1.0f - 0.08f * sunny};
-        c = glm::mix(c, snow(y), snow_cover(y, slope, sunny));
+        c = glm::mix(c, snow(y) * snow_aspect_tint(sunny), snow_cover(y, slope, sunny));
+    } else if (m == Material::Snow) {
+        // La nieve no se sostiene en las caras empinadas: asoma la roca
+        // (oscura, como la de la pared) y el resto toma el matiz de su cara.
+        const float bare = glm::smoothstep(0.40f, 0.68f, slope);
+        c = glm::mix(c * snow_aspect_tint(sunny), rock_base(y, 0.3f, cx, cz) * 0.80f, bare);
     }
-    // Salto de valor por cara (±8 %) y leve de matiz: el mosaico facetado
+    // Salto de valor por cara (±8 %) y de matiz (±3 % rojo↔azul, ~±4°): el mosaico facetado
     // que hace legible la geometría low-poly incluso a contraluz.
     const int ix = static_cast<int>(id & 0xFFFFu);
     const int iz = static_cast<int>(id >> 16u);
@@ -359,7 +372,7 @@ glm::vec3 Palette::face(glm::vec3 base, Material m, glm::vec3 n, float y, float 
     // En la arena el salto por cara se reduce: de cerca dibujaba triángulos.
     // En la roca, algo mayor: las caras de una pared se separan en valor.
     const float jump = (m == Material::Sand) ? 0.07f : (m == Material::Rock ? 0.22f : 0.16f);
-    c *= (1.0f + jump * v) * glm::vec3{1.0f + 0.03f * hue, 1.0f, 1.0f - 0.03f * hue};
+    c *= (1.0f + jump * v) * glm::vec3{1.0f + 0.06f * hue, 1.0f, 1.0f - 0.06f * hue};
     return glm::clamp(c, glm::vec3{0.0f}, glm::vec3{1.0f});
 }
 

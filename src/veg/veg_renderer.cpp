@@ -90,18 +90,23 @@ float field_nearest(const std::vector<float>& field, int fres, float size_m,
 // y otra se distinguen por valor además de por silueta.
 constexpr glm::vec3 kConiferCast{0.78f, 0.86f, 0.92f};
 constexpr glm::vec3 kBroadleafCast{1.10f, 1.08f, 0.88f};
-// Senescencia temprana: en los rodales de menos vigor (edad, suelo pobre) casi
-// todas las frondosas viran a la vez, a ocre o a cobre según el rodal. Va por
-// RODAL entero con borde neto (no árbol a árbol ni con un degradado de copas
-// sueltas): una copa naranja aislada se leía como un punto de ruido.
+// Senescencia temprana: en los rodales de menos vigor (edad, suelo pobre) las
+// frondosas viran a ocre o a cobre según el rodal. El vigor efectivo baja con
+// la cota (frío) y en la solana (estrés hídrico), y la fracción de copas que
+// viran crece de forma gradual a lo largo de kSenescentRamp: con un umbral
+// neto los rodales otoñales se leían como manchas estampadas.
 constexpr glm::vec3 kSenescentCast[2] = {{1.38f, 1.12f, 0.56f}, {1.52f, 0.98f, 0.54f}};
-constexpr float kSenescentVigorLo = -0.25f; // vigor bajo el que el rodal amarillea
-constexpr float kSenescentShare = 0.85f;    // fracción de frondosas que viran en él
+constexpr float kSenescentVigorLo = -0.18f; // vigor bajo el que el rodal amarillea
+constexpr float kSenescentRamp = 0.30f;     // anchura de la transición en vigor
+constexpr float kSenescentShare = 0.85f;    // fracción máxima de frondosas que viran
+// Dirección horizontal hacia el sol canónico (terrain::kSunAzimuthDeg = 135°).
+const glm::vec2 kSunXZ{std::cos(terrain::kSunAzimuthDeg * 0.01745329f),
+                       std::sin(terrain::kSunAzimuthDeg * 0.01745329f)};
 
 // Variación individual pequeña frente a la del rodal: a media distancia un
 // jitter fuerte árbol a árbol se convertía en un moteado de alta frecuencia.
 glm::vec3 canopy_tint(float hue_r, float value_r, float dryness, float climate,
-                      bool conifer, float vigor, float stand_cast) {
+                      bool conifer, float vigor, float stand_cast, float autumn) {
     const float hue = (hue_r - 0.5f) * (conifer ? 0.06f : 0.10f) + 0.30f * vigor;
     glm::vec3 t{1.0f + hue, 1.0f + 0.10f * vigor, 1.0f - 1.6f * hue};
     t *= conifer ? kConiferCast : kBroadleafCast;
@@ -109,8 +114,12 @@ glm::vec3 canopy_tint(float hue_r, float value_r, float dryness, float climate,
     t *= glm::mix(glm::vec3{1.0f}, glm::vec3{1.12f, 1.05f, 0.80f}, 0.6f * stress);
     t *= glm::mix(glm::vec3{1.0f}, glm::vec3{0.92f, 0.96f, 1.05f},
                   0.5f * (1.0f - climate));
-    if (!conifer && vigor < kSenescentVigorLo && value_r < kSenescentShare) {
-        t *= kSenescentCast[stand_cast < 0.6f ? 0 : 1];
+    const float turn = std::clamp(
+        (kSenescentVigorLo + 0.5f * kSenescentRamp - (vigor - autumn)) / kSenescentRamp,
+        0.0f, 1.0f);
+    if (!conifer && value_r < kSenescentShare * turn) {
+        t *= glm::mix(glm::vec3{1.0f}, kSenescentCast[stand_cast < 0.6f ? 0 : 1],
+                      0.55f + 0.45f * turn);
     }
     return t * (0.92f + 0.16f * value_r) * (1.0f + 0.30f * vigor);
 }
@@ -133,7 +142,11 @@ StandSite stand_site(float wx, float wz, float fd, float slope_tan, float height
     const float steep = std::clamp((slope_tan - 0.55f) / 0.45f, 0.0f, 1.0f);
     const float ecotone = std::clamp(
         (height_above_sea - 0.65f * tree_line) / (0.35f * tree_line), 0.0f, 1.0f);
-    s.tree_mult = (1.0f - gap) * terrain::stand_thickness(wx, wz)
+    // Bosquetes (~12 m): los árboles se agrupan con huecos entre grupos en
+    // vez de repartirse uno por celda con la misma separación.
+    const float grove = 0.55f + 0.90f * terrain::value_noise(wx * 0.085f + 3.0f,
+                                                             wz * 0.085f - 8.0f);
+    s.tree_mult = (1.0f - gap) * terrain::stand_thickness(wx, wz) * grove
                 * (1.0f - 0.6f * steep) * (1.0f - 0.45f * ecotone);
     s.bush_add = 0.06f * gap * (1.0f - gap) + 0.025f * ecotone;
     s.tuft_add = 0.10f * gap;
@@ -284,6 +297,11 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                                                  cfg.size_m, wx, wz, 0.1f);
             const float site_climate = data.climate[i];
             const float vigor = terrain::stand_vigor(wx, wz);
+            // Otoño adelantado con la cota (frío) y en la solana (sequía).
+            const glm::vec3 sn = sampler.normal_near(wx, wz);
+            const float autumn =
+                0.22f * std::clamp((wy - cfg.sea_level) / tree_line, 0.0f, 1.0f)
+                + 0.25f * (sn.x * kSunXZ.x + sn.z * kSunXZ.y);
             // Ocre o cobre por rodal (~110 m), no por árbol.
             const float stand_cast = terrain::value_noise(wx * 0.009f - 23.0f,
                                                           wz * 0.009f + 11.0f);
@@ -307,10 +325,16 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 // curva cuadrática → muchos árboles jóvenes pequeños y pocos
                 // maduros grandes (0.5–2.0×), como un bosque real, en vez del
                 // rango estrecho y uniforme anterior.
-                const float scale = (0.5f + 1.5f * scale_r * scale_r) * site.scale_mult;
+                // Edad común del rodal (~80 m) por encima del reparto
+                // individual: manchas de regenerado bajo junto a rodales
+                // maduros, y no un tapiz de copas iguales.
+                const float stand_age = terrain::value_noise(wx * 0.0125f + 9.0f,
+                                                             wz * 0.0125f - 51.0f);
+                const float scale = (0.55f + 1.05f * scale_r * std::sqrt(scale_r))
+                                  * (0.70f + 0.60f * stand_age) * site.scale_mult;
                 // Base bien hundida: en pendiente los troncos no quedan al aire.
                 const glm::vec3 crown = canopy_tint(hue_r, value_r, site_dry, site_climate,
-                                                    pine, vigor, stand_cast);
+                                                    pine, vigor, stand_cast, autumn);
                 const glm::vec3 t = crown * veg_light;
                 render::Instance inst{{wx, wy - 0.35f * scale, wz, scale},
                                       {t.r, t.g, t.b, yaw}};
@@ -338,7 +362,7 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             } else if (roll < tree_p + rock_p + tuft_p + bush_p) {
                 const float scale = 0.6f + 0.9f * scale_r;
                 const glm::vec3 t = canopy_tint(hue_r, value_r, site_dry, site_climate,
-                                                false, vigor, stand_cast) * veg_light;
+                                                false, vigor, stand_cast, autumn) * veg_light;
                 cell.bushes.push_back(render::Instance{{wx, wy - 0.08f, wz, scale},
                                                        {t.r, t.g, t.b, yaw}});
             } else if (roll < tree_p + rock_p + tuft_p + bush_p + boulder_p) {
