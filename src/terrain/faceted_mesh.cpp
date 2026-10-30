@@ -91,7 +91,7 @@ FaceShade shade_face(const DetailSampler& sampler, const Palette& palette,
     const glm::vec3 base = palette.ground(m, sampler.forest_density_near(cx, cz),
                                           sampler.climate_near(cx, cz), c.y, c.x, c.z,
                                           cx, cz);
-    return {palette.face(base, m, n, cx, cz, id),
+    return {palette.face(base, m, n, c.y, cx, cz, id),
             {sampler.shadow_at(c.x, c.z), sampler.sky_ao_at(c.x, c.z)}};
 }
 

@@ -1,5 +1,6 @@
 #include "veg/veg_renderer.h"
 
+#include "terrain/stand.h"
 #include "veg/models.h"
 
 #include <algorithm>
@@ -76,15 +77,43 @@ float field_nearest(const std::vector<float>& field, int fres, float size_m,
 // la media: el estrés hídrico (déficit 1 − ET/PET, el mismo campo que agosta
 // la hierba en la paleta) amarillea y aclara la copa; el frío la azulea. Los
 // hashes solo reparten la variación individual alrededor de esa media.
+// vigor: tinte común del rodal (terrain::stand_vigor), que desplaza el matiz
+// de toda la mancha: los rodales jóvenes amarillean, los viejos se oscurecen.
 glm::vec3 canopy_tint(float hue_r, float value_r, float dryness, float climate,
-                      bool conifer) {
-    const float hue = (hue_r - 0.5f) * (conifer ? 0.12f : 0.20f);
-    glm::vec3 t{1.0f + hue, 1.0f, 1.0f - 1.6f * hue};
+                      bool conifer, float vigor) {
+    const float hue = (hue_r - 0.5f) * (conifer ? 0.12f : 0.20f) + 0.22f * vigor;
+    glm::vec3 t{1.0f + hue, 1.0f + 0.10f * vigor, 1.0f - 1.6f * hue};
     const float stress = std::clamp((dryness - 0.08f) / 0.30f, 0.0f, 1.0f);
     t *= glm::mix(glm::vec3{1.0f}, glm::vec3{1.12f, 1.05f, 0.80f}, 0.6f * stress);
     t *= glm::mix(glm::vec3{1.0f}, glm::vec3{0.92f, 0.96f, 1.05f},
                   0.5f * (1.0f - climate));
-    return t * (0.88f + 0.24f * value_r);
+    return t * (0.88f + 0.24f * value_r) * (1.0f + 0.18f * vigor);
+}
+
+// Probabilidades del sitio para los árboles y arbustos según el rodal:
+// claros del régimen de perturbación, espesura del rodal, aclarado en
+// pendiente fuerte (suelo somero, deslizamientos) y ecotono bajo el límite
+// del bosque (árboles achaparrados y matorral).
+struct StandSite {
+    float tree_mult = 1.0f;  // multiplica tree_p
+    float bush_add = 0.0f;   // matorral extra (orla de claro, ecotono)
+    float tuft_add = 0.0f;   // herbáceas extra en el claro
+    float scale_mult = 1.0f; // achaparramiento cerca del límite del bosque
+};
+
+StandSite stand_site(float wx, float wz, float fd, float slope_tan, float height_above_sea,
+                     float tree_line) {
+    StandSite s;
+    const float gap = terrain::stand_gap(wx, wz, fd);
+    const float steep = std::clamp((slope_tan - 0.55f) / 0.45f, 0.0f, 1.0f);
+    const float ecotone = std::clamp(
+        (height_above_sea - 0.65f * tree_line) / (0.35f * tree_line), 0.0f, 1.0f);
+    s.tree_mult = (1.0f - gap) * terrain::stand_thickness(wx, wz)
+                * (1.0f - 0.6f * steep) * (1.0f - 0.45f * ecotone);
+    s.bush_add = 0.06f * gap * (1.0f - gap) + 0.025f * ecotone;
+    s.tuft_add = 0.10f * gap;
+    s.scale_mult = 1.0f - 0.45f * ecotone;
+    return s;
 }
 
 } // namespace
@@ -111,6 +140,8 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
     // Muestreo por celda del heightfield (~2.4 m): probabilidades acumuladas
     // por material. Con p_tuft=0.05 sale ~1 mata / 120 m² de pradera.
     const std::uint32_t salt = cfg.seed;
+    const float tree_line =
+        std::max(data.treeline_m > 0.0f ? data.treeline_m : cfg.treeline_m, 1.0f);
     for (int z = 2; z < res - 2; ++z) {
         for (int x = 2; x < res - 2; ++x) {
             const size_t i = static_cast<size_t>(z) * static_cast<size_t>(res)
@@ -141,19 +172,36 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             // claro con la misma señal, así árbol y verdor se apagan juntos.
             const float fd = data.forest_density[i];
             const float canopy = std::clamp((fd - 0.12f) / 0.45f, 0.0f, 1.0f);
+            StandSite site;
+            if (m == terrain::Material::Forest || m == terrain::Material::Grass) {
+                const float cwx = hf.world_x(x);
+                const float cwz = hf.world_z(z);
+                const glm::vec3 cn = sampler.normal_near(cwx, cwz);
+                site = stand_site(
+                    cwx, cwz, fd,
+                    std::sqrt(std::max(0.0f, 1.0f - cn.y * cn.y)) / std::max(cn.y, 1e-3f),
+                    hf.at(x, z) - cfg.sea_level, tree_line);
+            }
             switch (m) {
                 case terrain::Material::Forest:
-                    tree_p = 0.16f * canopy; tuft_p = 0.085f;
-                    bush_p = 0.012f; log_p = 0.0030f;
+                    tree_p = 0.16f * canopy * site.tree_mult;
+                    tuft_p = 0.085f + site.tuft_add;
+                    bush_p = 0.012f + site.bush_add; log_p = 0.0030f;
                     break;
                 case terrain::Material::Grass:
                     // Árboles dispersos de pradera + cola de la copa que se
                     // adentra en el claro (canopy>0 en la franja de transición).
-                    tree_p = 0.011f + 0.15f * canopy;
-                    tuft_p = 0.200f; bush_p = 0.010f;
+                    tree_p = (0.011f + 0.15f * canopy) * site.tree_mult;
+                    tuft_p = 0.200f; bush_p = 0.010f + site.bush_add;
                     break;
                 case terrain::Material::Sand:
-                    tuft_p = 0.008f; // hierba rala de duna
+                    if (data.wave_energy.size() == data.material.size()
+                        && data.wave_energy[i] <= 0.0f) {
+                        // Ribera de cauce (no playa): juncos y sauces bajos.
+                        tuft_p = 0.15f; bush_p = 0.03f;
+                    } else {
+                        tuft_p = 0.008f; // hierba rala de duna
+                    }
                     break;
                 case terrain::Material::Marsh:
                     // Marisma: pura vegetación herbácea en la realidad —
@@ -208,12 +256,16 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             const float site_dry = field_nearest(data.dryness, data.precip_res,
                                                  cfg.size_m, wx, wz, 0.1f);
             const float site_climate = data.climate[i];
+            const float vigor = terrain::stand_vigor(wx, wz);
 
             Placement& cell = cell_of(wx, wz);
             if (roll < tree_p) {
                 // Arriba dominan las coníferas; abajo se mezclan frondosos.
-                const float conifer_bias =
-                    std::clamp((wy - 120.0f) / 250.0f, 0.15f, 0.95f);
+                // La composición va por rodales (manchas de ~250 m), no
+                // árbol a árbol: a lo lejos se leen bosques distintos.
+                const float conifer_bias = std::clamp(
+                    (wy - 120.0f) / 250.0f + 1.3f * terrain::stand_composition(wx, wz),
+                    0.04f, 0.97f);
                 const bool pine = hash01(static_cast<std::uint32_t>(x),
                                          static_cast<std::uint32_t>(z), salt + 6)
                                 < conifer_bias;
@@ -221,10 +273,10 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 // curva cuadrática → muchos árboles jóvenes pequeños y pocos
                 // maduros grandes (0.5–2.0×), como un bosque real, en vez del
                 // rango estrecho y uniforme anterior.
-                const float scale = 0.5f + 1.5f * scale_r * scale_r;
+                const float scale = (0.5f + 1.5f * scale_r * scale_r) * site.scale_mult;
                 // Base bien hundida: en pendiente los troncos no quedan al aire.
                 const glm::vec3 t = canopy_tint(hue_r, value_r, site_dry,
-                                                site_climate, pine) * veg_light;
+                                                site_climate, pine, vigor) * veg_light;
                 render::Instance inst{{wx, wy - 0.35f * scale, wz, scale},
                                       {t.r, t.g, t.b, yaw}};
                 (pine ? cell.pines : cell.broadleafs).push_back(inst);
@@ -246,7 +298,7 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             } else if (roll < tree_p + rock_p + tuft_p + bush_p) {
                 const float scale = 0.6f + 0.9f * scale_r;
                 const glm::vec3 t = canopy_tint(hue_r, value_r, site_dry,
-                                                site_climate, false) * veg_light;
+                                                site_climate, false, vigor) * veg_light;
                 cell.bushes.push_back(render::Instance{{wx, wy - 0.08f, wz, scale},
                                                        {t.r, t.g, t.b, yaw}});
             } else if (roll < tree_p + rock_p + tuft_p + bush_p + boulder_p) {
