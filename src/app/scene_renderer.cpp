@@ -2,18 +2,43 @@
 
 #include "app/world.h"
 #include "render/camera.h"
+#include "render/frustum.h"
+#include "render/shadow_shaders.h"
 #include "render/terrain_shaders.h"
 #include "terrain/coast.h"
 #include "terrain/mesher.h"
 #include "ui/debug_ui.h"
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
 
+#include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace app {
 
 namespace {
+
+// Cascadas de sombra del sol (CSM). 2048² por cascada en DEPTH32F (64 MB las
+// cuatro); cubren 2.5 km de profundidad de vista, más allá manda la sombra
+// precomputada por vértice.
+constexpr int kShadowResolution = 2048;
+constexpr float kShadowDistanceM = 2500.0f;
+constexpr float kShadowLambda = 0.7f;
+// Holgura vertical sobre el AABB del terreno: copas de árbol por encima de la
+// cumbre más alta (el depth clamp ya cubre el resto).
+constexpr float kCasterHeadroomM = 60.0f;
+// Sesgos en texeles de cada cascada (escalan con su resolución en mundo):
+// normal offset del receptor y sesgo de profundidad constante; el sesgo por
+// pendiente lo pone glPolygonOffset en el pase de profundidad.
+constexpr float kNormalOffsetTexels = 1.5f;
+constexpr float kDepthBiasTexels = 1.0f;
+constexpr float kSlopeBiasFactor = 2.0f;
+
+std::string indexed(const char* name, int i) {
+    return std::string(name) + "[" + std::to_string(i) + "]";
+}
 
 void set_common_uniforms(const render::Shader& shader, const render::Camera& camera,
                          float aspect, const ui::DebugState& state) {
@@ -31,7 +56,10 @@ SceneRenderer::SceneRenderer()
       veg_shader_(render::kVegVert, render::kTerrainFrag),
       grass_shader_(render::kGrassVert, render::kGrassFrag),
       water_shader_(render::kWaterVert, render::kWaterFrag),
-      sky_shader_(render::kSkyVert, render::kSkyFrag) {
+      sky_shader_(render::kSkyVert, render::kSkyFrag),
+      shadow_terrain_shader_(render::kShadowTerrainVert, render::kShadowFrag),
+      shadow_veg_shader_(render::kShadowVegVert, render::kShadowFrag),
+      shadow_map_(kShadowResolution) {
     glGenVertexArrays(1, &sky_vao_);
 }
 
@@ -63,8 +91,14 @@ void SceneRenderer::draw(World* world, const render::Camera& camera, float aspec
             state.veg_counts[5] = vc.logs;
         }
 
+        if (state.csm_shadows) {
+            render_shadows(*world, camera, aspect, state);
+        }
+        shadow_map_.bind_texture(PT_SHADOW_MAP_UNIT);
+
         terrain_shader_.use();
         set_common_uniforms(terrain_shader_, camera, aspect, state);
+        set_shadow_uniforms(terrain_shader_, camera, state.csm_shadows);
         terrain_shader_.set_float("u_smooth_blend", 1.0f);
         terrain_shader_.set_int("u_smooth_shading", state.smooth_shading ? 1 : 0);
         world->ground.bind_detail_textures(terrain_shader_, state.detail_textures,
@@ -75,6 +109,7 @@ void SceneRenderer::draw(World* world, const render::Camera& camera, float aspec
 
         veg_shader_.use();
         set_common_uniforms(veg_shader_, camera, aspect, state);
+        set_shadow_uniforms(veg_shader_, camera, state.csm_shadows);
         veg_shader_.set_float("u_smooth_blend", 0.0f);
         veg_shader_.set_int("u_smooth_shading", 0);
         veg_shader_.set_int("u_detail_enabled", 0);
@@ -85,6 +120,7 @@ void SceneRenderer::draw(World* world, const render::Camera& camera, float aspec
         // repoblar el disco alrededor de la cámara).
         grass_shader_.use();
         set_common_uniforms(grass_shader_, camera, aspect, state);
+        set_shadow_uniforms(grass_shader_, camera, state.csm_shadows);
         grass_shader_.set_float("u_time", time_s);
         grass_shader_.set_float("u_grass_fade_start", 70.0f);
         grass_shader_.set_float("u_grass_fade_end", 104.0f);
@@ -96,8 +132,78 @@ void SceneRenderer::draw(World* world, const render::Camera& camera, float aspec
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 }
 
-// Pase de cielo (C4-L4): gradiente + disco solar a pantalla completa, sin
-// depth (el mundo se pinta encima). Siempre relleno, aunque el modo wireframe
+// Pase de profundidad del sol, una vez por cascada. Proyectan el terreno (con
+// el LOD de la cámara) y la vegetación instanciada, cada uno recortado contra
+// el volumen ortográfico de la cascada y no contra el frustum de la cámara:
+// una ladera o un árbol fuera de pantalla también sombrea lo visible. El
+// depth clamp aplasta al plano cercano lo que quede delante (sombra correcta).
+void SceneRenderer::render_shadows(World& world, const render::Camera& camera, float aspect,
+                                   const ui::DebugState& state) {
+    GLint prev_fbo = 0;
+    GLint prev_viewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_fbo);
+    glGetIntegerv(GL_VIEWPORT, prev_viewport);
+
+    render::CascadeSetup setup;
+    setup.fov_y_rad = glm::radians(render::Camera::kFovDeg);
+    setup.aspect = aspect;
+    setup.near_m = render::Camera::kNear;
+    setup.shadow_distance_m = kShadowDistanceM;
+    setup.lambda = kShadowLambda;
+    setup.resolution = shadow_map_.resolution();
+    const glm::vec3 headroom{0.0f, kCasterHeadroomM, 0.0f};
+    cascades_ = render::fit_cascades(setup, camera.position, camera.forward(), state.sun_dir(),
+                                     world.ground.bounds_min(),
+                                     world.ground.bounds_max() + headroom);
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glEnable(GL_DEPTH_CLAMP);
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(kSlopeBiasFactor, 0.0f);
+    for (int i = 0; i < render::kShadowCascadeCount; ++i) {
+        const render::ShadowCascade& c = cascades_[static_cast<size_t>(i)];
+        const render::Frustum light(c.light_vp);
+        shadow_map_.begin_cascade(i);
+
+        shadow_terrain_shader_.use();
+        shadow_terrain_shader_.set_mat4("u_light_vp", c.light_vp);
+        casters_.clear();
+        world.ground.collect_meshes(light, casters_);
+        for (const render::Mesh* mesh : casters_) {
+            mesh->draw();
+        }
+
+        shadow_veg_shader_.use();
+        shadow_veg_shader_.set_mat4("u_light_vp", c.light_vp);
+        world.vegetation.draw_casters(light, camera.position, state.veg_draw_distance);
+    }
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    glDisable(GL_DEPTH_CLAMP);
+    glPolygonMode(GL_FRONT_AND_BACK, state.wireframe ? GL_LINE : GL_FILL);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prev_fbo));
+    glViewport(prev_viewport[0], prev_viewport[1], prev_viewport[2], prev_viewport[3]);
+}
+
+// Uniforms de recepción de la CSM. Los sesgos se pasan ya en las unidades del
+// shader: normal offset en metros y sesgo de profundidad en [0,1] del depth
+// ortográfico (lineal: metros / recorrido del rango del sol).
+void SceneRenderer::set_shadow_uniforms(const render::Shader& shader,
+                                        const render::Camera& camera, bool enabled) const {
+    shader.set_int("u_csm_enabled", enabled ? 1 : 0);
+    shader.set_vec3("u_cam_forward", camera.forward());
+    for (int i = 0; i < render::kShadowCascadeCount; ++i) {
+        const render::ShadowCascade& c = cascades_[static_cast<size_t>(i)];
+        shader.set_mat4(indexed("u_csm_vp", i).c_str(), c.light_vp);
+        shader.set_float(indexed("u_csm_split", i).c_str(), c.split_far);
+        shader.set_float(indexed("u_csm_offset", i).c_str(), kNormalOffsetTexels * c.texel_m);
+        shader.set_float(indexed("u_csm_bias", i).c_str(),
+                         kDepthBiasTexels * c.texel_m / std::max(c.depth_range_m, 1.0f));
+    }
+}
+
+// Pase de cielo (C4-L4): dispersión Rayleigh + Mie y disco solar a pantalla
+// completa, sin depth (el mundo se pinta encima). Siempre relleno, aunque el modo wireframe
 // esté activo — el cielo no es malla que inspeccionar.
 void SceneRenderer::draw_sky(const render::Camera& camera, float aspect,
                              const ui::DebugState& state) {
@@ -107,18 +213,21 @@ void SceneRenderer::draw_sky(const render::Camera& camera, float aspect,
     sky_shader_.set_mat4("u_inv_vp", glm::inverse(camera.proj(aspect) * view_rot));
     sky_shader_.set_vec3("u_sun_dir", state.sun_dir());
     sky_shader_.set_vec3("u_camera_pos", camera.position);
+    sky_shader_.set_float("u_fog_density", state.fog_density);
     glBindVertexArray(sky_vao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
     glEnable(GL_DEPTH_TEST);
 }
 
-// Agua después del terreno, con blending.
+// Agua después del terreno. Mezcla de DOBLE FUENTE: destino·T (transmitancia
+// por canal del lecho ya pintado, Beer-Lambert) + radiancia que añade el agua
+// — el rojo se apaga antes que el azul, cosa que un alpha escalar no puede.
 void SceneRenderer::draw_water(World& world, const render::Camera& camera,
                                float aspect, const ui::DebugState& state,
                                float time_s) {
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFunc(GL_ONE, GL_SRC1_COLOR);
     water_shader_.use();
     set_common_uniforms(water_shader_, camera, aspect, state);
     water_shader_.set_float("u_time", time_s);
@@ -141,7 +250,14 @@ void SceneRenderer::draw_water(World& world, const render::Camera& camera,
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, world.seabed.id);
     water_shader_.set_int("u_is_sea", 1);
+    // El faldón del mar llega a 200 km, mucho más allá del plano lejano: con
+    // depth clamp no se recorta (su profundidad satura a 1, de ahí LEQUAL
+    // frente al borrado a 1) y el mar alcanza el horizonte bajo la bruma.
+    glEnable(GL_DEPTH_CLAMP);
+    glDepthFunc(GL_LEQUAL);
     world.sea.draw();
+    glDepthFunc(GL_LESS);
+    glDisable(GL_DEPTH_CLAMP);
     water_shader_.set_int("u_is_sea", 0);
     if (world.water) {
         world.water->draw();

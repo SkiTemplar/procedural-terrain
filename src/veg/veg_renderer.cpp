@@ -34,6 +34,27 @@ constexpr glm::vec3 kFlowerTints[] = {
     {1.45f, 1.45f, 1.70f}, // blanco azulado
 };
 
+// Amplía el AABB de la celda con las instancias de un modelo: radio
+// horizontal del modelo (cualquier giro en Y) y su altura, por la escala.
+template <typename CellT>
+void grow_bounds(CellT& cell, const ModelData& model,
+                 const std::vector<render::Instance>& instances) {
+    float radius = 0.0f;
+    float y_lo = 0.0f;
+    float y_hi = 0.0f;
+    for (const render::Vertex& v : model.vertices) {
+        radius = std::max(radius, glm::length(glm::vec2{v.position.x, v.position.z}));
+        y_lo = std::min(y_lo, v.position.y);
+        y_hi = std::max(y_hi, v.position.y);
+    }
+    for (const render::Instance& inst : instances) {
+        const glm::vec3 p{inst.pos_scale};
+        const float s = inst.pos_scale.w;
+        cell.aabb_min = glm::min(cell.aabb_min, p + glm::vec3{-radius, y_lo, -radius} * s);
+        cell.aabb_max = glm::max(cell.aabb_max, p + glm::vec3{radius, y_hi, radius} * s);
+    }
+}
+
 } // namespace
 
 VegRenderer::VegRenderer(const terrain::TerrainData& data,
@@ -259,6 +280,7 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 if (!instances.empty()) {
                     dst.emplace_back(model.vertices, model.indices, instances);
                     total_instances_ += instances.size();
+                    grow_bounds(cell, model, instances);
                 }
             };
             add(cell.batches_far, pine, p.pines);
@@ -287,6 +309,29 @@ void VegRenderer::draw(const glm::vec3& camera_pos, float max_distance) const {
             for (const auto& batch : cell.batches_far) {
                 batch.draw();
             }
+        }
+        if (dist <= near_cutoff) {
+            for (const auto& batch : cell.batches_near) {
+                batch.draw();
+            }
+        }
+    }
+}
+
+void VegRenderer::draw_casters(const render::Frustum& light, const glm::vec3& camera_pos,
+                               float max_distance) const {
+    // Mismos cortes por distancia que draw(): solo proyecta lo que existe en
+    // pantalla. Además, celda a celda contra el volumen del sol de la cascada.
+    const glm::vec2 cam{camera_pos.x, camera_pos.z};
+    const float far_cutoff = max_distance + kCellSize * 0.71f;
+    const float near_cutoff = std::min(400.0f, max_distance) + kCellSize * 0.71f;
+    for (const Cell& cell : cells_) {
+        const float dist = glm::length(cam - cell.center);
+        if (dist > far_cutoff || !light.intersects(cell.aabb_min, cell.aabb_max)) {
+            continue;
+        }
+        for (const auto& batch : cell.batches_far) {
+            batch.draw();
         }
         if (dist <= near_cutoff) {
             for (const auto& batch : cell.batches_near) {

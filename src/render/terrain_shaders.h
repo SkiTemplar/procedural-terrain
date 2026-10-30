@@ -1,56 +1,10 @@
 #pragma once
 
+#include "render/atmosphere_glsl.h"
+#include "render/shadow_shaders.h"
 #include "render/terrain_shader_constants.h"
 
 namespace render {
-
-// Trozo GLSL compartido: cielo analítico + niebla con altura (C4-L4, sol fijo).
-// Se inserta por concatenación de literales tras las declaraciones de cada
-// fragment shader — una sola definición para terreno/vegetación, hierba, agua
-// y el pase de cielo, de modo que la niebla de CUALQUIER material funde
-// exactamente al color del cielo en esa dirección de vista.
-#define PT_GLSL_SKY_COMMON R"glsl(
-uniform vec3 u_sun_dir;       // hacia el sol, normalizado
-uniform float u_fog_density;  // densidad de bruma a nivel del mar (y=0)
-
-// Cielo de sol fijo: gradiente cenit→horizonte (Rayleigh de juguete) más dos
-// lóbulos cálidos alrededor del sol (Mie ancho + halo cercano). Devuelve color
-// SIN tonemapear: el terreno mezcla su color ya tonemapeado hacia este valor,
-// y el pase de cielo lo pinta tal cual — así la fusión en el horizonte es exacta.
-vec3 sky_color(vec3 dir) {
-    float up = max(dir.y, 0.0);
-    float horizon_k = pow(1.0 - up, 4.0);
-    vec3 zenith = vec3(0.25, 0.44, 0.80);
-    vec3 horizon = vec3(0.72, 0.80, 0.90);
-    vec3 sky = mix(zenith, horizon, horizon_k);
-    float s = max(dot(dir, u_sun_dir), 0.0);
-    sky += vec3(1.00, 0.72, 0.42) * 0.14 * pow(s, 6.0);
-    sky += vec3(1.00, 0.86, 0.62) * 0.30 * pow(s, 48.0);
-    return sky;
-}
-
-// Niebla exponencial CON ALTURA: la densidad decae exp(-y/H) — el mar y los
-// valles guardan bruma, las cumbres respiran aire limpio. La profundidad
-// óptica del rayo cámara→fragmento tiene integral analítica; el término
-// residual (independiente de la altura) es la perspectiva aérea que nunca
-// desaparece por alto que vueles.
-float fog_amount(vec3 cam_pos, vec3 frag_pos) {
-    const float kInvH = 1.0 / 500.0;   // H = 500 m: altura de escala de la bruma
-    const float kResidual = 0.15;      // fracción de densidad sin decaimiento
-    vec3 d = frag_pos - cam_pos;
-    float dist = length(d);
-    float dy = d.y;
-    float column;                      // integral de exp(-y/H) sobre el rayo
-    if (abs(dy) < 1.0) {
-        column = exp(-cam_pos.y * kInvH) * dist;
-    } else {
-        column = dist * (exp(-cam_pos.y * kInvH) - exp(-frag_pos.y * kInvH))
-               / (dy * kInvH);
-    }
-    float od = u_fog_density * (column + kResidual * dist);
-    return 1.0 - exp(-od);
-}
-)glsl"
 
 // Flat shading sin duplicar vértices: la normal por cara sale de las derivadas
 // de pantalla (dFdx/dFdy) y el color va `flat` (un color por triángulo).
@@ -106,6 +60,7 @@ uniform vec3 u_layer_mean[10];
 
 out vec4 frag_color;
 )glsl" PT_GLSL_SKY_COMMON R"glsl(
+)glsl" PT_GLSL_SHADOW_COMMON R"glsl(
 float hash12(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
     p += dot(p, p + 45.32);
@@ -348,14 +303,6 @@ void terrain_detail(vec3 base_normal, float dist_cam, vec3 dpdx, vec3 dpdy,
                                   min(strength, 1.0)));
 }
 
-// Tonemapping ACES (Narkowicz): rolloff fílmico del rango alto → contraste y
-// color sin quemar. La luz del sol aporta >1 en las caras iluminadas, así que
-// hay rango que comprimir (antes el sombreado era plano y lavado).
-vec3 aces(vec3 x) {
-    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14),
-                 0.0, 1.0);
-}
-
 void main() {
     // Sombreado del terreno: el sombreado suave emplea el normal map continuo
     // del heightfield completo (calculado en CPU con Scharr 3x3) y color suave
@@ -407,8 +354,17 @@ void main() {
     // atenúa el ambiente hemisférico — valles y pies de acantilado se asientan.
     // La sombra conserva el ambiente: una ladera en sombra la ilumina el cielo,
     // no queda negra.
+    // Sombra en tiempo real (CSM): árboles, rocas y relieve fino a escala de
+    // texel; se queda con la más oscura de las dos dentro del alcance de las
+    // cascadas y, más allá, csm_visibility vale 1 y manda la precomputada
+    // (las montañas siguen sombreando los valles lejanos). Solo se consulta
+    // donde el sol llega: en las caras de espaldas diffuse ya es 0.
+    float sun_vis = v_light.x;
+    if (diffuse > 0.0) {
+        sun_vis = min(sun_vis, csm_visibility(v_world_pos, n_flat));
+    }
     vec3 lit = albedo * (0.34 * hemi * v_light.y
-                         + 1.15 * diffuse * sun_color * v_light.x);
+                         + 1.15 * diffuse * sun_color * sun_vis);
 
     // Textura procedural sutil en dos escalas (~1.5 m y ~9 m): rompe el color
     // plano de cada cara sin perder la estética low-poly. Se atenúa de lejos
@@ -420,10 +376,9 @@ void main() {
         lit *= 1.0 + (tex - 0.5) * 0.10 * tex_fade;
     }
 
-    lit = aces(lit); // tonemap antes de la niebla (que ya va en rango de pantalla)
-    vec3 view_dir = (v_world_pos - u_camera_pos) / max(dist_cam, 1e-4);
-    float fog = fog_amount(u_camera_pos, v_world_pos);
-    vec3 color = mix(lit, sky_color(view_dir), fog);
+    // Perspectiva aérea en HDR lineal y después el tonemap común (la luz del
+    // sol aporta >1 en las caras iluminadas: ACES comprime ese rango).
+    vec3 color = tonemap(apply_atmosphere(lit, u_camera_pos, v_world_pos));
 
     frag_color = vec4(color, 1.0);
 }
@@ -526,11 +481,8 @@ uniform vec3 u_camera_pos;
 
 out vec4 frag_color;
 )glsl" PT_GLSL_SKY_COMMON R"glsl(
+)glsl" PT_GLSL_SHADOW_COMMON R"glsl(
 float hash(float n) { return fract(sin(n) * 43758.5453); }
-vec3 aces(vec3 x) {
-    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14),
-                 0.0, 1.0);
-}
 
 void main() {
     // Briznas procedurales dentro del card: u se reparte en columnas; cada
@@ -558,376 +510,20 @@ void main() {
 
     vec3 normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
     float diffuse = max(abs(dot(normal, u_sun_dir)), 0.0); // hoja fina: 2 caras
-    vec3 lit = aces(col * (0.40 + 1.10 * diffuse)); // mismo rebalance + tonemap
-    vec3 view_dir = normalize(v_world_pos - u_camera_pos);
-    float fog = fog_amount(u_camera_pos, v_world_pos);
-    frag_color = vec4(mix(lit, sky_color(view_dir), fog), 1.0);
+    // Solo receptora de la CSM (no proyecta): normal offset hacia arriba,
+    // la brizna es fina y de doble cara.
+    float sun_vis = csm_visibility(v_world_pos, vec3(0.0, 1.0, 0.0));
+    vec3 lit = col * (0.40 + 1.10 * diffuse * sun_vis); // mismo rebalance que el terreno
+    frag_color = vec4(tonemap(apply_atmosphere(lit, u_camera_pos, v_world_pos)), 1.0);
 }
 )glsl";
 
-// Agua: olas suaves por vértice, semitransparente, con la misma niebla.
-// C4-W1: color y alpha por PROFUNDIDAD REAL (Beer-Lambert) — los ríos llevan
-// su calado por vértice (a_normal.y, malla a resolución plena); el mar lo
-// muestrea por píxel de u_seabed (r = calado, g = energía de oleaje).
-constexpr const char* kWaterVert = R"glsl(
-#version 460 core
-layout (location = 0) in vec3 a_pos;
-layout (location = 1) in vec3 a_color;
-layout (location = 2) in vec3 a_normal; // ríos: (v.x m/s, calado m, v.z m/s)
-layout (location = 3) in vec2 a_light;  // x = whitewater (0/0.5/1), y = 1 en lagos
+} // namespace render
 
-uniform mat4 u_view;
-uniform mat4 u_proj;
-uniform float u_time;
-uniform vec3 u_camera_pos;
-uniform vec3 u_wave_dir; // xz = dirección de VIAJE del oleaje dominante
-uniform int u_is_sea;    // 1 = plano del mar, 0 = malla de ríos/lagos
-uniform float u_sea_level; // m
-uniform float u_sea_half;  // semiancho del plano del mar (m)
-uniform float u_sea_grid;  // quads por lado del plano del mar
+// Agua (mar, ríos y lagos): bloque propio, usa PT_GLSL_SKY_COMMON.
+#include "render/water_shaders.h"
 
-out vec3 v_world_pos;
-flat out vec3 v_color;
-out vec3 v_river; // (velocidad.x, calado, velocidad.z) interpolado
-out float v_ww;   // whitewater interpolado
-out float v_remanso; // 1 = lámina de río a cota de mar (estuario)
-
-// Ola de vértice del mar de fondo en un punto (C4-W4: viaja con la rosa de
-// vientos, dos trenes, el secundario sesgado ~20°). Se aplana con la
-// distancia: a >4 km una ola de 15 cm subtiende <0.5 px y solo aporta ruido
-// de normal a incidencia rasante.
-float swell_at(vec2 xz) {
-    float dist = length(xz - u_camera_pos.xz);
-    float wave_k = clamp(1.0 - (dist - 2000.0) / 2000.0, 0.0, 1.0);
-    vec2 wd = normalize(u_wave_dir.xz + vec2(1e-5, 0.0));
-    vec2 wd2 = normalize(wd + vec2(-wd.y, wd.x) * 0.35);
-    return wave_k * (0.15 * sin(dot(xz, wd) * 0.05 - u_time * 1.1)
-                     + 0.08 * sin(dot(xz, wd2) * 0.13 - u_time * 1.7));
-}
-
-// Altura de ola del PLANO DEL MAR en xz: la que interpola su rejilla de
-// u_sea_grid² quads (triángulos tl-bl-tr / tr-bl-br, ver build_sea_plane).
-float sea_plane_swell(vec2 xz) {
-    float cell = 2.0 * u_sea_half / u_sea_grid;
-    vec2 g = (xz + vec2(u_sea_half)) / cell;
-    vec2 q = clamp(floor(g), vec2(0.0), vec2(u_sea_grid - 1.0));
-    vec2 f = g - q;
-    vec2 o = q * cell - vec2(u_sea_half);
-    float tl = swell_at(o);
-    float tr = swell_at(o + vec2(cell, 0.0));
-    float bl = swell_at(o + vec2(0.0, cell));
-    float br = swell_at(o + vec2(cell, cell));
-    return f.x + f.y <= 1.0 ? tl + f.x * (tr - tl) + f.y * (bl - tl)
-                            : br + (1.0 - f.x) * (bl - br) + (1.0 - f.y) * (tr - br);
-}
-
-void main() {
-    vec3 p = a_pos;
-    // Los RÍOS no ondulan por vértice (auditoría 2026-10 #1): la fase
-    // dot(pos, dir) con direcciones distintas en vértices vecinos daba alturas
-    // sin correlación (la lámina "vibraba"). Su movimiento lo pone el flow map
-    // del fragment shader. Mar y lagos (a_light.y = 1) llevan oleaje de viento.
-    v_remanso = 0.0;
-    if (u_is_sea == 1 || a_light.y > 0.5) {
-        p.y += swell_at(a_pos.xz);
-    } else {
-        // REMANSO DEL ESTUARIO: la lámina a cota de mar sube y baja con el
-        // plano del mar (su misma interpolación), así que en la costura las
-        // dos superficies coinciden y el recorte del mar no deja grietas.
-        v_remanso = 1.0 - smoothstep(0.05, 0.5, a_pos.y - u_sea_level);
-        p.y += v_remanso * sea_plane_swell(a_pos.xz);
-    }
-    v_world_pos = p;
-    v_color = a_color;
-    v_river = a_normal;
-    v_ww = a_light.x;
-    gl_Position = u_proj * u_view * vec4(p, 1.0);
-}
-)glsl";
-
-constexpr const char* kWaterFrag = R"glsl(
-#version 460 core
-in vec3 v_world_pos;
-flat in vec3 v_color;
-in vec3 v_river;
-in float v_ww;
-in float v_remanso;
-
-uniform vec3 u_camera_pos;
-uniform int u_is_sea;        // 1 = plano del mar, 0 = malla de ríos/lagos
-uniform sampler2D u_seabed;  // r = calado bajo el mar (m), g = energía oleaje
-uniform sampler2D u_sea_clip; // 1 = la lámina de río/lago cubre el quad (NEAREST)
-uniform float u_domain_half; // semiancho del heightfield (m)
-uniform float u_time;
-uniform vec3 u_wave_dir;     // xz = dirección de VIAJE del oleaje dominante
-uniform float u_wind_focus;  // 0 = mar isótropo, 1 = todo del viento dominante
-uniform float u_wave_hmax;     // H_s del mar abierto (m), terrain::kOpenSeaWaveHeightM
-uniform float u_breaker_index; // γ de rotura por fondo, terrain::kBreakerIndex
-
-out vec4 frag_color;
-)glsl" PT_GLSL_SKY_COMMON R"glsl(
-float w_hash12(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
-}
-
-float w_vnoise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float a = w_hash12(i);
-    float b = w_hash12(i + vec2(1.0, 0.0));
-    float c = w_hash12(i + vec2(0.0, 1.0));
-    float d = w_hash12(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
-
-// Ruido de valor con derivadas analíticas: (valor, d/dx, d/dz).
-vec3 w_vnoise_d(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    vec2 du = 6.0 * f * (1.0 - f);
-    float a = w_hash12(i);
-    float b = w_hash12(i + vec2(1.0, 0.0));
-    float c = w_hash12(i + vec2(0.0, 1.0));
-    float d = w_hash12(i + vec2(1.0, 1.0));
-    float k1 = b - a;
-    float k2 = c - a;
-    float k3 = a - b - c + d;
-    return vec3(a + k1 * u.x + k2 * u.y + k3 * u.x * u.y,
-                du.x * (k1 + k3 * u.y),
-                du.y * (k2 + k3 * u.x));
-}
-
-// Pendiente del rizado de corriente (dos octavas, ~0.8 m y ~0.3 m).
-vec2 ripple_slope(vec2 p) {
-    vec3 n1 = w_vnoise_d(p * 1.3);
-    vec3 n2 = w_vnoise_d(p * 3.1 + vec2(17.3, -9.1));
-    return n1.yz * (1.3 * 0.030) + n2.yz * (3.1 * 0.012);
-}
-
-// FLOW MAP de dos fases (Vlachos 2010): el patrón se desplaza con la
-// corriente −v·φ·T y dos capas desfasadas medio periodo se cruzan con peso
-// |1 − 2φ0|, de modo que cada capa se reinicia cuando su peso es nulo. No
-// depende de la posición absoluta ni de una dirección interpolada: el rizado
-// viaja a la velocidad física, es rápido en los rápidos y nulo en lagos.
-//
-// El desplazamiento por ciclo se acota a kMaxCycleShift: con |v|·T de varios
-// metros frente a un rizado de 0.3-0.8 m, el gradiente lateral de velocidad
-// (eje rápido, orilla quieta) cizallaba y estiraba el patrón. Por encima de
-// kMaxCycleShift/T (2 m/s) el rizado deja de acelerar; la física completa
-// sigue en la rugosidad y en la espuma, que dependen de la velocidad real.
-const float kFlowPeriod = 1.0;    // s
-const float kMaxCycleShift = 2.0; // m por ciclo
-vec2 flow_advection(vec2 vel) {
-    float shift = length(vel) * kFlowPeriod;
-    return shift > kMaxCycleShift ? vel * (kMaxCycleShift / shift) : vel;
-}
-vec3 flow_phases(vec2 pos) {
-    // Desfase espacial lento: los reinicios no laten en sincronía.
-    float t = u_time / kFlowPeriod + w_vnoise(pos * 0.04);
-    float ph0 = fract(t);
-    return vec3(ph0, fract(t + 0.5), abs(1.0 - 2.0 * ph0));
-}
-
-// C4-W4: normal ANALÍTICA del oleaje por píxel (independiente de la rejilla
-// de 625 m del plano del mar): tres trenes de ola alrededor de la dirección de
-// viaje de la rosa de vientos — con focalización alta van casi alineados, con
-// mar isótropo se abren en abanico. El sol-glitter y el fresnel salen por
-// píxel, no por parche de malla. La comparten el mar y el remanso del estuario.
-vec3 sea_wave_normal(float dist, vec2 wd) {
-    vec2 perp = vec2(-wd.y, wd.x);
-    float spread = 1.0 - 0.75 * u_wind_focus;
-    vec2 d1 = normalize(wd + perp * 0.55 * spread);
-    vec2 d2 = normalize(wd - perp * 0.45 * spread);
-    vec2 d3 = normalize(wd + perp * 0.18 * spread);
-    // FASE MODULADA por ruido lento (feedback 2026-07-13 "patrones raros
-    // en los píxeles"): tres senoides puras interferían en un moiré
-    // periódico sintético; el jitter espacial rompe la retícula sin
-    // cambiar la dirección de viaje.
-    float jit = w_vnoise(v_world_pos.xz * 0.012) * 6.2831853;
-    float p1 = dot(v_world_pos.xz, d1) * 0.150 - u_time * 1.5 + jit;
-    float p2 = dot(v_world_pos.xz, d2) * 0.330 - u_time * 2.3 + jit * 0.7;
-    float p3 = dot(v_world_pos.xz, d3) * 0.700 - u_time * 3.4 + jit * 1.4;
-    // Las olas se aplanan con la distancia (mismo criterio que las de
-    // vértice); el tren CORTO muere mucho antes — a media distancia su
-    // longitud de onda cae bajo el píxel y solo aporta aliasing.
-    float wave_k = clamp(1.0 - (dist - 2000.0) / 2000.0, 0.0, 1.0);
-    float near_k = clamp(1.0 - (dist - 250.0) / 600.0, 0.0, 1.0);
-    vec2 slope = d1 * (0.14 * cos(p1)) + d2 * (0.10 * cos(p2))
-               + d3 * (0.07 * cos(p3) * near_k);
-    slope *= wave_k;
-    return normalize(vec3(-slope.x, 1.0, -slope.y));
-}
-
-void main() {
-    float dist = length(v_world_pos - u_camera_pos);
-    vec3 view_dir = normalize(u_camera_pos - v_world_pos);
-    vec2 wd = normalize(u_wave_dir.xz + vec2(1e-5, 0.0));
-
-    vec3 normal;
-    float wall_k = 0.0; // 1 = "pared de agua" del borde de la cinta del río
-    vec2 vel = v_river.xz;
-    float speed = length(vel);
-    if (u_is_sea == 1) {
-        normal = sea_wave_normal(dist, wd);
-    } else {
-        normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
-        // PARED DE AGUA (feedback 2026-07-13 "tensión superficial con muros
-        // de un metro"): en el borde de la cinta, los triángulos que caen de
-        // la lámina a la orilla se vuelven casi verticales y el fresnel los
-        // encendía como cortinas. Se desvanecen — SALVO en cascadas y rápidos
-        // declarados (whitewater), donde la cortina es real y a propósito.
-        wall_k = (1.0 - smoothstep(0.30, 0.60, normal.y))
-               * (1.0 - smoothstep(0.40, 0.75, v_ww));
-        // C4-W3: rizado advectado por la corriente real (flow map). La
-        // rugosidad crece con la velocidad (agua lenta casi lisa, rápidos
-        // picados); con v ≈ 0 (remanso quieto) no hay rizado de corriente.
-        if (speed > 0.02) {
-            vec3 ph = flow_phases(v_world_pos.xz);
-            vec2 adv = flow_advection(vel);
-            vec2 s0 = ripple_slope(v_world_pos.xz - adv * (ph.x * kFlowPeriod));
-            vec2 s1 = ripple_slope(v_world_pos.xz - adv * (ph.y * kFlowPeriod)
-                                   + vec2(31.7, 12.9));
-            float rough = mix(0.45, 1.0, smoothstep(0.2, 2.0, speed));
-            vec2 slope = mix(s0, s1, ph.z) * rough;
-            normal = normalize(normal + vec3(-slope.x, 0.0, -slope.y));
-        }
-        // REMANSO DEL ESTUARIO: la lámina a cota de mar ES el mar que entra
-        // en el cauce. Lleva el mismo oleaje por píxel que el plano del mar,
-        // así que la costura entre las dos mallas (escalonada a celda) no se
-        // lee como un cambio de superficie.
-        if (v_remanso > 0.0) {
-            normal = normalize(mix(normal, sea_wave_normal(dist, wd), v_remanso));
-        }
-    }
-
-    // Calado físico del punto: el color del agua sale de ÉL, no de un tinte.
-    float depth;
-    float wave_e = 0.0;
-    if (u_is_sea == 1) {
-        vec2 uv = (v_world_pos.xz + vec2(u_domain_half))
-                / (2.0 * u_domain_half);
-        // Fuera del heightfield el mar es abierto y hondo (el CLAMP del
-        // borde ya devuelve el fondo del perímetro, que es abisal).
-        // Cauce fluvial: el mar no se mete en el río. Se recorta en los quads
-        // que cubre la malla de agua interior (en el remanso enrasa con el mar
-        // y es la única superficie); fuera del dominio la textura devuelve el
-        // borde (0 = mar). El remanso ondula con el plano del mar (vértice) y
-        // en la costura las dos superficies coinciden; el recorte se encoge
-        // kSeaClipMargin para que la rasterización de las dos mallas solape
-        // en vez de dejar grietas de un píxel con el fondo a la vista.
-        const float kSeaClipMargin = 0.05; // m
-        float e = kSeaClipMargin / (2.0 * u_domain_half);
-        float clip = min(min(texture(u_sea_clip, uv + vec2(e, e)).r,
-                             texture(u_sea_clip, uv + vec2(-e, e)).r),
-                         min(texture(u_sea_clip, uv + vec2(e, -e)).r,
-                             texture(u_sea_clip, uv + vec2(-e, -e)).r));
-        if (clip > 0.5) {
-            discard;
-        }
-        vec2 de = texture(u_seabed, clamp(uv, 0.0, 1.0)).rg;
-        depth = max(de.r, 0.0);
-        wave_e = de.g;
-    } else {
-        depth = max(v_river.y, 0.0);
-    }
-
-    // Fresnel de Schlick: mirando al agua de frente se ve el fondo (alpha
-    // baja, color profundo); en ángulo rasante refleja el cielo (alpha alta).
-    float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(view_dir, normal), 0.0), 5.0);
-
-    float diffuse = max(dot(normal, u_sun_dir), 0.0);
-    // Beer-Lambert por canal: el rojo se absorbe primero, el azul-verde llega
-    // al fondo. Somero → agua clara que enseña la arena; hondo → azul denso.
-    // Tono somero contenido (feedback 2026-07-13 "el río parece desbordado"):
-    // el turquesa chillón en los márgenes de la cinta leía la lámina de
-    // orilla como agua de más — el color claro queda para calados medios.
-    vec3 k_abs = vec3(0.42, 0.19, 0.11);
-    vec3 trans = exp(-depth * k_abs);
-    vec3 deep = vec3(0.06, 0.20, 0.30);
-    vec3 shallow = mix(vec3(0.28, 0.44, 0.42), v_color, 0.30);
-    vec3 body = mix(deep, shallow, trans) * (0.45 + 0.55 * diffuse);
-    // Refleja el CIELO REAL en la dirección especular (no un color plano):
-    // el agua de cara al sol coge su calidez; la opuesta, el azul del cenit.
-    vec3 refl = reflect(-view_dir, normal);
-    refl.y = abs(refl.y); // el espejo del agua nunca mira bajo el horizonte
-    vec3 lit = mix(body, sky_color(refl), fresnel * 0.85);
-
-    // Especular del sol, más nítido sobre el agua. Las paredes de borde de
-    // cinta no brillan (eran el destello metálico de los "muros de agua").
-    vec3 half_dir = normalize(view_dir + u_sun_dir);
-    lit += vec3(0.45) * pow(max(dot(normal, half_dir), 0.0), 96.0)
-         * (1.0 - wall_k);
-
-    // Espuma. C4-W3 en ríos: vetas blancas que corren con el agua donde la
-    // hidrología marcó whitewater (0.5 = rápidos, 1 = caída). C4-W2 en el
-    // mar: franja de rompiente donde el fondo roza la superficie, con
-    // intensidad ∝ energía de OLEAJE REAL (fetch/REI) — la costa batida
-    // rompe blanco, la abrigada apenas espumea. Nada decorativo: ambas salen
-    // de campos simulados.
-    float foam = 0.0;
-    if (u_is_sea == 1) {
-        // ROTURA POR FONDO (auditoría 2026-10 #3): H_s = H_abierto·√E (oleaje
-        // limitado por fetch) y la ola rompe donde H ≥ γ·h, así que la zona
-        // de rompiente acaba en h_b = H_s/γ y su anchura la da la pendiente
-        // real del fondo (playa tendida: ancha; acantilado: una línea). La
-        // blancura crece con la altura de ola: costa batida blanca, abrigo
-        // (H_s < 0.3 m) sin espuma de rompiente.
-        float h_s = u_wave_hmax * sqrt(wave_e);
-        float h_b = h_s / u_breaker_index;
-        float surf = 1.0 - smoothstep(0.35 * h_b, 1.15 * h_b, depth);
-        float whiteness = smoothstep(0.3, 1.1, h_s);
-        float chop = w_vnoise(v_world_pos.xz * 0.45 - wd * (u_time * 1.4));
-        float pulse = 0.5
-            + 0.5 * sin(dot(v_world_pos.xz, wd) * 0.30 - u_time * 1.8
-                        + chop * 2.6);
-        foam = clamp(surf * whiteness * (0.35 + 0.65 * pulse), 0.0, 1.0);
-    } else if (v_ww > 0.05) {
-        // Vetas de espuma arrastradas por la corriente (mismo flow map).
-        vec3 ph = flow_phases(v_world_pos.xz);
-        vec2 adv = flow_advection(vel);
-        float f0 = w_vnoise((v_world_pos.xz - adv * (ph.x * kFlowPeriod)) * 0.9);
-        float f1 = w_vnoise((v_world_pos.xz - adv * (ph.y * kFlowPeriod)) * 0.9
-                            + vec2(7.3, -3.1));
-        float streak = smoothstep(0.30, 0.75, mix(f0, f1, ph.z));
-        foam = clamp(v_ww * (0.40 + 0.60 * streak), 0.0, 1.0);
-    }
-    lit = mix(lit, vec3(0.88, 0.92, 0.95), foam * 0.55);
-
-    float fog = fog_amount(u_camera_pos, v_world_pos);
-    vec3 color = mix(lit, sky_color(-view_dir), fog);
-
-    // Opacidad creciente con la distancia: a >6 km el ángulo es rasante y el
-    // camino de luz bajo el agua tan largo que el fondo nunca se ve — sin esto
-    // el rectángulo del heightfield se marcaba en el mar (el fondo tras el
-    // alpha cambiaba de lecho marino a océano del cielo justo en su borde).
-    float opaque_k = clamp((dist - 1500.0) / 4500.0, 0.0, 1.0);
-    // Alpha por calado (W1): la lámina de <20 cm es CASI INVISIBLE — los
-    // márgenes someros de la cinta del río se funden con la orilla mojada y
-    // el río se lee con su anchura de canal real, no "desbordado" (feedback
-    // 2026-07-13). El cuerpo con calado manda enseguida (k=0.9). El FRESNEL
-    // también escala por calado: una película de 5 cm rota por el fondo no
-    // refleja como superficie continua — sin esto, el ángulo rasante volvía
-    // a opacar los márgenes que el alpha somero acababa de fundir.
-    float depth_k = 1.0 - exp(-depth * 0.9);
-    float alpha = mix(mix(0.06, 0.68, depth_k), 0.95, fresnel * depth_k);
-    alpha = mix(alpha, 0.97, opaque_k);
-    // FLECO de orilla (feedback 2026-07-14, borde dentado): en el agua somera
-    // el borde se deshilacha con ruido fino en vez de cortar al escalón de la
-    // celda — rompe la percepción de diente de sierra del contorno.
-    if (u_is_sea == 0 && depth_k < 0.5) {
-        float fringe = w_vnoise(v_world_pos.xz * 1.7);
-        alpha *= mix(0.4 + 0.6 * fringe, 1.0, depth_k * 2.0);
-    }
-    alpha = mix(alpha, 0.96, foam); // la espuma es agua aireada: opaca
-    // La pared de borde de cinta se desvanece (la orilla real queda detrás).
-    alpha *= 1.0 - 0.85 * wall_k;
-    frag_color = vec4(color, alpha);
-}
-)glsl";
+namespace render {
 
 // Pase de cielo (C4-L4): triángulo fullscreen sin VBO (gl_VertexID) que pinta
 // el gradiente atmosférico y el disco solar. Se dibuja con el depth test
@@ -951,36 +547,46 @@ uniform vec3 u_camera_pos;
 
 out vec4 frag_color;
 )glsl" PT_GLSL_SKY_COMMON R"glsl(
+// Disco solar de radio aparente real (0.27°) con oscurecimiento del limbo
+// (ley lineal, u = 0.6): radiancia E_sol / Ω atenuada por la misma
+// transmitancia que ilumina la escena. Tras ACES satura a blanco; el borde se
+// suaviza en el último 15 % del radio (≈ medio píxel a 1080p).
+vec3 sun_disc(vec3 dir) {
+    float r = length(cross(dir, u_sun_dir)) / kSunAngularRadius;
+    if (r >= 1.0 || dot(dir, u_sun_dir) <= 0.0) {
+        return vec3(0.0);
+    }
+    float limb = 1.0 - 0.6 * (1.0 - sqrt(1.0 - r * r));
+    float edge = 1.0 - smoothstep(0.85, 1.0, r);
+    const float solid_angle = 3.14159265 * kSunAngularRadius * kSunAngularRadius;
+    return (kSunIrradiance / solid_angle) * sun_transmittance(u_camera_pos.y)
+         * (limb * edge);
+}
+
 void main() {
     vec4 p = u_inv_vp * vec4(v_ndc, 1.0, 1.0);
     vec3 dir = normalize(p.xyz / p.w);
 
-    vec3 col;
+    vec3 radiance;
     if (dir.y >= 0.0) {
-        // Disco solar (~1° de radio aparente, borde suave) sobre el gradiente.
-        // Supera 1.0 a propósito: es el sol, satura a blanco en pantalla.
-        float s = dot(dir, u_sun_dir);
-        float disc = smoothstep(0.99985, 0.99996, s);
-        col = sky_color(dir) + disc * vec3(1.0, 0.96, 0.88) * 2.2;
+        radiance = sky_color(dir) + sun_disc(dir);
     } else {
         // OCÉANO INFINITO bajo el horizonte: la malla del mar acaba en el far
-        // plane (o en su borde a ±20 km) y a gran altitud la niebla ya no
-        // satura ahí — sin esto, el corte geométrico se ve contra el cielo.
-        // Mismo modelo que kWaterFrag a distancia (cuerpo + reflejo rasante
-        // del cielo + niebla), sin olas: a >20 km no se resuelven.
+        // plane (o en su borde a ±20 km) — sin esto, el corte geométrico se
+        // ve contra el cielo. Mismo modelo que kWaterFrag a distancia: fondo
+        // abisal (Beer-Lambert ya saturado → color profundo), normal vertical
+        // (difusa = altura del sol) y reflejo rasante del cielo, con la misma
+        // perspectiva aérea hasta el punto de corte con el mar.
         float dist = max(u_camera_pos.y, 1.0) / max(-dir.y, 1e-4);
-        vec3 hit = u_camera_pos + dir * dist;
         float fresnel = 0.04 + 0.96 * pow(1.0 + dir.y, 5.0);
         const vec3 deep = vec3(0.06, 0.20, 0.30);
-        const vec3 sea_col = vec3(0.13, 0.32, 0.50);
-        vec3 body = mix(deep, sea_col, 0.45)
-                  * (0.45 + 0.55 * max(u_sun_dir.y, 0.0));
+        vec3 body = deep * (0.45 + 0.55 * max(u_sun_dir.y, 0.0));
         vec3 refl = vec3(dir.x, -dir.y, dir.z);
         vec3 lit = mix(body, sky_color(refl), fresnel * 0.85);
-        col = mix(lit, sky_color(dir), fog_amount(u_camera_pos, hit));
+        radiance = atmosphere_segment(lit, u_camera_pos, dir, dist);
     }
 
-    frag_color = vec4(col, 1.0);
+    frag_color = vec4(tonemap(radiance), 1.0);
 }
 )glsl";
 

@@ -53,7 +53,33 @@ float value_noise(float x, float z) {
 
 namespace {
 
-const glm::vec3 kLakeColor{0.16f, 0.36f, 0.52f};
+// Pendiente máxima de la normal de lámina: por encima solo hay cascadas, que
+// ya pinta la espuma; acota el vuelco de las celdas de orilla hundidas.
+constexpr float kMaxSurfaceSlope = 0.35f;
+
+// Altura de lámina de la muestra (x, z) o la de (cx, cz) si está fuera del
+// dominio o la malla no la usa (NaN): diferencia lateral en la orilla.
+float surface_y_or(const WaterSurface& s, int x, int z, int cx, int cz) {
+    if (x < 0 || z < 0 || x >= s.res || z >= s.res) {
+        return s.vertex_y[static_cast<size_t>(cz) * s.res + cx];
+    }
+    const float y = s.vertex_y[static_cast<size_t>(z) * s.res + x];
+    return std::isnan(y) ? s.vertex_y[static_cast<size_t>(cz) * s.res + cx] : y;
+}
+
+// Normal SUAVE de la lámina por diferencias centrales de su altura (la de la
+// malla). Interpolada por vértice sustituye a la normal de cara dFdx/dFdy,
+// cuyo salto entre triángulos vecinos dibujaba un damero en el reflejo.
+glm::vec3 surface_normal(const WaterSurface& s, int x, int z, float cell) {
+    const float dx = surface_y_or(s, x + 1, z, x, z) - surface_y_or(s, x - 1, z, x, z);
+    const float dz = surface_y_or(s, x, z + 1, x, z) - surface_y_or(s, x, z - 1, x, z);
+    glm::vec2 slope{dx / (2.0f * cell), dz / (2.0f * cell)};
+    const float len = glm::length(slope);
+    if (len > kMaxSurfaceSlope) {
+        slope *= kMaxSurfaceSlope / len;
+    }
+    return glm::normalize(glm::vec3{-slope.x, 1.0f, -slope.y});
+}
 
 } // namespace
 
@@ -88,7 +114,6 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
             return vertex_of[i];
         }
         const float y = surface.vertex_y[i];
-        const float tint = 0.95f + 0.10f * hash01(x, z);
         vertex_of[i] = static_cast<std::uint32_t>(vertices.size());
         // C4-W1: PROFUNDIDAD REAL por vértice (lámina − lecho) en normal.y —
         // el canal normal está libre en el agua. El shader la usa para el
@@ -102,8 +127,10 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
         const float ww =
             static_cast<float>(data.hydrology.whitewater[i]) * 0.5f;
         const float is_lake = data.hydrology.lake[i] ? 1.0f : 0.0f;
+        // color = normal suave de la lámina (el agua no lleva tinte: su
+        // color sale de la óptica del shader).
         vertices.push_back({{hf.world_x(x), y, hf.world_z(z)},
-                            kLakeColor * tint,
+                            surface_normal(surface, x, z, hf.cell_size()),
                             {vel.x, depth, vel.y},
                             {ww, is_lake}});
         return vertex_of[i];
@@ -128,24 +155,75 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
     return render::Mesh{vertices, indices};
 }
 
+namespace {
+
+// Contorno de la rejilla del mar (índices de vértice) en sentido único,
+// empezando en la esquina (0, 0): 4·kRes vértices sin repetir.
+std::vector<std::uint32_t> sea_grid_border(int res) {
+    std::vector<std::uint32_t> border;
+    border.reserve(static_cast<size_t>(4 * res));
+    const auto at = [res](int x, int z) {
+        return static_cast<std::uint32_t>(z * (res + 1) + x);
+    };
+    for (int x = 0; x < res; ++x) border.push_back(at(x, 0));
+    for (int z = 0; z < res; ++z) border.push_back(at(res, z));
+    for (int x = res; x > 0; --x) border.push_back(at(x, res));
+    for (int z = res; z > 0; --z) border.push_back(at(0, z));
+    return border;
+}
+
+// FALDÓN HASTA EL HORIZONTE: un anillo de quads une el contorno de la
+// rejilla con un círculo de kSeaHorizonRadiusM. La Tierra plana del mundo no
+// tiene horizonte geométrico; a esa distancia la niebla con altura ya ha
+// saturado al color del cielo desde cualquier altitud de vuelo, así que el
+// mar se funde en la bruma sin borde recto. El render lo dibuja con depth
+// clamp (el anillo queda más allá del plano lejano de la cámara).
+void append_sea_skirt(std::vector<render::Vertex>& vertices,
+                      std::vector<std::uint32_t>& indices, int res, float sea_level) {
+    const std::vector<std::uint32_t> border = sea_grid_border(res);
+    const auto first_outer = static_cast<std::uint32_t>(vertices.size());
+    for (const std::uint32_t b : border) {
+        const glm::vec3 p = vertices[b].position;
+        const glm::vec2 dir = glm::normalize(glm::vec2{p.x, p.z});
+        vertices.push_back({{dir.x * kSeaHorizonRadiusM, sea_level,
+                             dir.y * kSeaHorizonRadiusM},
+                            {0.0f, 1.0f, 0.0f}});
+    }
+    const auto n = static_cast<std::uint32_t>(border.size());
+    for (std::uint32_t k = 0; k < n; ++k) {
+        const std::uint32_t k1 = (k + 1) % n;
+        const std::uint32_t a = border[k], b = border[k1];
+        const std::uint32_t c = first_outer + k1, d = first_outer + k;
+        // Mismo sentido de giro que la rejilla (normal geométrica +y).
+        const glm::vec3 e1 = vertices[b].position - vertices[a].position;
+        const glm::vec3 e2 = vertices[d].position - vertices[a].position;
+        if (glm::cross(e1, e2).y < 0.0f) {
+            indices.insert(indices.end(), {a, d, b, b, d, c});
+        } else {
+            indices.insert(indices.end(), {a, b, d, b, c, d});
+        }
+    }
+}
+
+} // namespace
+
 render::Mesh build_sea_plane(float island_size_m, float sea_level) {
     const float half = sea_plane_half(island_size_m);
-    const glm::vec3 sea_color{0.13f, 0.32f, 0.50f};
 
-    // Subdividido para que las olas de vértice del shader se noten.
+    // Subdividido para que las olas de vértice del shader se noten. El color
+    // del vértice es la normal de reposo de la lámina (+y), como en los ríos.
     constexpr int kRes = kSeaPlaneRes;
     std::vector<render::Vertex> vertices;
-    vertices.reserve((kRes + 1) * (kRes + 1));
+    vertices.reserve((kRes + 1) * (kRes + 1) + 4 * kRes);
     for (int z = 0; z <= kRes; ++z) {
         for (int x = 0; x <= kRes; ++x) {
             const float wx = -half + 2.0f * half * static_cast<float>(x) / kRes;
             const float wz = -half + 2.0f * half * static_cast<float>(z) / kRes;
-            const float tint = 0.96f + 0.08f * hash01(x, z);
-            vertices.push_back({{wx, sea_level, wz}, sea_color * tint});
+            vertices.push_back({{wx, sea_level, wz}, {0.0f, 1.0f, 0.0f}});
         }
     }
     std::vector<std::uint32_t> indices;
-    indices.reserve(kRes * kRes * 6);
+    indices.reserve(kRes * kRes * 6 + 4 * kRes * 6);
     for (int z = 0; z < kRes; ++z) {
         for (int x = 0; x < kRes; ++x) {
             const auto tl = static_cast<std::uint32_t>(z * (kRes + 1) + x);
@@ -155,6 +233,7 @@ render::Mesh build_sea_plane(float island_size_m, float sea_level) {
             indices.insert(indices.end(), {tl, bl, tr, tr, bl, br});
         }
     }
+    append_sea_skirt(vertices, indices, kRes, sea_level);
     return render::Mesh{vertices, indices};
 }
 

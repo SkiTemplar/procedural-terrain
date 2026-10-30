@@ -1,12 +1,16 @@
 #pragma once
 
 #include "render/shader.h"
+#include "render/shadow_map.h"
 
 #include <glad/glad.h>
 #include <glm/vec3.hpp>
 
+#include <vector>
+
 namespace render {
 class Camera;
+class Mesh;
 }
 namespace ui {
 struct DebugState;
@@ -46,7 +50,18 @@ private:
     // VAO ligado aunque el shader no lea atributos: los vértices salen de
     // gl_VertexID).
     GLuint sky_vao_ = 0;
+    // Sombras del sol en cascada: pase de profundidad por cascada antes del
+    // terreno; terreno, vegetación y césped las reciben.
+    render::Shader shadow_terrain_shader_;
+    render::Shader shadow_veg_shader_;
+    render::ShadowMap shadow_map_;
+    render::ShadowCascades cascades_{};
+    std::vector<const render::Mesh*> casters_; // reutilizado entre cascadas
 
+    void render_shadows(World& world, const render::Camera& camera, float aspect,
+                        const ui::DebugState& state);
+    void set_shadow_uniforms(const render::Shader& shader, const render::Camera& camera,
+                             bool enabled) const;
     void draw_sky(const render::Camera& camera, float aspect,
                   const ui::DebugState& state);
     void draw_water(World& world, const render::Camera& camera, float aspect,

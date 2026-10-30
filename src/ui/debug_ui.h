@@ -25,11 +25,12 @@ struct DebugState {
     bool wireframe = false;
     float sun_azimuth_deg = 135.0f;
     float sun_altitude_deg = 40.0f;
-    float fog_density = 0.00015f;
+    float fog_density = 3.0e-5f; // bruma de valle: extinción a nivel del mar (1/m), H = 400 m
     float veg_draw_distance = 2600.0f; // m
     bool detail_textures = true;
     float detail_texture_intensity = 0.75f;
     bool smooth_shading = true;
+    bool csm_shadows = true; // sombras del sol en tiempo real (cascadas)
 
     terrain::TerrainConfig pending_config; // lo que editan los sliders
     bool regenerate_requested = false;     // botón "Regenerar"
