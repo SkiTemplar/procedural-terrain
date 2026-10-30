@@ -114,13 +114,35 @@ FaceShade shade_face_area(const DetailSampler& sampler, const Palette& palette,
     return {acc.color * 0.25f, acc.light * 0.25f};
 }
 
+Material material_at(const DetailSampler& sampler, const glm::vec3& p) {
+    const glm::vec2 mw = material_warp(p.x, p.z);
+    return sampler.material_near(p.x + mw.x, p.z + mw.y);
+}
+
+// Cara fina que cruza un límite de material (playa/marisma, hierba/arena):
+// con el color del centroide, la frontera se dibujaba como dientes de sierra
+// de caras alternas; con la media de la cara queda una fila de tonos de
+// transición. Solo esas caras pagan las cuatro muestras.
+bool crosses_material_edge(const DetailSampler& sampler, const glm::vec3& a,
+                           const glm::vec3& b, const glm::vec3& c) {
+    const glm::vec3 g = (a + b + c) / 3.0f;
+    const Material m = material_at(sampler, g);
+    for (const glm::vec3* v : {&a, &b, &c}) {
+        if (material_at(sampler, (g + *v) * 0.5f) != m) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void emit_triangle(const DetailSampler& sampler, const Palette& palette,
                    const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
                    std::uint32_t id, int stride, render::Vertex* out) {
     const glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
-    const FaceShade s = stride >= kAverageColourStride
-        ? shade_face_area(sampler, palette, a, b, c, n, id)
-        : shade_face(sampler, palette, (a + b + c) / 3.0f, n, id);
+    const bool average = stride >= kAverageColourStride
+                      || crosses_material_edge(sampler, a, b, c);
+    const FaceShade s = average ? shade_face_area(sampler, palette, a, b, c, n, id)
+                                : shade_face(sampler, palette, (a + b + c) / 3.0f, n, id);
     out[0] = render::Vertex{a, s.color, n, s.light};
     out[1] = render::Vertex{b, s.color, n, s.light};
     out[2] = render::Vertex{c, s.color, n, s.light};
