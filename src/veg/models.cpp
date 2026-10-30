@@ -141,11 +141,18 @@ ModelData make_rock() {
 ModelData make_tuft() {
     ModelData out;
     const glm::vec3 blade{0.36f, 0.56f, 0.24f};
-    // Abanico de 5 hojas: conos finos e inclinados alrededor del centro.
-    for (int i = 0; i < 5; ++i) {
-        const float a = glm::two_pi<float>() * static_cast<float>(i) / 5.0f;
-        const float lean = 0.16f + 0.1f * hash01(91u + static_cast<std::uint32_t>(i));
-        const float height = 0.38f + 0.25f * hash01(113u + static_cast<std::uint32_t>(i));
+    // Abanico de 8 hojas de altura e inclinación desiguales (las cortas más
+    // tumbadas): una mata con silueta irregular en vez de un erizo de conos
+    // iguales.
+    constexpr int kBlades = 8;
+    for (int i = 0; i < kBlades; ++i) {
+        const float a = glm::two_pi<float>() * (static_cast<float>(i)
+                        + 0.6f * hash01(71u + static_cast<std::uint32_t>(i)))
+                      / static_cast<float>(kBlades);
+        const float tall = hash01(113u + static_cast<std::uint32_t>(i));
+        const float height = 0.22f + 0.40f * tall;
+        const float lean = 0.14f + 0.22f * (1.0f - tall)
+                         + 0.06f * hash01(91u + static_cast<std::uint32_t>(i));
 
         const auto apex = static_cast<std::uint32_t>(out.vertices.size());
         out.vertices.push_back(
@@ -165,6 +172,41 @@ ModelData make_tuft() {
                                {apex, base + static_cast<std::uint32_t>((k + 1) % 3),
                                 base + static_cast<std::uint32_t>(k)});
         }
+    }
+    return out;
+}
+
+// Cabezuela de flor: bipirámide de 4 lados (~6 cm) en blanco crema; el tinte
+// de la instancia la vuelve amarilla, rosa o blanca.
+void add_flower_head(ModelData& out, glm::vec3 c, float r) {
+    const glm::vec3 col{0.92f, 0.90f, 0.82f};
+    const auto base = static_cast<std::uint32_t>(out.vertices.size());
+    out.vertices.push_back({c + glm::vec3{0.0f, r, 0.0f}, col});
+    out.vertices.push_back({c + glm::vec3{0.0f, -r, 0.0f}, col * 0.85f});
+    for (int k = 0; k < 4; ++k) {
+        const float b = glm::half_pi<float>() * static_cast<float>(k);
+        out.vertices.push_back({c + glm::vec3{1.4f * r * std::cos(b), 0.0f,
+                                              1.4f * r * std::sin(b)}, col});
+    }
+    for (std::uint32_t k = 0; k < 4; ++k) {
+        const std::uint32_t a0 = base + 2u + k;
+        const std::uint32_t a1 = base + 2u + (k + 1u) % 4u;
+        out.indices.insert(out.indices.end(), {base, a1, a0, base + 1u, a0, a1});
+    }
+}
+
+ModelData make_flower_tuft() {
+    ModelData out = make_tuft();
+    // Hojas más oscuras que la flor: el tinte de la instancia aclara la
+    // cabezuela sin volver chillona la hoja.
+    for (auto& v : out.vertices) {
+        v.color *= 0.85f;
+    }
+    for (int i = 0; i < 5; ++i) {
+        const float a = glm::two_pi<float>() * hash01(211u + static_cast<std::uint32_t>(i));
+        const float rr = 0.06f + 0.16f * hash01(223u + static_cast<std::uint32_t>(i));
+        const float h = 0.30f + 0.28f * hash01(227u + static_cast<std::uint32_t>(i));
+        add_flower_head(out, {rr * std::cos(a), h, rr * std::sin(a)}, 0.045f);
     }
     return out;
 }

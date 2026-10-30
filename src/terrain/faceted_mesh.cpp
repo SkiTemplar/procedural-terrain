@@ -42,10 +42,14 @@ glm::vec2 material_warp(float wx, float wz) {
 // celdas): una cresta más estrecha que la faceta (cordón de duna, arista de
 // cumbre) muestreada en puntos sueltos se dibujaba en dientes de sierra, con
 // nodos alternos dentro y fuera de ella, y un rizado de periodo parecido al
-// paso batía en una fila de "tiendas". Tienda 3×3 de radio kFilterRadius
-// del paso: el mip de la superficie a la escala de la faceta.
+// paso batía en una fila de "tiendas". Binomial 5×5 (1 4 6 4 1) con
+// muestras a ±r/2 y ±r, r = un paso: el mip de la superficie a la escala de la
+// faceta. La tienda 3×3 de medio paso anulaba el periodo = paso pero dejaba
+// pasar ~25-50 % de los periodos entre 1 y 2 pasos, y los barrancos paralelos
+// del LEM batían con la rejilla en franjas claras y oscuras alineadas con sus
+// ejes; la binomial los deja por debajo del 25 % (0 en periodo 1-1.3 pasos).
 constexpr int kFilterStride = 2;
-constexpr float kFilterRadius = 0.5f; // anula el rizado de periodo = paso
+constexpr float kFilterRadius = 1.0f;
 
 // Radio del prefiltro para una faceta de `cells` celdas (0 = sin filtro).
 float filter_radius(float cells, float cell_m) {
@@ -56,15 +60,17 @@ float node_height(const DetailSampler& sampler, float wx, float wz, float radius
     if (radius <= 0.0f) {
         return sampler.height(wx, wz);
     }
+    constexpr float kBinomial[5] = {1.0f, 4.0f, 6.0f, 4.0f, 1.0f};
+    const float half = 0.5f * radius;
     float acc = 0.0f;
-    for (int dz = -1; dz <= 1; ++dz) {
-        for (int dx = -1; dx <= 1; ++dx) {
-            const float w = static_cast<float>((2 - std::abs(dx)) * (2 - std::abs(dz)));
-            acc += w * sampler.height(wx + radius * static_cast<float>(dx),
-                                      wz + radius * static_cast<float>(dz));
+    for (int dz = -2; dz <= 2; ++dz) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            const float w = kBinomial[dx + 2] * kBinomial[dz + 2];
+            acc += w * sampler.height(wx + half * static_cast<float>(dx),
+                                      wz + half * static_cast<float>(dz));
         }
     }
-    return acc / 16.0f;
+    return acc / 256.0f;
 }
 
 // Rejilla de nodos (posiciones de mundo) de una región, con jitter XZ por

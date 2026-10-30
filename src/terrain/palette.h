@@ -55,7 +55,9 @@ private:
     glm::vec3 scree(float y, float climate, float cx, float cz) const;
     glm::vec3 snow(float y) const;
     glm::vec3 beach_sand(float y, float climate) const;
-    float snow_cover(float y, float slope, float sunny) const;
+    float snow_cover(float y, float slope, float sunny, float cx, float cz) const;
+    glm::vec3 face_variation(glm::vec3 c, Material m, float cx, float cz,
+                             std::uint32_t id) const;
 };
 
 } // namespace terrain

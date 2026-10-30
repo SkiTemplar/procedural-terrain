@@ -30,15 +30,18 @@ struct Placement {
     std::vector<render::Instance> broadleafs;
     std::vector<render::Instance> rocks;
     std::vector<render::Instance> tufts;
+    std::vector<render::Instance> flowers;
     std::vector<render::Instance> bushes;
     std::vector<render::Instance> logs;
 };
 
 // Tintes de flor para una fracción de las matas (multiplican el verde base).
+// La cabezuela es blanco crema (models.cpp): el tinte fija su color y apenas
+// toca la hoja, que ya va oscurecida en el modelo florido.
 constexpr glm::vec3 kFlowerTints[] = {
-    {1.55f, 1.45f, 0.85f}, // amarillo
-    {1.65f, 1.15f, 1.55f}, // rosa
-    {1.45f, 1.45f, 1.70f}, // blanco azulado
+    {1.15f, 1.05f, 0.40f}, // amarillo
+    {1.20f, 0.78f, 1.02f}, // rosa
+    {1.08f, 1.08f, 1.12f}, // blanco
 };
 
 // Amplía el AABB de la celda con las instancias de un modelo: radio
@@ -105,8 +108,12 @@ const glm::vec2 kSunXZ{std::cos(terrain::kSunAzimuthDeg * 0.01745329f),
 
 // Variación individual pequeña frente a la del rodal: a media distancia un
 // jitter fuerte árbol a árbol se convertía en un moteado de alta frecuencia.
+// clump: ruido de ~30 m que agrupa las copas que viran: una frondosa otoñal
+// aislada entre verdes se leía como un punto naranja; en corros se lee como
+// un grupo de árboles de la misma edad o el mismo suelo.
 glm::vec3 canopy_tint(float hue_r, float value_r, float dryness, float climate,
-                      bool conifer, float vigor, float stand_cast, float autumn) {
+                      bool conifer, float vigor, float stand_cast, float autumn,
+                      float clump) {
     const float hue = (hue_r - 0.5f) * (conifer ? 0.06f : 0.10f) + 0.30f * vigor;
     glm::vec3 t{1.0f + hue, 1.0f + 0.10f * vigor, 1.0f - 1.6f * hue};
     t *= conifer ? kConiferCast : kBroadleafCast;
@@ -117,7 +124,7 @@ glm::vec3 canopy_tint(float hue_r, float value_r, float dryness, float climate,
     const float turn = std::clamp(
         (kSenescentVigorLo + 0.5f * kSenescentRamp - (vigor - autumn)) / kSenescentRamp,
         0.0f, 1.0f);
-    if (!conifer && value_r < kSenescentShare * turn) {
+    if (!conifer && 0.25f * value_r + 0.75f * clump < kSenescentShare * turn) {
         t *= glm::mix(glm::vec3{1.0f}, kSenescentCast[stand_cast < 0.6f ? 0 : 1],
                       0.55f + 0.45f * turn);
     }
@@ -305,6 +312,7 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             // Ocre o cobre por rodal (~110 m), no por árbol.
             const float stand_cast = terrain::value_noise(wx * 0.009f - 23.0f,
                                                           wz * 0.009f + 11.0f);
+            const float clump = terrain::value_noise(wx * 0.033f + 5.0f, wz * 0.033f - 71.0f);
 
             Placement& cell = cell_of(wx, wz);
             if (roll < tree_p) {
@@ -334,7 +342,7 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                                   * (0.70f + 0.60f * stand_age) * site.scale_mult;
                 // Base bien hundida: en pendiente los troncos no quedan al aire.
                 const glm::vec3 crown = canopy_tint(hue_r, value_r, site_dry, site_climate,
-                                                    pine, vigor, stand_cast, autumn);
+                                                    pine, vigor, stand_cast, autumn, clump);
                 const glm::vec3 t = crown * veg_light;
                 render::Instance inst{{wx, wy - 0.35f * scale, wz, scale},
                                       {t.r, t.g, t.b, yaw}};
@@ -354,15 +362,29 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 // Una fracción de las matas florece.
                 const float flower = hash01(static_cast<std::uint32_t>(x),
                                             static_cast<std::uint32_t>(z), salt + 7);
-                if (flower < 0.16f && m == terrain::Material::Grass) {
-                    t = kFlowerTints[static_cast<size_t>(flower * 100.0f) % 3] * tint;
+                // Las flores van por prados (~40 m), un color dominante por
+                // mancha: un prado florido real no es un salpicado uniforme.
+                const float meadow = terrain::value_noise(wx * 0.025f - 9.0f, wz * 0.025f + 33.0f);
+                const float bloom = 0.42f * glm::smoothstep(0.45f, 0.75f, meadow);
+                const render::Instance inst{{wx, wy - 0.04f, wz, scale}, {t.r, t.g, t.b, yaw}};
+                if (flower < bloom && m == terrain::Material::Grass) {
+                    const auto hue = static_cast<size_t>(
+                        3.0f * terrain::value_noise(wx * 0.012f + 4.0f, wz * 0.012f - 6.0f)
+                        + 0.3f * flower) % 3;
+                    t = kFlowerTints[hue] * tint;
+                    cell.flowers.push_back(
+                        render::Instance{inst.pos_scale, {t.r, t.g, t.b, yaw}});
+                } else {
+                    cell.tufts.push_back(inst);
                 }
-                cell.tufts.push_back(
-                    render::Instance{{wx, wy - 0.04f, wz, scale}, {t.r, t.g, t.b, yaw}});
             } else if (roll < tree_p + rock_p + tuft_p + bush_p) {
                 const float scale = 0.6f + 0.9f * scale_r;
+                // Arbusto de sotobosque: algo más oscuro y menos amarillo que
+                // la copa frondosa (a la sombra del dosel); con el tinte de
+                // copa tal cual de cerca se leía como una bola verde lima.
                 const glm::vec3 t = canopy_tint(hue_r, value_r, site_dry, site_climate,
-                                                false, vigor, stand_cast, autumn) * veg_light;
+                                                false, vigor, stand_cast, autumn, clump)
+                                  * glm::vec3{0.82f, 0.86f, 0.98f} * veg_light;
                 cell.bushes.push_back(render::Instance{{wx, wy - 0.08f, wz, scale},
                                                        {t.r, t.g, t.b, yaw}});
             } else if (roll < tree_p + rock_p + tuft_p + bush_p + boulder_p) {
@@ -419,6 +441,7 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
     const ModelData broadleaf = make_broadleaf();
     const ModelData rock = make_rock();
     const ModelData tuft = make_tuft();
+    const ModelData flower_tuft = make_flower_tuft();
     const ModelData bush = make_bush();
     const ModelData log_model = make_log();
 
@@ -426,13 +449,14 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
         for (int cx = 0; cx < cells_per_side; ++cx) {
             Placement& p = placements[static_cast<size_t>(cz) * cells_per_side + cx];
             if (p.pines.empty() && p.broadleafs.empty() && p.rocks.empty()
-                && p.tufts.empty() && p.bushes.empty() && p.logs.empty()) {
+                && p.tufts.empty() && p.flowers.empty() && p.bushes.empty()
+                && p.logs.empty()) {
                 continue;
             }
             counts_.pines += p.pines.size();
             counts_.broadleafs += p.broadleafs.size();
             counts_.rocks += p.rocks.size();
-            counts_.tufts += p.tufts.size();
+            counts_.tufts += p.tufts.size() + p.flowers.size();
             counts_.bushes += p.bushes.size();
             counts_.logs += p.logs.size();
             Cell cell;
@@ -452,6 +476,7 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             add(cell.batches_far, rock, p.rocks);
             add(cell.batches_far, log_model, p.logs);
             add(cell.batches_near, tuft, p.tufts);
+            add(cell.batches_near, flower_tuft, p.flowers);
             add(cell.batches_near, bush, p.bushes);
             cells_.push_back(std::move(cell));
         }

@@ -27,6 +27,7 @@ ModelData make_pine();      // conífera: tronco + 3 conos apilados (~9 m)
 ModelData make_broadleaf(); // frondoso: tronco + copa icosférica deformada (~7 m)
 ModelData make_rock();      // pedrusco: icosfera deformada (~1 m)
 ModelData make_tuft();      // mata de hierba: abanico de conos finos (~0.5 m)
+ModelData make_flower_tuft(); // mata florida: la misma mata con cabezuelas claras
 ModelData make_grass();     // brizna densa: abanico de hojas finas (~0.35 m, LOD cercano)
 ModelData make_bush();      // arbusto: icosfera achatada (~1 m)
 ModelData make_log();       // tronco caído: prisma tumbado con conicidad (~4 m)

@@ -26,6 +26,7 @@ constexpr glm::vec3 kBankSilt{0.47f, 0.45f, 0.33f};  // limo de ribera húmedo
 constexpr glm::vec3 kWetGravel{0.34f, 0.33f, 0.29f}; // grava de cauce mojada
 constexpr float kSnowBelowM = 280.0f;   // m bajo la línea de nieve con neveros
 constexpr float kSnowSunShiftM = 110.0f; // m que la solana sube la nieve
+constexpr float kSnowDriftM = 70.0f;     // m de ondulación del límite por ventisqueros
 constexpr float kSnowReliefFrac = 0.66f; // fracción del relieve que ancla los neveros
 constexpr float kWetSandBandM = 0.9f; // m sobre el mar que moja el lavado de ola
 constexpr float kBankProbeM = 9.0f;   // paso de la sonda de lámina dulce de la ribera
@@ -44,23 +45,59 @@ float rock_banding(float y, float wx, float wz) {
     return 0.90f + 0.08f * std::sin(yb) + 0.03f * std::sin(yb * 2.3f + 1.7f);
 }
 
+// Estratos buzantes (paleta low-poly): capas de ~45 m de potencia inclinadas
+// según un buzamiento que gira por macizos (~1 km), con contactos de escalón
+// corto — bancos claros de caliza o arenisca alternan con lutitas oscuras. El
+// buzamiento hace que la misma capa corte la ladera en diagonal, no en curva
+// de nivel.
+float strata(float y, float wx, float wz, float shore_k) {
+    const float dip_a = 6.2831853f * value_noise(wx * 0.0010f + 3.0f, wz * 0.0010f - 8.0f);
+    const float dip = 0.10f + 0.12f * value_noise(wx * 0.0016f - 5.0f, wz * 0.0016f + 2.0f);
+    const float yt = y + dip * (wx * std::cos(dip_a) + wz * std::sin(dip_a));
+    const float layer = 0.5f + 0.5f * std::sin(yt * 0.14f + 1.3f * std::sin(yt * 0.037f));
+    const float bed = glm::smoothstep(0.35f, 0.62f, layer);
+    return glm::mix(1.0f, glm::mix(0.80f, 1.12f, bed), 1.0f - shore_k);
+}
+
 // Tinte de suelo COHERENTE (~3.3 m): el hash por nodo con color flat pintaba
 // cada triángulo de un brillo aleatorio distinto — el "tablero de colores
 // cuadrados" del feedback. El value noise da manchas continuas entre celdas.
 // Variación tonal DENTRO de cada material (feedback 2026-07-08 "color blocky"):
 // dos escalas — grano fino (~3 m) + manchas medias (~22 m) — para que el color
 // no sea plano por celda. Rango ampliado respecto al 0.94±0.06 anterior.
+// El grano fino se queda en ±3 %: en las facetas lejanas (10-40 m) un ruido
+// de 3 m equivale a un valor aleatorio por cara y pintaba confeti; el peso de
+// la variación pasa a las manchas medias, coherentes entre caras vecinas.
 float ground_tint(float wx, float wz) {
     const float fine = value_noise(wx * 0.30f, wz * 0.30f);
     const float coarse = value_noise(wx * 0.045f + 5.0f, wz * 0.045f - 9.0f);
-    return 0.87f + 0.14f * fine + 0.10f * coarse;
+    return 0.90f + 0.06f * fine + 0.14f * coarse;
+}
+
+// Mancha coherente de faceta en [-0.5, 0.5] (~90 m y ~30 m): el salto de
+// valor entre caras vecinas sale de aquí y no de un hash por cara, así que una
+// ladera se lee en parches (suelo, humedad, edad del pasto) y no en confeti.
+float facet_patch(float wx, float wz) {
+    return 0.62f * value_noise(wx * 0.011f - 31.0f, wz * 0.011f + 17.0f)
+         + 0.38f * value_noise(wx * 0.034f + 13.0f, wz * 0.034f - 41.0f) - 0.5f;
+}
+
+// Hash entero con avalancha completa (finalizador de murmur3) para el pequeño
+// salto residual por cara.
+float face_hash01(std::uint32_t h) {
+    h ^= h >> 16u;
+    h *= 0x85EBCA6Bu;
+    h ^= h >> 13u;
+    h *= 0xC2B2AE35u;
+    h ^= h >> 16u;
+    return static_cast<float>(h & 0xFFFFFFu) / static_cast<float>(0x1000000u);
 }
 
 // Matiz de la nieve según la cara mire al sol (sunny en [-1, 1]): la solana
 // crema cálida, la umbría azulada (la ilumina el cielo, no el sol). Exagera el
 // contraste luz/sombra que el sombreado solo dejaba en un gris lavanda.
 glm::vec3 snow_aspect_tint(float sunny) {
-    return glm::mix(glm::vec3{0.76f, 0.87f, 1.02f}, glm::vec3{1.03f, 1.00f, 0.93f},
+    return glm::mix(glm::vec3{0.88f, 0.93f, 1.01f}, glm::vec3{1.04f, 1.01f, 0.95f},
                     glm::smoothstep(-0.6f, 0.6f, sunny));
 }
 
@@ -150,8 +187,8 @@ glm::vec3 Palette::rock_base(float y, float climate, float cx, float cz) const {
                  0.22f * climate * (1.0f - alt_k));
     // Formación dura gris azulada (cristalina), blanda ocre (sedimentaria):
     // la litología del LEM reparte el matiz de la roca por macizos.
-    return c * glm::mix(glm::vec3{0.93f, 0.97f, 1.01f},
-                        glm::vec3{1.22f, 1.00f, 0.74f}, lithology_at(cx, cz));
+    return c * glm::mix(glm::vec3{0.90f, 0.95f, 1.02f},
+                        glm::vec3{1.14f, 1.00f, 0.80f}, lithology_at(cx, cz));
 }
 
 // Canchal de montaña: derrubio de la pared de encima, con su mismo matiz de
@@ -209,15 +246,15 @@ glm::vec3 Palette::rock(float y, float climate, float wx, float wz,
     const float band = 0.5f + 0.5f * std::sin(y * 0.09f + phase);
     c = glm::mix(c, c * glm::vec3{1.16f, 0.92f, 0.72f},
                  0.75f * glm::smoothstep(0.50f, 0.90f, band) * (1.0f - shore_k));
-    return c * rock_banding(y, wx, wz);
+    return c * rock_banding(y, wx, wz) * strata(y, wx, wz, shore_k);
 }
 
 // Nieve con gradiente de cota: sucia y azulada-gris junto al límite (polvo de
 // roca, hielo viejo), blanca pura hacia la cumbre real de este mundo.
 glm::vec3 Palette::snow(float y) const {
     const float alt_k = glm::clamp((y - snow_line_) / snow_span_, 0.0f, 1.0f);
-    return glm::mix(glm::vec3{0.82f, 0.84f, 0.87f},
-                    glm::vec3{0.97f, 0.96f, 0.94f}, alt_k);
+    return glm::mix(glm::vec3{0.88f, 0.89f, 0.90f},
+                    glm::vec3{0.98f, 0.97f, 0.95f}, alt_k);
 }
 
 // Arena de playa cálida (cuarzo con feldespato y conchas): dorada en clima
@@ -272,7 +309,10 @@ glm::vec3 Palette::ground(Material m, float forest_density, float climate,
     } else if (m == Material::Gravel && !littoral_near(wx, wz)) {
         c = scree(y, climate, cx, cz); // la grava de playa conserva su color
     } else if (m == Material::RiverBed && std::isnan(water_level_near(wx, wz))) {
-        c = kWetGravel; // cauce sin lámina resuelta: grava húmeda, no raya clara
+        // Cauce sin lámina resuelta: grava húmeda medio cubierta de hierba y
+        // musgo de la orilla; la grava sola dibujaba una pista gris continua
+        // por el fondo de los barrancos secos.
+        c = glm::mix(kWetGravel, material_color(Material::Grass) * 0.80f, 0.45f);
 
     } else if (m == Material::Snow) {
         c = snow(y);
@@ -311,13 +351,17 @@ glm::vec3 Palette::ground(Material m, float forest_density, float climate,
 // pendiente que la purgue); la solana empinada queda en roca. Es la misma
 // regla de balance que la ecología aplica a escala de celda, resuelta aquí a
 // escala de faceta.
-float Palette::snow_cover(float y, float slope, float sunny) const {
+float Palette::snow_cover(float y, float slope, float sunny, float cx, float cz) const {
     // Ancla: la línea de nieve estacional o, si queda por encima, el último
     // cuarto del relieve real (en un mundo de cumbres bajas las caras altas
     // en umbría siguen guardando neveros).
     const float anchor = std::min(
         snow_line_, sea_level_ + kSnowReliefFrac * (data_->max_height_m - sea_level_));
-    const float eff_y = y - kSnowSunShiftM * sunny;
+    // Redistribución por el viento: ventisqueros en sotavento y crestas
+    // barridas ondulan el límite ±kSnowDriftM a escala de ~400 m; el ruido
+    // solo modula la cota efectiva, la regla de balance es la misma.
+    const float drift = kSnowDriftM * (2.0f * value_noise(cx * 0.0025f + 7.0f, cz * 0.0025f - 3.0f) - 1.0f);
+    const float eff_y = y - kSnowSunShiftM * sunny + drift;
     const float alt = glm::smoothstep(anchor - kSnowBelowM, anchor + 40.0f, eff_y);
     return alt * (1.0f - glm::smoothstep(0.55f, 0.85f, slope));
 }
@@ -350,30 +394,40 @@ glm::vec3 Palette::face(glm::vec3 base, Material m, glm::vec3 n, float y, float 
         c *= glm::mix(glm::vec3{0.90f, 0.89f, 0.86f}, glm::vec3{1.06f, 1.05f, 1.04f}, steep);
         // Solana cálida (pátina de óxido seca), umbría fría.
         c *= glm::vec3{1.0f + 0.12f * sunny, 1.0f + 0.05f * sunny, 1.0f - 0.08f * sunny};
-        c = glm::mix(c, snow(y) * snow_aspect_tint(sunny), snow_cover(y, slope, sunny));
+        c = glm::mix(c, snow(y) * snow_aspect_tint(sunny), snow_cover(y, slope, sunny, cx, cz));
     } else if (m == Material::Snow) {
         // La nieve no se sostiene en las caras empinadas: asoma la roca
         // (oscura, como la de la pared) y el resto toma el matiz de su cara.
         const float bare = glm::smoothstep(0.40f, 0.68f, slope);
         c = glm::mix(c * snow_aspect_tint(sunny), rock_base(y, 0.3f, cx, cz) * 0.80f, bare);
     }
-    // Salto de valor por cara (±8 %) y de matiz (±3 % rojo↔azul, ~±4°): el mosaico facetado
-    // que hace legible la geometría low-poly incluso a contraluz.
-    const int ix = static_cast<int>(id & 0xFFFFu);
-    const int iz = static_cast<int>(id >> 16u);
-    const float v = hash01(ix * 31 + 7, iz * 17 + 3) - 0.5f;
-    const float hue = hash01(ix * 11 + 19, iz * 29 + 5) - 0.5f;
+    return glm::clamp(face_variation(c, m, cx, cz, id), glm::vec3{0.0f}, glm::vec3{1.0f});
+}
+
+// Variación de valor y matiz entre caras: sobre todo por manchas coherentes
+// (facet_patch, ±7 % de valor y deriva de matiz por humedad del parche) y solo
+// un salto residual por cara (±2-4 %) que separa dos caras vecinas sin pintar
+// confeti. Antes el hash por cara (±8-11 %) dominaba y, visto desde el aire,
+// cada ladera era ruido de triángulos.
+glm::vec3 Palette::face_variation(glm::vec3 c, Material m, float cx, float cz,
+                                  std::uint32_t id) const {
+    const float patch = facet_patch(cx, cz);
+    const float hue_patch = value_noise(cx * 0.016f + 57.0f, cz * 0.016f - 23.0f) - 0.5f;
+    const float v = face_hash01(id * 2u + 1u) - 0.5f;
+    const float hue = face_hash01(id * 2u + 0x9E37u) - 0.5f;
     if (m == Material::Forest) {
-        // Sotobosque en mosaico: hojarasca parda y musgo entre las copas;
-        // de cerca el suelo del bosque deja de ser un oliva uniforme.
-        const float litter = glm::smoothstep(0.15f, 0.45f, hue);
-        c = glm::mix(c, glm::vec3{0.36f, 0.29f, 0.19f}, 0.45f * litter);
+        // Sotobosque en mosaico: hojarasca parda entre las copas por manchas
+        // de ~25 m (claros de hojarasca), no cara a cara.
+        const float litter = glm::smoothstep(
+            0.55f, 0.75f, value_noise(cx * 0.04f - 3.0f, cz * 0.04f + 19.0f));
+        c = glm::mix(c, glm::vec3{0.36f, 0.29f, 0.19f}, 0.40f * litter);
     }
     // En la arena el salto por cara se reduce: de cerca dibujaba triángulos.
     // En la roca, algo mayor: las caras de una pared se separan en valor.
-    const float jump = (m == Material::Sand) ? 0.07f : (m == Material::Rock ? 0.22f : 0.16f);
-    c *= (1.0f + jump * v) * glm::vec3{1.0f + 0.06f * hue, 1.0f, 1.0f - 0.06f * hue};
-    return glm::clamp(c, glm::vec3{0.0f}, glm::vec3{1.0f});
+    const float jump = (m == Material::Sand) ? 0.04f : (m == Material::Rock ? 0.08f : 0.05f);
+    const float h = 0.10f * hue_patch + 0.03f * hue;
+    return c * (1.0f + 0.14f * patch + jump * v)
+             * glm::vec3{1.0f + 0.5f * h, 1.0f, 1.0f - 0.5f * h};
 }
 
 } // namespace terrain

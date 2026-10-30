@@ -48,13 +48,24 @@ vec4 far_canopy(vec3 p) {
                       kUnderstoryShade * smoothstep(150.0, 700.0, d));
     if (far_k <= 0.0) return vec4(0.0);
     vec2 uv = p.xz / (2.0 * u_terrain_half) + 0.5;
-    float lod = clamp(log2(d / 2500.0) + 0.5, 0.0, 4.0);
+    // Mip a la escala de la faceta (~d/60 m; texel de 8 m): con el mip de la
+    // distancia (0.5 a 2.5 km) el vértice provocante muestreaba copas sueltas
+    // y cada cara de un bosque claro tomaba cobertura 0 o 1 (confeti verde
+    // oscuro/claro). Al nivel de la faceta las caras vecinas casi coinciden y
+    // el monte se lee en masas, sin perder el color plano por cara.
+    float lod = clamp(log2(d / 480.0) + 1.0, 0.0, 6.0);
     vec4 c = textureLod(u_canopy, uv, lod);
-    // Brillo propio de cada faceta (hash del vértice que la provoca): el
-    // dosel lejano conserva el grano facetado del terreno.
-    float jitter = 0.92 + 0.16 * fract(sin(dot(p.xz, vec2(12.9898, 78.233))) * 43758.5453);
+    // Brillo propio de cada faceta (hash entero del vértice que la provoca):
+    // el dosel lejano conserva un grano facetado leve (±3 %). El hash con
+    // sin() de coordenadas de miles de metros perdía precisión en la GPU y
+    // dibujaba rayas; con ±8 % el bosque lejano era confeti.
+    uvec2 q = uvec2(ivec2(floor(p.xz * 4.0)) + ivec2(1 << 20));
+    uint h = q.x * 374761393u + q.y * 668265263u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h ^= h >> 16u;
+    float jitter = 0.97 + 0.06 * float(h & 0xFFFFu) / 65535.0;
     return vec4(c.rgb * kCanopySelfShade * jitter,
-                smoothstep(0.08, 0.55, c.a) * far_k);
+                smoothstep(0.04, 0.60, c.a) * far_k);
 }
 
 void main() {
