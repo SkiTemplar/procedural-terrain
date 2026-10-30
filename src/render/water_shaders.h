@@ -122,7 +122,7 @@ uniform float u_breaker_index; // γ de rotura por fondo, terrain::kBreakerIndex
 // transmitancia por canal de lo que hay detrás (lecho ya pintado).
 layout (location = 0, index = 0) out vec4 frag_color;
 layout (location = 0, index = 1) out vec4 frag_trans;
-)glsl" PT_GLSL_SKY_COMMON R"glsl(
+)glsl" PT_GLSL_SKY_COMMON PT_GLSL_CLOUDS R"glsl(
 float w_hash12(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
     p += dot(p, p + 45.32);
@@ -205,8 +205,25 @@ const float kMicroAlpha = 0.07;
 // el camino de destellos real en vez de parpadear.
 const float kTrainLambda[5] = float[](52.0, 29.0, 16.5, 9.3, 5.2);
 const float kTrainAngle[5] = float[](0.0, 0.45, -0.38, 0.80, -0.72);
+// Estilización: la pendiente de las olas resueltas se reduce (con la del
+// espectro completo, cada cara inclinada reflejaba un trozo distinto del
+// cielo y el mar se leía como un rayado blanco de alto contraste) y se
+// aplana con la distancia, donde solo aportaba repetición.
+const float kWaveSlopeScale = 0.55;
+const float kWaveFarStartM = 200.0;
+const float kWaveFarEndM = 2500.0;
+
+// Envolvente de grupos de olas: zonas de mar más rizado y más calmo
+// (~250 m y ~90 m) que rompen la periodicidad de los trenes.
+float wave_envelope(vec2 xz, vec2 wd) {
+    vec2 q = xz - wd * (u_time * 1.5);
+    return 0.45 + 0.75 * w_vnoise(q * 0.004) + 0.35 * (w_vnoise(q * 0.011 + 7.7) - 0.5);
+}
+
 WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint) {
     vec2 perp = vec2(-wd.y, wd.x);
+    float far_k = smoothstep(kWaveFarStartM, kWaveFarEndM, length(xz - u_camera_pos.xz));
+    float slope_k = kWaveSlopeScale * (1.0 - 0.65 * far_k) * wave_envelope(xz, wd);
     // Abanico de direcciones: con 0.75 los trenes quedaban casi paralelos y
     // el mar lejano se leía como rayas regulares (moiré); con 0.4 se cruzan.
     float spread = 1.0 - 0.4 * u_wind_focus;
@@ -220,7 +237,7 @@ WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint) {
         float ang = kTrainAngle[i] * spread;
         vec2 d = wd * cos(ang) + perp * sin(ang);
         float k = 6.2831853 / kTrainLambda[i];
-        float s = a0 * kTrainLambda[i] * k; // pendiente a·k del tren
+        float s = a0 * kTrainLambda[i] * k * slope_k; // pendiente a·k del tren
         float w = smoothstep(2.0, 6.0, kTrainLambda[i] / footprint);
         float ph = k * dot(xz, d) - sqrt(9.81 * k) * u_time
                  + jit * (0.6 + 0.35 * float(i));
@@ -229,7 +246,7 @@ WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint) {
     }
     // Rizado capilar arrastrado por el viento, solo donde el píxel lo resuelve.
     float wr = smoothstep(2.0, 6.0, 0.8 / footprint);
-    vec2 cap = ripple_slope(xz * 0.9 - wd * (u_time * 0.8)) * wr;
+    vec2 cap = ripple_slope(xz * 0.9 - wd * (u_time * 0.8)) * (wr * slope_k);
     vec3 n = normalize(vec3(-acc.x - cap.x, 1.0 - acc.z, -acc.y - cap.y));
     float alpha = kMicroAlpha + 0.05 * (1.0 - wr);
     return WaterSurf(n, alpha * alpha + lost);
@@ -301,7 +318,9 @@ vec3 water_column(float h, vec3 view_dir, out vec3 trans) {
     bool sea = u_is_sea == 1;
     vec3 sigma_a = sea ? kSigmaA : kSigmaA + kCdomA;
     float b = sea ? 0.06 : 0.25;
-    vec3 b_b = sea ? vec3(0.011, 0.013, 0.015) : vec3(0.022);
+    // Mar costero con algo de partícula fina (cocolitos, arena en
+    // suspensión): azul turquesa profundo en vez de un marino casi negro.
+    vec3 b_b = sea ? vec3(0.020, 0.030, 0.034) : vec3(0.022);
     float inv_n2 = 1.0 / (kWaterIor * kWaterIor);
     float cv = sqrt(1.0 - (1.0 - view_dir.y * view_dir.y) * inv_n2);
     float sy = max(u_sun_dir.y, 0.0);
@@ -354,7 +373,13 @@ float sea_foam(float depth, float wave_e, vec2 wd, float footprint) {
     // Lámina de lavado: el agua que sube por la playa deja espuma fina.
     float swash = (1.0 - smoothstep(0.0, 0.18 * h_b + 0.04, depth)) * whiteness;
     cover = max(cover, swash * (0.55 + 0.45 * front));
-    return smoothstep(1.0 - cover, 1.25 - cover, lace) * smoothstep(0.0, 0.15, cover);
+    float lace_foam = smoothstep(1.0 - cover, 1.45 - cover, lace)
+                    * smoothstep(0.0, 0.15, cover);
+    // Línea de orilla continua: el borde del lavado deja siempre un cordón
+    // de espuma, ondulado por el mismo warp; en costa abrigada es más fino.
+    float line_w = (0.06 + 0.10 * warp) * (0.5 + 0.5 * whiteness) + 0.03;
+    float line = 1.0 - smoothstep(0.35 * line_w, line_w, depth);
+    return max(lace_foam, line * (0.55 + 0.35 * whiteness));
 }
 
 // Vetas de espuma de rápidos y cascadas (whitewater de la hidrología, 0.5 =
@@ -403,7 +428,9 @@ void main() {
 
     vec3 trans;
     vec3 body = water_column(depth, view_dir, trans);
-    vec3 radiance = fresnel * sky_color(refl) + (1.0 - fresnel) * body
+    vec4 cloud = cloud_layer(refl);
+    vec3 sky_refl = mix(sky_color(refl), cloud.rgb, cloud.a);
+    vec3 radiance = fresnel * sky_refl + (1.0 - fresnel) * body
                   + sun_glint(surf.n, view_dir, surf.alpha2) * film_k * (1.0 - wall_k);
     trans *= 1.0 - fresnel;
 

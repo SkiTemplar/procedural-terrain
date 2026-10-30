@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/atmosphere_glsl.h"
+#include "render/clouds_glsl.h"
 #include "render/shadow_shaders.h"
 #include "render/terrain_shader_constants.h"
 
@@ -59,7 +60,7 @@ uniform float u_layer_size[10];
 uniform vec3 u_layer_mean[10];
 
 out vec4 frag_color;
-)glsl" PT_GLSL_SKY_COMMON R"glsl(
+)glsl" PT_GLSL_SKY_COMMON PT_GLSL_CLOUDS R"glsl(
 )glsl" PT_GLSL_SHADOW_COMMON R"glsl(
 float hash12(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -361,7 +362,8 @@ void main() {
     // donde el sol llega: en las caras de espaldas diffuse ya es 0.
     float sun_vis = v_light.x;
     if (diffuse > 0.0) {
-        sun_vis = min(sun_vis, csm_visibility(v_world_pos, n_flat));
+        sun_vis = min(sun_vis, csm_visibility(v_world_pos, n_flat))
+                * cloud_shadow(v_world_pos);
     }
     // Ambiente 0.55 (antes 0.34): con sombras en tiempo real la cara en
     // sombra solo recibe cielo, y a 0.34 los sotobosques quedaban casi
@@ -399,6 +401,7 @@ layout (location = 3) in vec4 i_tint_yaw;  // rgb tinte, w giro (rad)
 
 uniform mat4 u_view;
 uniform mat4 u_proj;
+uniform vec3 u_camera_pos;
 
 out vec3 v_world_pos;
 flat out vec3 v_color;
@@ -406,10 +409,23 @@ out vec3 v_color_smooth;
 out vec3 v_normal_smooth;
 out vec2 v_light;
 
+// Cámara dentro de la copa: la instancia se pliega a su base. Sin esto, una
+// cámara a ras de suelo junto a un tronco ve la cara interior de un cono
+// llenando media pantalla. Radio de copa del modelo mayor (~2.6 m) y altura
+// (~9.5 m) por la escala de la instancia; fuera de ese cilindro no cambia nada.
+const float kCanopyRadiusM = 2.7;
+const float kCanopyTopM = 9.5;
+float camera_clearance(vec4 pos_scale) {
+    float r = kCanopyRadiusM * pos_scale.w;
+    float d = length(pos_scale.xz - u_camera_pos.xz);
+    float below_top = step(u_camera_pos.y, pos_scale.y + kCanopyTopM * pos_scale.w);
+    return mix(1.0, smoothstep(0.9 * r, 1.4 * r, d), below_top);
+}
+
 void main() {
     float c = cos(i_tint_yaw.w);
     float s = sin(i_tint_yaw.w);
-    vec3 p = a_pos * i_pos_scale.w;
+    vec3 p = a_pos * (i_pos_scale.w * camera_clearance(i_pos_scale));
     p = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z) + i_pos_scale.xyz;
     v_world_pos = p;
     v_color = a_color * i_tint_yaw.rgb;
@@ -484,7 +500,7 @@ flat in vec3 v_tint;
 uniform vec3 u_camera_pos;
 
 out vec4 frag_color;
-)glsl" PT_GLSL_SKY_COMMON R"glsl(
+)glsl" PT_GLSL_SKY_COMMON PT_GLSL_CLOUDS R"glsl(
 )glsl" PT_GLSL_SHADOW_COMMON R"glsl(
 float hash(float n) { return fract(sin(n) * 43758.5453); }
 
@@ -517,7 +533,8 @@ void main() {
     float diffuse = max(abs(dot(normal, u_sun_dir)), 0.0); // hoja fina: 2 caras
     // Solo receptora de la CSM (no proyecta): normal offset hacia arriba,
     // la brizna es fina y de doble cara.
-    float sun_vis = csm_visibility(v_world_pos, vec3(0.0, 1.0, 0.0));
+    float sun_vis = csm_visibility(v_world_pos, vec3(0.0, 1.0, 0.0))
+                  * cloud_shadow(v_world_pos);
     vec3 lit = col * (0.55 + 1.10 * diffuse * sun_vis); // mismo rebalance que el terreno
     frag_color = vec4(tonemap(apply_atmosphere(lit, u_camera_pos, v_world_pos)), 1.0);
 }
@@ -551,7 +568,7 @@ uniform mat4 u_inv_vp; // inversa de proj * rotación de view: NDC → dir de mu
 uniform vec3 u_camera_pos;
 
 out vec4 frag_color;
-)glsl" PT_GLSL_SKY_COMMON R"glsl(
+)glsl" PT_GLSL_SKY_COMMON PT_GLSL_CLOUDS R"glsl(
 // Disco solar de radio aparente real (0.27°) con oscurecimiento del limbo
 // (ley lineal, u = 0.6): radiancia E_sol / Ω atenuada por la misma
 // transmitancia que ilumina la escena. Tras ACES satura a blanco; el borde se
@@ -574,7 +591,8 @@ void main() {
 
     vec3 radiance;
     if (dir.y >= 0.0) {
-        radiance = sky_color(dir) + sun_disc(dir);
+        vec4 cloud = cloud_layer(dir);
+        radiance = mix(sky_color(dir) + sun_disc(dir), cloud.rgb, cloud.a);
     } else {
         // OCÉANO INFINITO bajo el horizonte: la malla del mar acaba en el far
         // plane (o en su borde a ±20 km) — sin esto, el corte geométrico se
@@ -584,10 +602,12 @@ void main() {
         // perspectiva aérea hasta el punto de corte con el mar.
         float dist = max(u_camera_pos.y, 1.0) / max(-dir.y, 1e-4);
         float fresnel = 0.04 + 0.96 * pow(1.0 + dir.y, 5.0);
-        const vec3 deep = vec3(0.06, 0.20, 0.30);
+        const vec3 deep = vec3(0.03, 0.17, 0.30);
         vec3 body = deep * (0.45 + 0.55 * max(u_sun_dir.y, 0.0));
         vec3 refl = vec3(dir.x, -dir.y, dir.z);
-        vec3 lit = mix(body, sky_color(refl), fresnel * 0.85);
+        vec4 cloud = cloud_layer(refl);
+        vec3 sky_refl = mix(sky_color(refl), cloud.rgb, cloud.a);
+        vec3 lit = mix(body, sky_refl, fresnel * 0.85);
         radiance = atmosphere_segment(lit, u_camera_pos, dir, dist);
     }
 
@@ -596,5 +616,6 @@ void main() {
 )glsl";
 
 #undef PT_GLSL_SKY_COMMON
+#undef PT_GLSL_CLOUDS
 
 } // namespace render
