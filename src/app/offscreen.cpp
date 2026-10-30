@@ -223,7 +223,7 @@ int run_record(Session& s, const OffscreenArgs& args) {
     const int frames = static_cast<int>((keys.back().t - t0) * static_cast<float>(args.fps)) + 1;
     const std::string cmd = "\"" + args.ffmpeg + "\" -y -loglevel error -f rawvideo"
         " -pix_fmt rgb24 -s " + std::to_string(args.width) + "x" + std::to_string(args.height)
-        + " -r " + std::to_string(args.fps) + " -i - -vf vflip -c:v libx264 -preset slow"
+        + " -r " + std::to_string(args.fps) + " -i - -vf vflip -c:v libx264 -threads 4 -preset slow"
         " -crf 16 -pix_fmt yuv420p -movflags +faststart \"" + args.output + "\"";
     FILE* pipe = _popen(cmd.c_str(), "wb");
     if (!pipe) {
