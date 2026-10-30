@@ -289,12 +289,35 @@ vec2 w_hash22(vec2 p) {
 // la cresta; la espuma ocupa la mitad de las subfacetas de un tercio de lado
 // (manchas rotas de 2-3 m, no un triángulo entero). w = resolución de la
 // faceta: sin resolver se sustituye por su media (sin centelleo lejano).
-float sea_whitecap(vec2 xz, vec2 c, float facet_m, float crest, float cap_p, float w) {
-    float crest_k = smoothstep(0.30, 0.80, crest);
-    float pick = step(w_hash12(c * 0.71 + 9.3), cap_p * crest_k);
-    vec2 cs = sea_facet_centroid(xz, facet_m / 3.0);
-    float sub = step(w_hash12(cs * 0.29 + 1.7), 0.5);
-    return mix(cap_p * 0.18 * 0.5, pick * sub, w);
+// Iter. 9: la rotura se decide por TRAMO de cresta (la faceta madre de 4×
+// de lado, ~28 m) y, dentro de él, la espuma cubre las subfacetas (un tercio
+// de lado) que quedan sobre la cresta del mar de fondo en SU centroide: una
+// mancha maciza alargada a lo largo de la cresta con el borde roto, no
+// triángulos sueltos ni un damero. El umbral sube hacia el borde de la madre
+// (la espuma nace en el centro del tramo): sin eso, en la rompiente la cresta
+// cubría la madre entera y salía un paralelogramo blanco de 28 m. Sin
+// resolver (< ~4 px) la subfaceta usa la cresta de su faceta, y la faceta sin
+// resolver, la media (sin centelleo).
+float sea_whitecap(vec2 xz, vec2 c, float facet_m, float crest, float cap_p, float w,
+                   float footprint, vec2 wd) {
+    float mean_cap = cap_p * 0.18 * 0.5;
+    vec2 parent = sea_facet_centroid(c, 4.0 * facet_m);
+    float group = step(w_hash12(parent * 0.71 + 9.3), 1.6 * cap_p);
+    if (group * w <= 0.0) {
+        return mean_cap * (1.0 - w);
+    }
+    float ws = smoothstep(1.5, 4.5, facet_m / (3.0 * footprint));
+    float crest_f = crest;
+    vec2 at = c;
+    if (ws > 0.0) {
+        vec2 cs = sea_facet_centroid(xz, facet_m / 3.0);
+        float crest_s;
+        swell_slope(cs, wd, crest_s);
+        crest_f = mix(crest, crest_s + 0.12 * (w_hash12(cs * 0.29 + 1.7) - 0.5), ws);
+        at = mix(c, cs, ws);
+    }
+    float thr = 0.55 + 0.40 * smoothstep(0.3, 1.6, length(at - parent) / facet_m);
+    return mix(mean_cap, step(thr, crest_f), w);
 }
 
 // Una retícula de facetas: pendiente del oleaje en el centroide más una
@@ -303,17 +326,17 @@ float sea_whitecap(vec2 xz, vec2 c, float facet_m, float crest, float cap_p, flo
 // cap_res = 0 deja las cabrillas de esta retícula en su media (la retícula
 // lejana de 28 m las dibujaría como triángulos blancos de confeti).
 WaterSurf sea_facets(vec2 xz, vec2 wd, float footprint, float facet_m, float tilt_k,
-                     float cap_p, float cap_res) {
+                     float cap_p, float cap_res, vec2 res_px) {
     vec2 c = sea_facet_centroid(xz, facet_m);
     float crest;
     vec3 sl = swell_slope(c, wd, crest);
     vec2 slope = sl.xy * kSwellGain + (w_hash22(c) - 0.5) * tilt_k;
-    // Faceta resuelta (≥ ~4 px) → plano; si no, lámina lisa con su varianza.
-    float w = smoothstep(1.5, 4.5, facet_m / footprint);
+    // Faceta resuelta (≥ res_px.y px) → plano; si no, lámina lisa con su varianza.
+    float w = smoothstep(res_px.x, res_px.y, facet_m / footprint);
     vec3 n = normalize(vec3(-slope.x * w, 1.0, -slope.y * w));
     float var = sl.z * kSwellGain * kSwellGain + tilt_k * tilt_k / 6.0;
     return WaterSurf(n, kMicroAlpha * kMicroAlpha + (1.0 - w * w) * var,
-                     sea_whitecap(xz, c, facet_m, crest, cap_p, w * cap_res));
+                     sea_whitecap(xz, c, facet_m, crest, cap_p, w * cap_res, footprint, wd));
 }
 
 // Rizado de viento facetado junto a la cámara: retícula de un tercio de lado
@@ -330,20 +353,25 @@ vec3 sea_ripple_facets(vec3 n, vec2 xz, float footprint) {
 }
 
 // Mar adentro las caras de kSeaFacetM bajan de unos pocos píxeles: más allá
-// de ~200 m entra una retícula 4× mayor (anidada), y su resolución se mide
-// con la media geométrica de la huella (a incidencia rasante la cara se
-// comprime en vertical pero sigue leyéndose en horizontal).
+// de ~200 m entra una retícula 4× mayor (anidada). Iter. 9: su resolución se
+// mide con la huella MAYOR (la de profundidad a incidencia rasante), no con
+// la media geométrica: con ella las caras de 28 m seguían "resueltas" cuando
+// ya medían 1-2 px de alto y el mar lejano batía en un mosaico de tiras
+// horizontales alineadas con la retícula. Ahora, más allá de ~300-450 m
+// (cámara a pie de playa) las caras se funden en la lámina lisa con su
+// varianza en α²: reflejo de Fresnel del cielo y camino de destellos.
 WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint, float cap_p) {
-    WaterSurf near_s = sea_facets(xz, wd, footprint, kSeaFacetM, 0.10, cap_p, 1.0);
+    WaterSurf near_s = sea_facets(xz, wd, footprint, kSeaFacetM, 0.10, cap_p, 1.0,
+                                  vec2(1.5, 4.5));
     near_s.n = sea_ripple_facets(near_s.n, xz, footprint);
     float far_k = smoothstep(160.0, 320.0, length(xz - u_camera_pos.xz));
     if (far_k <= 0.0) {
         return near_s;
     }
-    vec3 dpx = dFdx(v_world_pos);
-    vec3 dpy = dFdy(v_world_pos);
-    float fp_mean = sqrt(length(dpx.xz) * length(dpy.xz)) + 1e-3;
-    WaterSurf far_s = sea_facets(xz, wd, fp_mean, 4.0 * kSeaFacetM, 0.08, cap_p, 0.0);
+    // Las caras grandes piden más píxeles para dibujarse: a 2-4 px de alto
+    // cada una era una tira clara u oscura según reflejara cielo o agua.
+    WaterSurf far_s = sea_facets(xz, wd, footprint, 4.0 * kSeaFacetM, 0.08, cap_p, 0.0,
+                                 vec2(3.0, 7.0));
     return WaterSurf(normalize(mix(near_s.n, far_s.n, far_k)),
                      mix(near_s.alpha2, far_s.alpha2, far_k),
                      mix(near_s.cap, far_s.cap, far_k));
