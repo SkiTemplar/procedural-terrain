@@ -399,8 +399,11 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 const float lslope = std::sqrt(std::max(0.0f, 1.0f - ln.y * ln.y))
                                    / std::max(ln.y, 1e-3f);
                 if (lslope < 0.13f) {
-                    const float scale = 0.8f + 0.6f * scale_r;
-                    cell.logs.push_back(render::Instance{{wx, wy - 0.18f, wz, scale},
+                    // Troncos finos (0.5-0.8×, ~0.4-0.6 m de diámetro): a 1.4×
+                    // el prisma medía un metro de diámetro, desproporcionado
+                    // junto a las facetas de 1.2 m del suelo cercano.
+                    const float scale = 0.5f + 0.3f * scale_r;
+                    cell.logs.push_back(render::Instance{{wx, wy - 0.12f, wz, scale},
                                                          {tint, tint, tint, yaw}});
                 }
             }
