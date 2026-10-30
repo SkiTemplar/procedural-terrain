@@ -169,14 +169,14 @@ vec2 material_warp(vec2 w) {
 // Todas las lecturas condicionales usan textureGrad con gradientes de mundo
 // calculados en flujo uniforme al principio de main: dentro de ramas no
 // uniformes las derivadas implícitas de texture() están indefinidas.
-// Exageración de la desviación de cada faceta respecto a su ladera: x1.4 de
-// cerca y x1.6 a varios km, donde el prefiltro del LOD ya alisa las caras.
-// Iter. 9: con x2 lejos, en las caras de 39-78 m cada flanco de barranco
-// (una columna de facetas) saltaba de luz a sombra y la ladera era un código
-// de barras.
-const float kFacetReliefNear = 1.4;
-const float kFacetReliefFar = 1.6;
-const vec2 kFacetReliefRampM = vec2(400.0, 4000.0);
+// Fracción de la desviación de cada faceta respecto a su ladera que se
+// conserva: 1 de cerca (faceta real, low-poly nítido) y 0.4 lejos. Antes se
+// EXAGERABA (×2.4-2.6): en las caras de 20-80 m de media distancia cada
+// triángulo saltaba de luz a sombra y la montaña parecía papel arrugado. En
+// el low-poly de juego la faceta se lee cerca; lejos manda la silueta.
+const float kFacetReliefNear = 1.0;
+const float kFacetReliefFar = 0.4;
+const vec2 kFacetReliefRampM = vec2(300.0, 2500.0);
 // Asimetría del cielo hacia el lado del sol (en caras verticales).
 const float kSkySunSide = 0.25;
 const float kDetailFadeStartM = 150.0;
@@ -391,16 +391,15 @@ void main() {
     float underwater = smoothstep(0.05, 0.60, u_sea_level - v_world_pos.y);
     blend = max(blend, underwater);
     vec3 normal = normalize(mix(n_flat, n_map, blend));
-    // Relieve de faceta (dirección de arte low-poly): la desviación de la cara
-    // respecto a la ladera que la rodea (v_normal_ref, calculada en CPU a la
-    // escala de la propia faceta) se exagera ×(1 + kFacetRelief). Sin esto
-    // dos caras vecinas de una ladera lisa recibían casi el mismo N·L y, a
-    // media distancia, el relieve se leía como un degradado continuo. Es
-    // constante por cara: el sombreado sigue siendo plano.
+    // Relieve de faceta (dirección de arte low-poly): de la desviación de la
+    // cara respecto a la ladera que la rodea (v_normal_ref, calculada en CPU a
+    // la escala de la propia faceta) se conserva una fracción que cae con la
+    // distancia. Es constante por cara: el sombreado sigue siendo plano.
     float has_ref = step(0.5, dot(v_normal_ref, v_normal_ref)) * (1.0 - blend);
     float relief = mix(kFacetReliefNear, kFacetReliefFar,
                        smoothstep(kFacetReliefRampM.x, kFacetReliefRampM.y, dist_cam));
-    normal = normalize(normal + (relief * has_ref) * (n_flat - v_normal_ref));
+    vec3 facet = normalize(v_normal_ref + relief * (n_flat - v_normal_ref));
+    normal = normalize(mix(normal, facet, has_ref));
     // Iter. 10: la exageración no tumba una cara bajo la horizontal. En las
     // aristas (cara muy distinta de su ladera media) la normal acababa mirando
     // al suelo, sin cielo ni sol: una raya negra a lo largo de la cresta.
