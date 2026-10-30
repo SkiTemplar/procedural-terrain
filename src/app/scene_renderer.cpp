@@ -96,8 +96,8 @@ void SceneRenderer::draw(World* world, const render::Camera& camera, float aspec
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 }
 
-// Pase de cielo (C4-L4): gradiente + disco solar a pantalla completa, sin
-// depth (el mundo se pinta encima). Siempre relleno, aunque el modo wireframe
+// Pase de cielo (C4-L4): dispersión Rayleigh + Mie y disco solar a pantalla
+// completa, sin depth (el mundo se pinta encima). Siempre relleno, aunque el modo wireframe
 // esté activo — el cielo no es malla que inspeccionar.
 void SceneRenderer::draw_sky(const render::Camera& camera, float aspect,
                              const ui::DebugState& state) {
@@ -107,6 +107,7 @@ void SceneRenderer::draw_sky(const render::Camera& camera, float aspect,
     sky_shader_.set_mat4("u_inv_vp", glm::inverse(camera.proj(aspect) * view_rot));
     sky_shader_.set_vec3("u_sun_dir", state.sun_dir());
     sky_shader_.set_vec3("u_camera_pos", camera.position);
+    sky_shader_.set_float("u_fog_density", state.fog_density);
     glBindVertexArray(sky_vao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);

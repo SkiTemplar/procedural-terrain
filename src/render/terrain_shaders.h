@@ -1,56 +1,9 @@
 #pragma once
 
+#include "render/atmosphere_glsl.h"
 #include "render/terrain_shader_constants.h"
 
 namespace render {
-
-// Trozo GLSL compartido: cielo analítico + niebla con altura (C4-L4, sol fijo).
-// Se inserta por concatenación de literales tras las declaraciones de cada
-// fragment shader — una sola definición para terreno/vegetación, hierba, agua
-// y el pase de cielo, de modo que la niebla de CUALQUIER material funde
-// exactamente al color del cielo en esa dirección de vista.
-#define PT_GLSL_SKY_COMMON R"glsl(
-uniform vec3 u_sun_dir;       // hacia el sol, normalizado
-uniform float u_fog_density;  // densidad de bruma a nivel del mar (y=0)
-
-// Cielo de sol fijo: gradiente cenit→horizonte (Rayleigh de juguete) más dos
-// lóbulos cálidos alrededor del sol (Mie ancho + halo cercano). Devuelve color
-// SIN tonemapear: el terreno mezcla su color ya tonemapeado hacia este valor,
-// y el pase de cielo lo pinta tal cual — así la fusión en el horizonte es exacta.
-vec3 sky_color(vec3 dir) {
-    float up = max(dir.y, 0.0);
-    float horizon_k = pow(1.0 - up, 4.0);
-    vec3 zenith = vec3(0.25, 0.44, 0.80);
-    vec3 horizon = vec3(0.72, 0.80, 0.90);
-    vec3 sky = mix(zenith, horizon, horizon_k);
-    float s = max(dot(dir, u_sun_dir), 0.0);
-    sky += vec3(1.00, 0.72, 0.42) * 0.14 * pow(s, 6.0);
-    sky += vec3(1.00, 0.86, 0.62) * 0.30 * pow(s, 48.0);
-    return sky;
-}
-
-// Niebla exponencial CON ALTURA: la densidad decae exp(-y/H) — el mar y los
-// valles guardan bruma, las cumbres respiran aire limpio. La profundidad
-// óptica del rayo cámara→fragmento tiene integral analítica; el término
-// residual (independiente de la altura) es la perspectiva aérea que nunca
-// desaparece por alto que vueles.
-float fog_amount(vec3 cam_pos, vec3 frag_pos) {
-    const float kInvH = 1.0 / 500.0;   // H = 500 m: altura de escala de la bruma
-    const float kResidual = 0.15;      // fracción de densidad sin decaimiento
-    vec3 d = frag_pos - cam_pos;
-    float dist = length(d);
-    float dy = d.y;
-    float column;                      // integral de exp(-y/H) sobre el rayo
-    if (abs(dy) < 1.0) {
-        column = exp(-cam_pos.y * kInvH) * dist;
-    } else {
-        column = dist * (exp(-cam_pos.y * kInvH) - exp(-frag_pos.y * kInvH))
-               / (dy * kInvH);
-    }
-    float od = u_fog_density * (column + kResidual * dist);
-    return 1.0 - exp(-od);
-}
-)glsl"
 
 // Flat shading sin duplicar vértices: la normal por cara sale de las derivadas
 // de pantalla (dFdx/dFdy) y el color va `flat` (un color por triángulo).
@@ -348,14 +301,6 @@ void terrain_detail(vec3 base_normal, float dist_cam, vec3 dpdx, vec3 dpdy,
                                   min(strength, 1.0)));
 }
 
-// Tonemapping ACES (Narkowicz): rolloff fílmico del rango alto → contraste y
-// color sin quemar. La luz del sol aporta >1 en las caras iluminadas, así que
-// hay rango que comprimir (antes el sombreado era plano y lavado).
-vec3 aces(vec3 x) {
-    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14),
-                 0.0, 1.0);
-}
-
 void main() {
     // Sombreado del terreno: el sombreado suave emplea el normal map continuo
     // del heightfield completo (calculado en CPU con Scharr 3x3) y color suave
@@ -420,10 +365,9 @@ void main() {
         lit *= 1.0 + (tex - 0.5) * 0.10 * tex_fade;
     }
 
-    lit = aces(lit); // tonemap antes de la niebla (que ya va en rango de pantalla)
-    vec3 view_dir = (v_world_pos - u_camera_pos) / max(dist_cam, 1e-4);
-    float fog = fog_amount(u_camera_pos, v_world_pos);
-    vec3 color = mix(lit, sky_color(view_dir), fog);
+    // Perspectiva aérea en HDR lineal y después el tonemap común (la luz del
+    // sol aporta >1 en las caras iluminadas: ACES comprime ese rango).
+    vec3 color = tonemap(apply_atmosphere(lit, u_camera_pos, v_world_pos));
 
     frag_color = vec4(color, 1.0);
 }
@@ -527,10 +471,6 @@ uniform vec3 u_camera_pos;
 out vec4 frag_color;
 )glsl" PT_GLSL_SKY_COMMON R"glsl(
 float hash(float n) { return fract(sin(n) * 43758.5453); }
-vec3 aces(vec3 x) {
-    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14),
-                 0.0, 1.0);
-}
 
 void main() {
     // Briznas procedurales dentro del card: u se reparte en columnas; cada
@@ -558,10 +498,8 @@ void main() {
 
     vec3 normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
     float diffuse = max(abs(dot(normal, u_sun_dir)), 0.0); // hoja fina: 2 caras
-    vec3 lit = aces(col * (0.40 + 1.10 * diffuse)); // mismo rebalance + tonemap
-    vec3 view_dir = normalize(v_world_pos - u_camera_pos);
-    float fog = fog_amount(u_camera_pos, v_world_pos);
-    frag_color = vec4(mix(lit, sky_color(view_dir), fog), 1.0);
+    vec3 lit = col * (0.40 + 1.10 * diffuse); // mismo rebalance que el terreno
+    frag_color = vec4(tonemap(apply_atmosphere(lit, u_camera_pos, v_world_pos)), 1.0);
 }
 )glsl";
 
@@ -897,8 +835,8 @@ void main() {
     }
     lit = mix(lit, vec3(0.88, 0.92, 0.95), foam * 0.55);
 
-    float fog = fog_amount(u_camera_pos, v_world_pos);
-    vec3 color = mix(lit, sky_color(-view_dir), fog);
+    // Misma perspectiva aérea HDR + tonemap que el terreno y el cielo.
+    vec3 color = tonemap(apply_atmosphere(lit, u_camera_pos, v_world_pos));
 
     // Opacidad creciente con la distancia: a >6 km el ángulo es rasante y el
     // camino de luz bajo el agua tan largo que el fondo nunca se ve — sin esto
@@ -951,36 +889,46 @@ uniform vec3 u_camera_pos;
 
 out vec4 frag_color;
 )glsl" PT_GLSL_SKY_COMMON R"glsl(
+// Disco solar de radio aparente real (0.27°) con oscurecimiento del limbo
+// (ley lineal, u = 0.6): radiancia E_sol / Ω atenuada por la misma
+// transmitancia que ilumina la escena. Tras ACES satura a blanco; el borde se
+// suaviza en el último 15 % del radio (≈ medio píxel a 1080p).
+vec3 sun_disc(vec3 dir) {
+    float r = length(cross(dir, u_sun_dir)) / kSunAngularRadius;
+    if (r >= 1.0 || dot(dir, u_sun_dir) <= 0.0) {
+        return vec3(0.0);
+    }
+    float limb = 1.0 - 0.6 * (1.0 - sqrt(1.0 - r * r));
+    float edge = 1.0 - smoothstep(0.85, 1.0, r);
+    const float solid_angle = 3.14159265 * kSunAngularRadius * kSunAngularRadius;
+    return (kSunIrradiance / solid_angle) * sun_transmittance(u_camera_pos.y)
+         * (limb * edge);
+}
+
 void main() {
     vec4 p = u_inv_vp * vec4(v_ndc, 1.0, 1.0);
     vec3 dir = normalize(p.xyz / p.w);
 
-    vec3 col;
+    vec3 radiance;
     if (dir.y >= 0.0) {
-        // Disco solar (~1° de radio aparente, borde suave) sobre el gradiente.
-        // Supera 1.0 a propósito: es el sol, satura a blanco en pantalla.
-        float s = dot(dir, u_sun_dir);
-        float disc = smoothstep(0.99985, 0.99996, s);
-        col = sky_color(dir) + disc * vec3(1.0, 0.96, 0.88) * 2.2;
+        radiance = sky_color(dir) + sun_disc(dir);
     } else {
         // OCÉANO INFINITO bajo el horizonte: la malla del mar acaba en el far
-        // plane (o en su borde a ±20 km) y a gran altitud la niebla ya no
-        // satura ahí — sin esto, el corte geométrico se ve contra el cielo.
-        // Mismo modelo que kWaterFrag a distancia (cuerpo + reflejo rasante
-        // del cielo + niebla), sin olas: a >20 km no se resuelven.
+        // plane (o en su borde a ±20 km) — sin esto, el corte geométrico se
+        // ve contra el cielo. Mismo modelo que kWaterFrag a distancia: fondo
+        // abisal (Beer-Lambert ya saturado → color profundo), normal vertical
+        // (difusa = altura del sol) y reflejo rasante del cielo, con la misma
+        // perspectiva aérea hasta el punto de corte con el mar.
         float dist = max(u_camera_pos.y, 1.0) / max(-dir.y, 1e-4);
-        vec3 hit = u_camera_pos + dir * dist;
         float fresnel = 0.04 + 0.96 * pow(1.0 + dir.y, 5.0);
         const vec3 deep = vec3(0.06, 0.20, 0.30);
-        const vec3 sea_col = vec3(0.13, 0.32, 0.50);
-        vec3 body = mix(deep, sea_col, 0.45)
-                  * (0.45 + 0.55 * max(u_sun_dir.y, 0.0));
+        vec3 body = deep * (0.45 + 0.55 * max(u_sun_dir.y, 0.0));
         vec3 refl = vec3(dir.x, -dir.y, dir.z);
         vec3 lit = mix(body, sky_color(refl), fresnel * 0.85);
-        col = mix(lit, sky_color(dir), fog_amount(u_camera_pos, hit));
+        radiance = atmosphere_segment(lit, u_camera_pos, dir, dist);
     }
 
-    frag_color = vec4(col, 1.0);
+    frag_color = vec4(tonemap(radiance), 1.0);
 }
 )glsl";
 
