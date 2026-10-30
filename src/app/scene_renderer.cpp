@@ -220,12 +220,14 @@ void SceneRenderer::draw_sky(const render::Camera& camera, float aspect,
     glEnable(GL_DEPTH_TEST);
 }
 
-// Agua después del terreno, con blending.
+// Agua después del terreno. Mezcla de DOBLE FUENTE: destino·T (transmitancia
+// por canal del lecho ya pintado, Beer-Lambert) + radiancia que añade el agua
+// — el rojo se apaga antes que el azul, cosa que un alpha escalar no puede.
 void SceneRenderer::draw_water(World& world, const render::Camera& camera,
                                float aspect, const ui::DebugState& state,
                                float time_s) {
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFunc(GL_ONE, GL_SRC1_COLOR);
     water_shader_.use();
     set_common_uniforms(water_shader_, camera, aspect, state);
     water_shader_.set_float("u_time", time_s);
@@ -248,7 +250,14 @@ void SceneRenderer::draw_water(World& world, const render::Camera& camera,
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, world.seabed.id);
     water_shader_.set_int("u_is_sea", 1);
+    // El faldón del mar llega a 200 km, mucho más allá del plano lejano: con
+    // depth clamp no se recorta (su profundidad satura a 1, de ahí LEQUAL
+    // frente al borrado a 1) y el mar alcanza el horizonte bajo la bruma.
+    glEnable(GL_DEPTH_CLAMP);
+    glDepthFunc(GL_LEQUAL);
     world.sea.draw();
+    glDepthFunc(GL_LESS);
+    glDisable(GL_DEPTH_CLAMP);
     water_shader_.set_int("u_is_sea", 0);
     if (world.water) {
         world.water->draw();

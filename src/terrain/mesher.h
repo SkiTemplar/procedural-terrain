@@ -18,12 +18,16 @@ float hash01(int x, int z);
 float value_noise(float x, float z);
 
 // Lámina de agua interior (lagos + ríos). std::nullopt si no hay agua.
+// Vértice: color = normal suave de la lámina, normal = (v.x, calado, v.z).
 std::optional<render::Mesh> build_water_mesh(const TerrainData& data);
 
 // Plano del mar, bastante mayor que la isla para que se pierda en la niebla.
 // Rejilla de kSeaPlaneRes² quads sobre ±sea_plane_half(isla); el shader del
 // remanso reproduce su interpolación para enrasar con las olas de vértice.
+// Un faldón de quads une su contorno con un círculo de kSeaHorizonRadiusM
+// (el mar llega al horizonte, sin borde cuadrado).
 inline constexpr int kSeaPlaneRes = 64;
+inline constexpr float kSeaHorizonRadiusM = 200000.0f;
 [[nodiscard]] constexpr float sea_plane_half(float island_size_m) {
     return island_size_m * 2.0f;
 }
