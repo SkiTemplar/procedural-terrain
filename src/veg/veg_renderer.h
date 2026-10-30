@@ -1,5 +1,6 @@
 #pragma once
 
+#include "render/frustum.h"
 #include "render/instanced_mesh.h"
 #include "terrain/detail.h"
 #include "terrain/generator.h"
@@ -20,6 +21,11 @@ public:
     // El shader (kVegVert + kTerrainFrag) debe estar activo con sus uniforms.
     void draw(const glm::vec3& camera_pos, float max_distance) const;
 
+    // Pase de sombra: las celdas que draw() pintaría y cuyo AABB corta el
+    // volumen ortográfico de una cascada del sol (kShadowVegVert activo).
+    void draw_casters(const render::Frustum& light, const glm::vec3& camera_pos,
+                      float max_distance) const;
+
     size_t total_instances() const { return total_instances_; }
 
     // Censo por tipo (auditoría Fase B): verificable desde el panel ImGui sin
@@ -38,6 +44,8 @@ public:
 private:
     struct Cell {
         glm::vec2 center{0.0f};
+        glm::vec3 aabb_min{1e9f}; // envolvente de todas las instancias
+        glm::vec3 aabb_max{-1e9f};
         std::vector<render::InstancedMesh> batches_far;  // árboles y rocas
         std::vector<render::InstancedMesh> batches_near; // matas y arbustos
     };

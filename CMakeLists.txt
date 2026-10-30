@@ -57,6 +57,8 @@ add_executable(ProceduralTerrain
         src/render/terrain_texture_data.cpp
         src/render/terrain_normal_map.cpp
         src/render/terrain_textures.cpp
+        src/render/shadow_cascades.cpp
+        src/render/shadow_map.cpp
         src/terrain/mesher.cpp
         src/terrain/palette.cpp
         src/terrain/chunked_terrain.cpp
@@ -109,7 +111,9 @@ add_executable(terrain_tests
         tests/terrain_texture_tests.cpp
         tests/camera_path_tests.cpp
         tests/world_cache_tests.cpp
+        tests/shadow_cascade_tests.cpp
         src/app/camera_path.cpp
+        src/render/shadow_cascades.cpp
         src/render/terrain_texture_data.cpp
         src/render/terrain_normal_map.cpp
 )

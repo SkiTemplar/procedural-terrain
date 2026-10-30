@@ -65,6 +65,7 @@ void DebugUi::draw(DebugState& state, render::Camera& camera,
                            0.0f, 1.5f, "%.2f");
         ImGui::EndDisabled();
         ImGui::Checkbox("Sombreado suave", &state.smooth_shading);
+        ImGui::Checkbox("Sombras en cascada", &state.csm_shadows);
         ImGui::Checkbox("wireframe", &state.wireframe);
     }
 
