@@ -185,7 +185,7 @@ void stitch_edges(NodeGrid& g, const FacetRegion& r) {
     }
 }
 
-// Color y luz de una faceta: campos muestreados en su centroide.
+// Color y luz de un nodo: campos muestreados en su posición.
 struct FaceShade {
     glm::vec3 color;
     glm::vec2 light;
@@ -205,93 +205,77 @@ FaceShade shade_face(const DetailSampler& sampler, const Palette& palette,
             {sampler.shadow_at(c.x, c.z), sampler.sky_ao_at(c.x, c.z)}};
 }
 
-// Desde este paso de rejilla la faceta cubre decenas de metros: su color es
-// la media de cuatro muestras (centroide y puntos medios hacia cada vértice)
-// en vez de la del centroide, que en lenguas finas lejanas (flechas, puntas)
-// alternaba arena/hierba/roca cara a cara en un perfil de sierra.
+// Desde este paso de rejilla el nodo representa decenas de metros: su color
+// es la media de cinco muestras (el nodo y cuatro a un cuarto de paso) en
+// vez de la del punto, que en lenguas finas lejanas (flechas, puntas)
+// alternaba arena/hierba/roca nodo a nodo en un perfil de sierra.
 constexpr int kAverageColourStride = 4;
 
-FaceShade shade_face_area(const DetailSampler& sampler, const Palette& palette,
-                          const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
-                          const glm::vec3& n, std::uint32_t id, float facet_m) {
-    const glm::vec3 g = (a + b + c) / 3.0f;
-    FaceShade acc = shade_face(sampler, palette, g, n, id, facet_m);
-    for (const glm::vec3* v : {&a, &b, &c}) {
-        const FaceShade s = shade_face(sampler, palette, (g + *v) * 0.5f, n, id, facet_m);
+// Estilo cartoon (feedback 2026-10-30, "menos poligonal"): el color y la luz
+// se calculan por NODO y se interpolan entre los vértices, en lugar de un
+// color plano por triángulo. Los nodos se comparten entre caras vecinas, así
+// que la ladera es un degradado continuo y no un mosaico de triángulos. El id
+// sale de la posición del nodo (medio metro): dos chunks que comparten un
+// nodo le dan el mismo color, y los umbrales de pick() siguen repartidos
+// alrededor de 0.5 (con un id constante todos se desplazaban a la vez y la
+// nieve de toda la isla menguaba).
+std::uint32_t node_id(const glm::vec3& p) {
+    const auto qx = static_cast<std::uint32_t>(std::lround(p.x * 2.0f) + (1 << 20));
+    const auto qz = static_cast<std::uint32_t>(std::lround(p.z * 2.0f) + (1 << 20));
+    return qx * 73856093u ^ qz * 19349663u;
+}
+
+FaceShade shade_node(const DetailSampler& sampler, const Palette& palette,
+                     const glm::vec3& p, float facet_m, int cells) {
+    const glm::vec3 n = sampler.normal_at_scale(p.x, p.z, facet_m);
+    const std::uint32_t id = node_id(p);
+    FaceShade acc = shade_face(sampler, palette, p, n, id, facet_m);
+    if (cells < kAverageColourStride) {
+        return acc;
+    }
+    const float q = 0.25f * facet_m;
+    for (const glm::vec2 o : {glm::vec2{q, 0.0f}, glm::vec2{-q, 0.0f},
+                              glm::vec2{0.0f, q}, glm::vec2{0.0f, -q}}) {
+        const glm::vec3 s_p{p.x + o.x, p.y, p.z + o.y};
+        const FaceShade s = shade_face(sampler, palette, s_p, n, id, facet_m);
         acc.color += s.color;
         acc.light += s.light;
     }
-    return {acc.color * 0.25f, acc.light * 0.25f};
+    return {acc.color * 0.2f, acc.light * 0.2f};
 }
 
-Material material_at(const DetailSampler& sampler, const glm::vec3& p) {
-    const glm::vec2 mw = material_warp(p.x, p.z);
-    return sampler.material_near(p.x + mw.x, p.z + mw.y);
-}
-
-// Cara fina que cruza un límite de material (playa/marisma, hierba/arena):
-// con el color del centroide, la frontera se dibujaba como dientes de sierra
-// de caras alternas; con la media de la cara queda una fila de tonos de
-// transición. Solo esas caras pagan las cuatro muestras.
-bool crosses_material_edge(const DetailSampler& sampler, const glm::vec3& a,
-                           const glm::vec3& b, const glm::vec3& c) {
-    const glm::vec3 g = (a + b + c) / 3.0f;
-    const Material m = material_at(sampler, g);
-    for (const glm::vec3* v : {&a, &b, &c}) {
-        if (material_at(sampler, (g + *v) * 0.5f) != m) {
-            return true;
+std::vector<FaceShade> shade_nodes(const DetailSampler& sampler, const Palette& palette,
+                                   const NodeGrid& g, float facet_m, int cells) {
+    std::vector<FaceShade> shades(g.pos.size());
+    std::vector<int> rows(static_cast<size_t>(g.h + 1));
+    std::iota(rows.begin(), rows.end(), 0);
+    std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int j) {
+        for (int i = 0; i <= g.w; ++i) {
+            const size_t k = static_cast<size_t>(j) * static_cast<size_t>(g.w + 1)
+                           + static_cast<size_t>(i);
+            shades[k] = shade_node(sampler, palette, g.pos[k], facet_m, cells);
         }
-    }
-    return false;
+    });
+    return shades;
 }
 
-// Arista horizontal mayor de la cara (m): escala de su normal de referencia.
-float facet_extent(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
-    const auto horiz = [](const glm::vec3& p, const glm::vec3& q) {
-        return glm::length(glm::vec2{p.x - q.x, p.z - q.z});
-    };
-    return std::max({horiz(a, b), horiz(b, c), horiz(c, a)});
+// Normal de referencia nula: el fragment no exagera la cara (sombreado suave).
+render::Vertex node_vertex(const glm::vec3& p, const FaceShade& s) {
+    return render::Vertex{p, s.color, glm::vec3{0.0f}, s.light};
 }
 
-void emit_triangle(const DetailSampler& sampler, const Palette& palette,
-                   const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
-                   std::uint32_t id, int stride, render::Vertex* out) {
-    const glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
-    const bool average = stride >= kAverageColourStride
-                      || crosses_material_edge(sampler, a, b, c);
-    // El relieve que decide el color (nieve, afloramiento, canchal) se mide
-    // a la escala de la faceta: con la sonda fija de ~12 m, en una faceta de
-    // 78 m cada cara caía al azar en un lado u otro del barranco y la ladera
-    // se pintaba en columnas alternas.
-    const float extent = facet_extent(a, b, c);
-    const FaceShade s = average
-        ? shade_face_area(sampler, palette, a, b, c, n, id, extent)
-        : shade_face(sampler, palette, (a + b + c) / 3.0f, n, id, extent);
-    // El atributo normal lleva la normal de REFERENCIA de la cara (ladera a
-    // la escala de la faceta): el fragment exagera la desviación de la cara
-    // respecto a ella y las facetas se leen también a media distancia.
-    const glm::vec3 g = (a + b + c) / 3.0f;
-    const glm::vec3 ref = sampler.normal_at_scale(g.x, g.z, extent);
-    out[0] = render::Vertex{a, s.color, ref, s.light};
-    out[1] = render::Vertex{b, s.color, ref, s.light};
-    out[2] = render::Vertex{c, s.color, ref, s.light};
-}
-
-// Faldón: quad vertical bajo la arista a→b, con el color de su punto medio.
-void emit_skirt(const DetailSampler& sampler, const Palette& palette,
-                const glm::vec3& a, const glm::vec3& b, std::vector<render::Vertex>& out) {
+// Faldón: quad vertical bajo la arista a→b, con el color de sus dos nodos
+// (se funde con la cara de al lado en vez de dibujar una franja vertical).
+void emit_skirt(const glm::vec3& a, const glm::vec3& b, const FaceShade& sa,
+                const FaceShade& sb, std::vector<render::Vertex>& out) {
     const glm::vec3 da{a.x, a.y - kSkirtDepth, a.z};
     const glm::vec3 db{b.x, b.y - kSkirtDepth, b.z};
-    const glm::vec3 mid = (a + b) * 0.5f;
-    // Normal y color de la ladera, no de una pared: el escalón residual
-    // entre dos LOD se funde con la cara de al lado en vez de dibujar una
-    // franja oscura vertical.
-    const glm::vec3 n = sampler.normal_near(mid.x, mid.z);
-    const FaceShade s = shade_face(sampler, palette, mid, n, 0u);
-    // Normal de referencia nula: el faldón no exagera su cara vertical.
-    for (const glm::vec3& p : {a, da, b, b, da, db}) {
-        out.push_back(render::Vertex{p, s.color, glm::vec3{0.0f}, s.light});
-    }
+    out.push_back(node_vertex(a, sa));
+    out.push_back(node_vertex(da, sa));
+    out.push_back(node_vertex(b, sb));
+    out.push_back(node_vertex(b, sb));
+    out.push_back(node_vertex(da, sa));
+    out.push_back(node_vertex(db, sb));
 }
 
 } // namespace
@@ -300,39 +284,48 @@ render::Mesh build_faceted_mesh(const TerrainData& data, const DetailSampler& sa
                                 const Palette& palette, const FacetRegion& region) {
     NodeGrid g = build_nodes(data, sampler, region);
     stitch_edges(g, region);
+    const int cells = region.stride / region.sub; // celdas por faceta (0 = subcelda)
+    // Lado de la faceta en metros: escala a la que se mide el relieve que
+    // decide el color (nieve, afloramiento, canchal).
+    const float facet_m = data.height.cell_size() * static_cast<float>(region.stride)
+                        / static_cast<float>(region.sub);
+    const std::vector<FaceShade> shades = shade_nodes(sampler, palette, g, facet_m, cells);
+    const auto shade_at = [&](int i, int j) -> const FaceShade& {
+        return shades[static_cast<size_t>(j) * static_cast<size_t>(g.w + 1) + static_cast<size_t>(i)];
+    };
     std::vector<render::Vertex> vertices(static_cast<size_t>(g.w) * g.h * 6);
     std::vector<int> rows(static_cast<size_t>(g.h));
     std::iota(rows.begin(), rows.end(), 0);
-    const int cells = region.stride / region.sub; // celdas por faceta (0 = subcelda)
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int j) {
         const int gz = region.z0 * region.sub + j * region.stride;
         for (int i = 0; i < g.w; ++i) {
             const int gx = region.x0 * region.sub + i * region.stride;
-            const glm::vec3& tl = g.at(i, j);
-            const glm::vec3& tr = g.at(i + 1, j);
-            const glm::vec3& bl = g.at(i, j + 1);
-            const glm::vec3& br = g.at(i + 1, j + 1);
+            const render::Vertex tl = node_vertex(g.at(i, j), shade_at(i, j));
+            const render::Vertex tr = node_vertex(g.at(i + 1, j), shade_at(i + 1, j));
+            const render::Vertex bl = node_vertex(g.at(i, j + 1), shade_at(i, j + 1));
+            const render::Vertex br = node_vertex(g.at(i + 1, j + 1), shade_at(i + 1, j + 1));
             render::Vertex* out = &vertices[(static_cast<size_t>(j) * g.w + i) * 6];
-            const auto id = static_cast<std::uint32_t>(gz) * 65536u + static_cast<std::uint32_t>(gx);
             // Diagonal por hash del quad global: la triangulación no dibuja
             // rayas paralelas a la rejilla.
             if (hash01(gx * 13 + 5, gz * 17 + 3) < 0.5f) {
-                emit_triangle(sampler, palette, tl, bl, tr, id * 2u, cells, out);
-                emit_triangle(sampler, palette, tr, bl, br, id * 2u + 1u, cells, out + 3);
+                out[0] = tl; out[1] = bl; out[2] = tr;
+                out[3] = tr; out[4] = bl; out[5] = br;
             } else {
-                emit_triangle(sampler, palette, tl, bl, br, id * 2u, cells, out);
-                emit_triangle(sampler, palette, tl, br, tr, id * 2u + 1u, cells, out + 3);
+                out[0] = tl; out[1] = bl; out[2] = br;
+                out[3] = tl; out[4] = br; out[5] = tr;
             }
         }
     });
     vertices.reserve(vertices.size() + 12 * static_cast<size_t>(g.w + g.h));
     for (int i = 0; i < g.w; ++i) {
-        emit_skirt(sampler, palette, g.at(i, 0), g.at(i + 1, 0), vertices);
-        emit_skirt(sampler, palette, g.at(i + 1, g.h), g.at(i, g.h), vertices);
+        emit_skirt(g.at(i, 0), g.at(i + 1, 0), shade_at(i, 0), shade_at(i + 1, 0), vertices);
+        emit_skirt(g.at(i + 1, g.h), g.at(i, g.h), shade_at(i + 1, g.h), shade_at(i, g.h),
+                   vertices);
     }
     for (int j = 0; j < g.h; ++j) {
-        emit_skirt(sampler, palette, g.at(0, j + 1), g.at(0, j), vertices);
-        emit_skirt(sampler, palette, g.at(g.w, j), g.at(g.w, j + 1), vertices);
+        emit_skirt(g.at(0, j + 1), g.at(0, j), shade_at(0, j + 1), shade_at(0, j), vertices);
+        emit_skirt(g.at(g.w, j), g.at(g.w, j + 1), shade_at(g.w, j), shade_at(g.w, j + 1),
+                   vertices);
     }
     std::vector<std::uint32_t> indices(vertices.size());
     std::iota(indices.begin(), indices.end(), 0u);

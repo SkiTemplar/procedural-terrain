@@ -29,6 +29,8 @@ constexpr float kSnowSunShiftM = 110.0f; // m que la solana sube la nieve
 constexpr float kSnowDriftM = 70.0f;     // m de ondulación del límite por ventisqueros
 constexpr float kSnowReliefFrac = 0.66f; // fracción del relieve que ancla los neveros
 constexpr float kSnowHollowM = 90.0f;  // m que un canal baja la nieve (una arista la sube)
+constexpr float kSnowShedTanLo = 1.00f; // tanβ (45°): la nieve empieza a purgar
+constexpr float kSnowShedTanHi = 1.40f; // tanβ (~54°): pared sin nieve
 constexpr float kReliefSlopeM = 6.0f;  // semipaso de la pendiente a escala fija
 constexpr float kReliefCurvM = 30.0f;  // radio del anillo de concavidad
 constexpr float kConcavityFull = 0.08f; // concavidad que satura canal/arista
@@ -434,9 +436,10 @@ float Palette::snow_cover(const FaceCtx& f) const {
     // roca cara a cara y la cumbre salía en confeti blanco y gris.
     const float eff_y = f.y - kSnowSunShiftM * f.relief.sunny + drift + hollow;
     const float alt = glm::smoothstep(anchor - kSnowBelowM, anchor + 40.0f, eff_y);
-    const float t = f.relief.tan_slope;
-    const float slope = 1.0f - 1.0f / std::sqrt(1.0f + t * t);
-    return alt * (1.0f - glm::smoothstep(0.55f, 0.85f, slope));
+    // La nieve purga por aludes y sluffs por encima de ~45-54° (tanβ 1.0-1.4).
+    // Antes el corte era en 1 − cosβ 0.55-0.85 (63-81°): las paredes de roca
+    // salían nevadas.
+    return alt * (1.0f - glm::smoothstep(kSnowShedTanLo, kSnowShedTanHi, f.relief.tan_slope));
 }
 
 // Césped alpino de hombro: pasto corto y ralo, verde oliva que amarillea con

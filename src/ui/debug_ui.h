@@ -29,7 +29,7 @@ struct DebugState {
     float veg_draw_distance = 2600.0f; // m
     bool detail_textures = false; // estilo low-poly: sin texturas fotográficas
     float detail_texture_intensity = 0.75f;
-    bool smooth_shading = false;  // estilo low-poly: facetas planas
+    bool smooth_shading = true;  // estilo cartoon: color por vértice y luz en bandas
     bool csm_shadows = true; // sombras del sol en tiempo real (cascadas)
 
     terrain::TerrainConfig pending_config; // lo que editan los sliders

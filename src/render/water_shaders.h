@@ -221,19 +221,17 @@ const float kInlandCloudRefl = 0.35;
 // por la corriente real (flow map), más picado cuanto más rápida. Lagos y
 // remansos quietos: rizado de viento. El remanso del estuario hereda el
 // oleaje del mar para que la costura entre las dos mallas no se lea.
-// Iter. 10: la lámina interior también es facetada (dirección de arte
-// low-poly): el rizado se evalúa en el centroide de una retícula triangular
-// de kInlandFacetM más una inclinación propia por cara. Con el rizado
-// continuo por píxel el río se leía como una mancha borrosa junto al jugador.
-const float kInlandFacetM = 1.4;
-const float kInlandFacetTilt = 0.10;
+// Estilo cartoon (feedback 2026-10-30): el rizado es continuo por píxel, sin
+// la retícula triangular de la iter. 10 (el reflejo se partía en triángulos).
+// kInlandRippleM solo fija la escala a la que el rizado deja de resolverse.
+const float kInlandRippleM = 1.4;
 
 WaterSurf inland_surface(vec2 xz, vec2 wd, float footprint) {
     vec3 n = normalize(v_surf_n);
     vec2 vel = v_river.xz;
     float speed = length(vel);
-    float wr = smoothstep(2.0, 6.0, kInlandFacetM / footprint); // faceta resuelta
-    vec2 c = sea_facet_centroid(xz, kInlandFacetM);
+    float wr = smoothstep(2.0, 6.0, kInlandRippleM / footprint); // rizado resuelto
+    vec2 c = xz;
     vec2 slope;
     float rough = mix(0.45, 1.0, smoothstep(0.2, 2.0, speed));
     if (speed > 0.02) {
@@ -245,10 +243,8 @@ WaterSurf inland_surface(vec2 xz, vec2 wd, float footprint) {
     } else {
         slope = ripple_slope(c * 0.7 - wd * (u_time * 0.5)) * 0.5;
     }
-    slope += (w_hash22(c + 23.0) - 0.5) * (kInlandFacetTilt * rough);
     n = normalize(n + vec3(-slope.x, 0.0, -slope.y) * wr);
-    float alpha = mix(0.04, 0.14, rough) + 0.04 * (1.0 - wr)
-                + kInlandFacetTilt * 0.4 * (1.0 - wr);
+    float alpha = mix(0.04, 0.14, rough) + 0.04 * (1.0 - wr);
     WaterSurf s = WaterSurf(n, alpha * alpha, 0.0);
     if (v_remanso > 0.0) {
         WaterSurf sea = sea_waves(xz, wd, footprint, 0.0, 0.6);

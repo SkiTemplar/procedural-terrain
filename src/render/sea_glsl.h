@@ -150,7 +150,38 @@ float sea_whitecap(vec2 xz, vec2 c, float facet_m, float crest, float cap_p, flo
     return mix(mean_cap, step(thr, crest_f), w);
 }
 
-// Una retícula de facetas: plano de los tres vértices de la cara.
+// Normal continua del mar de fondo en xz (diferencias de medio lado de
+// faceta). Estilo cartoon (feedback 2026-10-30): el oleaje se sombrea y
+// refleja como una superficie ondulada, no como caras planas; el reflejo de
+// la isla y del cielo se ondula en vez de partirse en triángulos.
+vec3 sea_smooth_normal(vec2 xz, vec2 wd, float facet_m, float sea_k) {
+    float e = 0.5 * facet_m;
+    float h0 = sea_swell(xz, wd, facet_m, sea_k).x;
+    float hx = sea_swell(xz + vec2(e, 0.0), wd, facet_m, sea_k).x;
+    float hz = sea_swell(xz + vec2(0.0, e), wd, facet_m, sea_k).x;
+    return normalize(vec3(h0 - hx, e, h0 - hz));
+}
+
+// Marejadilla continua (~5 m) sobre el mar de fondo: sin ella, con la normal
+// suave el mar cercano era un espejo de lago. Pendiente (x, z) a sumar a la
+// normal; quien llama la apaga cuando el píxel no la resuelve.
+const float kChopScaleM = 5.0;
+const float kChopM = 0.30;
+vec2 sea_chop_slope(vec2 xz, vec2 wd, float sea_k) {
+    const float e = 1.0;
+    vec2 drift = wd * (u_time * 0.8);
+    vec2 q = (xz - drift) / kChopScaleM;
+    vec2 q2 = (xz - drift * 1.4) / (0.45 * kChopScaleM) + vec2(3.7, 1.9);
+    float h0 = w_vnoise(q) + 0.5 * w_vnoise(q2);
+    float hx = w_vnoise(q + vec2(e / kChopScaleM, 0.0))
+             + 0.5 * w_vnoise(q2 + vec2(e / (0.45 * kChopScaleM), 0.0));
+    float hz = w_vnoise(q + vec2(0.0, e / kChopScaleM))
+             + 0.5 * w_vnoise(q2 + vec2(0.0, e / (0.45 * kChopScaleM)));
+    return (kChopM * sea_k / e) * vec2(hx - h0, hz - h0);
+}
+
+// Una retícula del oleaje: normal continua del mar de fondo; los vértices
+// de la retícula solo deciden las cabrillas (tramos de cresta).
 // footprint = huella del píxel; cap_res = 0 deja las cabrillas de esta
 // retícula en su media (la retícula lejana las dibujaría como confeti).
 WaterSurf sea_facets(vec2 xz, vec2 wd, float footprint, float facet_m, float sea_k,
@@ -161,9 +192,13 @@ WaterSurf sea_facets(vec2 xz, vec2 wd, float footprint, float facet_m, float sea
     vec4 v0 = sea_vertex(upper ? q + vec2(1.0) : q, facet_m, wd, sea_k);
     vec4 v1 = sea_vertex(q + vec2(1.0, 0.0), facet_m, wd, sea_k);
     vec4 v2 = sea_vertex(q + vec2(0.0, 1.0), facet_m, wd, sea_k);
-    vec3 n = normalize(cross(v1.xyz - v0.xyz, v2.xyz - v0.xyz));
-    n *= sign(n.y);
-    // Cara resuelta (≥ res_px.y px) → plano; si no, lámina lisa con su varianza.
+    vec3 n = sea_smooth_normal(xz, wd, facet_m, sea_k);
+    float chop_w = smoothstep(1.5, 4.5, kChopScaleM / footprint);
+    if (chop_w > 0.0) {
+        vec2 s = sea_chop_slope(xz, wd, sea_k) * chop_w;
+        n = normalize(n + vec3(-s.x, 0.0, -s.y));
+    }
+    // Ola resuelta (≥ res_px.y px) → normal propia; si no, lámina lisa con su varianza.
     float w = smoothstep(res_px.x, res_px.y, facet_m / footprint);
     vec3 nw = normalize(vec3(n.x * w, n.y, n.z * w));
     float var = sea_slope_variance(facet_m, sea_k);

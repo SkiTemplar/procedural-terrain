@@ -31,7 +31,7 @@ flat out vec3 v_color;
 out vec3 v_color_smooth;
 flat out vec3 v_normal_ref; // normal de la ladera a la escala de la faceta
 out vec2 v_light;
-flat out vec4 v_canopy; // rgb follaje del dosel, a = peso de mezcla
+out vec4 v_canopy; // rgb follaje del dosel, a = peso de mezcla (interpolado)
 
 // Sombreado propio del dosel visto desde lejos: copas con cara de sombra y
 // huecos sombreados entre ellas devuelven menos luz que un plano del mismo
@@ -55,17 +55,9 @@ vec4 far_canopy(vec3 p) {
     // el monte se lee en masas, sin perder el color plano por cara.
     float lod = clamp(log2(d / 480.0) + 1.0, 0.0, 6.0);
     vec4 c = textureLod(u_canopy, uv, lod);
-    // Brillo propio de cada faceta (hash entero del vértice que la provoca):
-    // el dosel lejano conserva un grano facetado leve (±3 %). El hash con
-    // sin() de coordenadas de miles de metros perdía precisión en la GPU y
-    // dibujaba rayas; con ±8 % el bosque lejano era confeti.
-    uvec2 q = uvec2(ivec2(floor(p.xz * 4.0)) + ivec2(1 << 20));
-    uint h = q.x * 374761393u + q.y * 668265263u;
-    h = (h ^ (h >> 13u)) * 1274126177u;
-    h ^= h >> 16u;
-    float jitter = 0.97 + 0.06 * float(h & 0xFFFFu) / 65535.0;
-    return vec4(c.rgb * kCanopySelfShade * jitter,
-                smoothstep(0.04, 0.60, c.a) * far_k);
+    // Interpolado entre vértices (estilo cartoon): sin grano por faceta, el
+    // bosque lejano es una masa continua.
+    return vec4(c.rgb * kCanopySelfShade, smoothstep(0.04, 0.60, c.a) * far_k);
 }
 
 void main() {
@@ -86,7 +78,7 @@ flat in vec3 v_color;
 in vec3 v_color_smooth;
 flat in vec3 v_normal_ref;   // ladera a escala de faceta; 0 = sin exagerar
 in vec2 v_light;             // x = sombra arrojada (1=al sol), y = AO de cielo
-flat in vec4 v_canopy;       // dosel lejano (solo terreno; la vegetación da 0)
+in vec4 v_canopy;            // dosel lejano (solo terreno; la vegetación da 0)
 
 uniform vec3 u_camera_pos;
 uniform float u_smooth_blend; // 1 = sombreado suave; 0 = solo flat (vegetacion o comparacion)
@@ -179,6 +171,21 @@ const float kFacetReliefFar = 0.4;
 const vec2 kFacetReliefRampM = vec2(300.0, 2500.0);
 // Asimetría del cielo hacia el lado del sol (en caras verticales).
 const float kSkySunSide = 0.25;
+// Estilo cartoon del terreno (feedback 2026-10-30): normal del heightfield
+// suavizada y luz del sol en bandas blandas (umbría, media luz, solana) en
+// vez del gradiente continuo o del salto de luz por triángulo.
+const float kNormalSoften = 4.0;
+const float kToonWeight = 0.65;
+// Luz envolvente: el terminador baja kToonWrap por debajo de la tangente al
+// sol y las umbrías rasantes reciben media luz (sombras claras de cartoon; sin
+// esto la nieve de una cara de espaldas quedaba gris oscura).
+const float kToonWrap = 0.30;
+
+float toon_diffuse(float n_dot_l) {
+    float d = max((n_dot_l + kToonWrap) / (1.0 + kToonWrap), 0.0);
+    float bands = 0.50 * smoothstep(0.02, 0.10, d) + 0.50 * smoothstep(0.38, 0.50, d);
+    return mix(d, bands, kToonWeight);
+}
 const float kDetailFadeStartM = 150.0;
 const float kDetailFadeEndM = 400.0;
 const int kRockLayer = 4;
@@ -377,8 +384,10 @@ void main() {
     ivec2 norm_size = textureSize(u_terrain_normal_map, 0);
     vec2 norm_grid = (v_world_pos.xz / (2.0 * u_terrain_half) + 0.5) * vec2(norm_size - 1);
     vec2 norm_uv = (norm_grid + 0.5) / vec2(norm_size);
-    vec2 norm_dx = dpdx.xz / (2.0 * u_terrain_half);
-    vec2 norm_dy = dpdy.xz / (2.0 * u_terrain_half);
+    // Gradientes ×kNormalSoften (≈ 2 mips más): la normal lee el relieve a
+    // ~10 m y no la arruga de cada celda; formas simples de estilo cartoon.
+    vec2 norm_dx = dpdx.xz * kNormalSoften / (2.0 * u_terrain_half);
+    vec2 norm_dy = dpdy.xz * kNormalSoften / (2.0 * u_terrain_half);
     vec2 n_xz = textureGrad(u_terrain_normal_map, norm_uv, norm_dx, norm_dy).rg;
     float n_y = sqrt(max(0.0, 1.0 - dot(n_xz, n_xz)));
     vec3 n_map = normalize(vec3(n_xz.x, n_y, n_xz.y));
@@ -432,7 +441,8 @@ void main() {
     // el ACES) → más contraste y volumen, menos look lavado. El hemisférico
     // (cielo frío arriba, rebote cálido abajo) se mantiene.
     const vec3 sun_color = vec3(1.0, 0.94, 0.82);
-    float diffuse = max(dot(normal, u_sun_dir), 0.0);
+    float n_dot_l = dot(normal, u_sun_dir);
+    float diffuse = mix(max(n_dot_l, 0.0), toon_diffuse(n_dot_l), blend);
     float sky_facing = normal.y * 0.5 + 0.5;
     vec3 hemi = mix(vec3(0.30, 0.31, 0.26), vec3(0.56, 0.68, 0.90), sky_facing);
     // Cielo direccional: la bóveda del lado del sol (aureola de Mie) es más
@@ -511,22 +521,10 @@ flat out vec3 v_color;
 out vec3 v_color_smooth;
 flat out vec3 v_normal_ref;
 out vec2 v_light;
-flat out vec4 v_canopy;
+out vec4 v_canopy;
 
-// Cámara dentro de la copa: la instancia se pliega a su base. Sin esto, una
-// cámara a ras de suelo junto a un tronco ve la cara interior de un cono
-// llenando media pantalla. Radio de copa del modelo mayor (~2.6 m) y altura
-// (~9.5 m) por la escala de la instancia; fuera de ese cilindro no cambia nada.
-const float kCanopyRadiusM = 2.7;
-const float kCanopyTopM = 9.5;
-float camera_clearance(vec4 pos_scale) {
-    float r = kCanopyRadiusM * pos_scale.w;
-    float d = length(pos_scale.xz - u_camera_pos.xz);
-    float below_top = step(u_camera_pos.y, pos_scale.y + kCanopyTopM * pos_scale.w);
-    return mix(1.0, smoothstep(0.9 * r, 1.4 * r, d), below_top);
-}
-
-// Desvanecido lejano por instancia (no por celda de culling): el árbol encoge
+// Sin pliegue junto a la cámara (feedback 2026-10-30): el jugador atraviesa
+// árboles y rocas sin que encojan. Desvanecido lejano por instancia (no por celda de culling): el árbol encoge
 // hacia su base en la franja en que el terreno pasa al dosel lejano, así que
 // el borde del bosque dibujado no forma cuadrados.
 float far_fade(vec4 pos_scale) {
@@ -537,7 +535,7 @@ float far_fade(vec4 pos_scale) {
 void main() {
     float c = cos(i_tint_yaw.w);
     float s = sin(i_tint_yaw.w);
-    vec3 p = a_pos * (i_pos_scale.w * camera_clearance(i_pos_scale) * far_fade(i_pos_scale));
+    vec3 p = a_pos * (i_pos_scale.w * far_fade(i_pos_scale));
     p = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z) + i_pos_scale.xyz;
     v_world_pos = p;
     v_color = a_color * i_tint_yaw.rgb;
