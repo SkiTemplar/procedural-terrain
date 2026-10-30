@@ -7,6 +7,8 @@
 #error "water_shaders.h se incluye desde render/terrain_shaders.h"
 #endif
 
+#include "render/sea_glsl.h"
+
 namespace render {
 
 // Vértice del agua: olas largas por vértice en mar y lagos; los ríos llevan
@@ -209,177 +211,12 @@ struct WaterSurf {
 // Rugosidad del rizado capilar no resuelto (α de GGX) en mar y lagos.
 const float kMicroAlpha = 0.07;
 
-// OLEAJE FACETADO (dirección de arte low-poly 2026-10): el mar se lee como
-// una malla de triángulos planos, no como un espejo con rizado fotográfico.
-// Tres trenes de Gerstner largos alrededor de la dirección de viaje de la
-// rosa de vientos (abanico más cerrado cuanto más focalizado el viento),
-// espectro de saturación (amplitud ∝ λ, misma pendiente a·k por banda, el
-// dominante con a = H_s/2) y dispersión de aguas profundas ω = √(g·k). La
-// pendiente se evalúa UNA vez por faceta, en el centroide de una retícula
-// triangular de kSeaFacetM de lado, así que cada cara tiene un solo plano.
-// ANTIALIASING: cuando la faceta baja de ~4 px se funde con la lámina plana y
-// su varianza de pendiente pasa a α² de GGX — a lo lejos el mar es un
-// degradado limpio con el camino de destellos ensanchado, sin moiré.
-const float kTrainLambda[3] = float[](130.0, 84.0, 55.0);
-const float kTrainAngle[3] = float[](0.0, 0.55, -0.48);
-const float kSeaFacetM = 7.0;
-// Estilización del mar de fondo (iter. 7): con la pendiente física (a·k ≈
-// 0.03 con H_s = 1.5 m) todas las caras miraban casi al cénit y el mar se
-// leía como un lago en calma. La faceta lleva kSwellGain veces esa pendiente
-// más una inclinación propia por cara; el contraste lo acota el reflejo
-// (kSeaReflectance y normal de reflejo a medio camino), no la pendiente.
-const float kWaveSlopeScale = 0.75;
-const float kSwellGain = 3.0;
-// Reflectancia del mar respecto al Fresnel físico: menos espejo, más cuerpo
-// de agua azul verdoso (el pase de cielo usa el mismo factor en su océano).
-const float kSeaReflectance = 0.55;
 // Peso de la nube reflejada en el mar: el oleaje la rompe en manchas.
 const float kSeaCloudRefl = 0.12;
 // Ríos y lagos (iter. 10): la nube reflejada entera era una mancha blanca
 // borrosa sobre la lámina facetada; queda un reflejo tenue.
 const float kInlandCloudRefl = 0.35;
-
-// Envolvente de grupos de olas: zonas de mar más rizado y más calmo
-// (~250 m y ~90 m) que rompen la periodicidad de los trenes.
-float wave_envelope(vec2 xz, vec2 wd) {
-    vec2 q = xz - wd * (u_time * 1.5);
-    return 0.45 + 0.75 * w_vnoise(q * 0.004) + 0.35 * (w_vnoise(q * 0.011 + 7.7) - 0.5);
-}
-
-// Centroide (xz) de la faceta triangular de lado facet_m que contiene xz:
-// retícula equilátera en coordenadas oblicuas (e1 = (1, 0), e2 = (½, √3/2)).
-// Las retículas de lado facet_m/k (k entero) están anidadas en la de facet_m.
-vec2 sea_facet_centroid(vec2 xz, float facet_m) {
-    vec2 b = vec2(xz.x - xz.y * 0.5773503, xz.y * 1.1547005) / facet_m;
-    vec2 q = floor(b);
-    vec2 f = b - q;
-    vec2 c = q + (f.x + f.y > 1.0 ? vec2(2.0 / 3.0) : vec2(1.0 / 3.0));
-    return vec2(c.x + 0.5 * c.y, 0.8660254 * c.y) * facet_m;
-}
-
-// Pendiente del oleaje en un punto (x, z) y su varianza (s²/2 sumada).
-// crest = altura normalizada del mar de fondo en [-1, 1] (1 = cresta).
-vec3 swell_slope(vec2 xz, vec2 wd, out float crest) {
-    vec2 perp = vec2(-wd.y, wd.x);
-    float slope_k = kWaveSlopeScale * wave_envelope(xz, wd);
-    float spread = 1.0 - 0.4 * u_wind_focus;
-    // Fase con ruido lento (~85 m): las crestas de un tren se desalinean.
-    float jit = w_vnoise(xz * 0.012) * 6.2831853;
-    float a0 = 0.5 * u_wave_hmax / kTrainLambda[0];
-    vec3 acc = vec3(0.0); // (pendiente x, pendiente z, varianza)
-    float h = 0.0;
-    float h_norm = 0.0;
-    for (int i = 0; i < 3; ++i) {
-        float ang = kTrainAngle[i] * spread;
-        vec2 d = wd * cos(ang) + perp * sin(ang);
-        float k = 6.2831853 / kTrainLambda[i];
-        float s = a0 * kTrainLambda[i] * k * slope_k; // pendiente a·k del tren
-        float ph = k * dot(xz, d) - sqrt(9.81 * k) * u_time + jit * (0.7 + 0.4 * float(i));
-        acc += vec3(d * (s * cos(ph)), 0.5 * s * s);
-        h += kTrainLambda[i] * sin(ph);
-        h_norm += kTrainLambda[i];
-    }
-    crest = h / h_norm;
-    return acc;
-}
-
-vec2 w_hash22(vec2 p) {
-    return vec2(w_hash12(p * 0.37), w_hash12(p * 0.53 + 3.1));
-}
-
-// CABRILLAS (whitecaps): rompe la cresta del mar de fondo donde el viento
-// la empina. Probabilidad por faceta = cap_p (energía de oleaje) × cercanía a
-// la cresta; la espuma ocupa la mitad de las subfacetas de un tercio de lado
-// (manchas rotas de 2-3 m, no un triángulo entero). w = resolución de la
-// faceta: sin resolver se sustituye por su media (sin centelleo lejano).
-// Iter. 9: la rotura se decide por TRAMO de cresta (la faceta madre de 4×
-// de lado, ~28 m) y, dentro de él, la espuma cubre las subfacetas (un tercio
-// de lado) que quedan sobre la cresta del mar de fondo en SU centroide: una
-// mancha maciza alargada a lo largo de la cresta con el borde roto, no
-// triángulos sueltos ni un damero. El umbral sube hacia el borde de la madre
-// (la espuma nace en el centro del tramo): sin eso, en la rompiente la cresta
-// cubría la madre entera y salía un paralelogramo blanco de 28 m. Sin
-// resolver (< ~4 px) la subfaceta usa la cresta de su faceta, y la faceta sin
-// resolver, la media (sin centelleo).
-float sea_whitecap(vec2 xz, vec2 c, float facet_m, float crest, float cap_p, float w,
-                   float footprint, vec2 wd) {
-    float mean_cap = cap_p * 0.18 * 0.5;
-    vec2 parent = sea_facet_centroid(c, 4.0 * facet_m);
-    float group = step(w_hash12(parent * 0.71 + 9.3), 0.9 * cap_p);
-    if (group * w <= 0.0) {
-        return mean_cap * (1.0 - w);
-    }
-    float ws = smoothstep(1.5, 4.5, facet_m / (3.0 * footprint));
-    float crest_f = crest;
-    vec2 at = c;
-    if (ws > 0.0) {
-        vec2 cs = sea_facet_centroid(xz, facet_m / 3.0);
-        float crest_s;
-        swell_slope(cs, wd, crest_s);
-        crest_f = mix(crest, crest_s + 0.12 * (w_hash12(cs * 0.29 + 1.7) - 0.5), ws);
-        at = mix(c, cs, ws);
-    }
-    float thr = 0.62 + 0.33 * smoothstep(0.3, 1.6, length(at - parent) / facet_m);
-    return mix(mean_cap, step(thr, crest_f), w);
-}
-
-// Una retícula de facetas: pendiente del oleaje en el centroide más una
-// inclinación propia por cara (hash), para que el mosaico se lea aun donde
-// los trenes se cancelan. footprint = huella del píxel a lo largo de la cara.
-// cap_res = 0 deja las cabrillas de esta retícula en su media (la retícula
-// lejana de 28 m las dibujaría como triángulos blancos de confeti).
-WaterSurf sea_facets(vec2 xz, vec2 wd, float footprint, float facet_m, float tilt_k,
-                     float cap_p, float cap_res, vec2 res_px) {
-    vec2 c = sea_facet_centroid(xz, facet_m);
-    float crest;
-    vec3 sl = swell_slope(c, wd, crest);
-    vec2 slope = sl.xy * kSwellGain + (w_hash22(c) - 0.5) * tilt_k;
-    // Faceta resuelta (≥ res_px.y px) → plano; si no, lámina lisa con su varianza.
-    float w = smoothstep(res_px.x, res_px.y, facet_m / footprint);
-    vec3 n = normalize(vec3(-slope.x * w, 1.0, -slope.y * w));
-    float var = sl.z * kSwellGain * kSwellGain + tilt_k * tilt_k / 6.0;
-    return WaterSurf(n, kMicroAlpha * kMicroAlpha + (1.0 - w * w) * var,
-                     sea_whitecap(xz, c, facet_m, crest, cap_p, w * cap_res, footprint, wd));
-}
-
-// Rizado de viento facetado junto a la cámara: retícula de un tercio de lado
-// (anidada) con inclinación propia leve; las caras grandes del mar de fondo
-// se rompen en un mosaico fino sin perder su plano dominante.
-vec3 sea_ripple_facets(vec3 n, vec2 xz, float footprint) {
-    float facet_m = kSeaFacetM / 3.0;
-    float wr = smoothstep(1.5, 4.5, facet_m / footprint);
-    if (wr <= 0.0) {
-        return n;
-    }
-    vec2 t = (w_hash22(sea_facet_centroid(xz, facet_m) + 11.0) - 0.5) * 0.05 * wr;
-    return normalize(n + vec3(-t.x, 0.0, -t.y));
-}
-
-// Mar adentro las caras de kSeaFacetM bajan de unos pocos píxeles: más allá
-// de ~200 m entra una retícula 4× mayor (anidada). Iter. 9: su resolución se
-// mide con la huella MAYOR (la de profundidad a incidencia rasante), no con
-// la media geométrica: con ella las caras de 28 m seguían "resueltas" cuando
-// ya medían 1-2 px de alto y el mar lejano batía en un mosaico de tiras
-// horizontales alineadas con la retícula. Ahora, más allá de ~300-450 m
-// (cámara a pie de playa) las caras se funden en la lámina lisa con su
-// varianza en α²: reflejo de Fresnel del cielo y camino de destellos.
-WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint, float cap_p) {
-    WaterSurf near_s = sea_facets(xz, wd, footprint, kSeaFacetM, 0.10, cap_p, 1.0,
-                                  vec2(1.5, 4.5));
-    near_s.n = sea_ripple_facets(near_s.n, xz, footprint);
-    float far_k = smoothstep(160.0, 320.0, length(xz - u_camera_pos.xz));
-    if (far_k <= 0.0) {
-        return near_s;
-    }
-    // Las caras grandes piden más píxeles para dibujarse: a 2-4 px de alto
-    // cada una era una tira clara u oscura según reflejara cielo o agua.
-    WaterSurf far_s = sea_facets(xz, wd, footprint, 4.0 * kSeaFacetM, 0.08, cap_p, 0.0,
-                                 vec2(3.0, 7.0));
-    return WaterSurf(normalize(mix(near_s.n, far_s.n, far_k)),
-                     mix(near_s.alpha2, far_s.alpha2, far_k),
-                     mix(near_s.cap, far_s.cap, far_k));
-}
-
+)glsl" PT_GLSL_SEA R"glsl(
 // Lámina interior: normal suave de la malla + rizado. Ríos: rizado advectado
 // por la corriente real (flow map), más picado cuanto más rápida. Lagos y
 // remansos quietos: rizado de viento. El remanso del estuario hereda el
@@ -414,7 +251,7 @@ WaterSurf inland_surface(vec2 xz, vec2 wd, float footprint) {
                 + kInlandFacetTilt * 0.4 * (1.0 - wr);
     WaterSurf s = WaterSurf(n, alpha * alpha, 0.0);
     if (v_remanso > 0.0) {
-        WaterSurf sea = sea_waves(xz, wd, footprint, 0.0);
+        WaterSurf sea = sea_waves(xz, wd, footprint, 0.0, 0.6);
         s.n = normalize(mix(s.n, sea.n, v_remanso));
         s.alpha2 = mix(s.alpha2, sea.alpha2, v_remanso);
     }
@@ -541,30 +378,6 @@ float shore_energy() {
     return texture(u_seabed, clamp(uv, 0.0, 1.0)).g;
 }
 
-// Probabilidad de cabrilla por faceta: crece con la energía de oleaje; mar
-// adentro (calado > ~30 m) el oleaje ya no lo limita el abrigo de la costa.
-float sea_cap_probability(vec2 de) {
-    float open_e = mix(de.y, 1.0, smoothstep(8.0, 30.0, de.x));
-    return 0.26 * smoothstep(0.25, 0.90, open_e);
-}
-
-// Luz propia de la faceta del mar sobre el cuerpo de agua: cada cara se
-// separa en valor de sus vecinas según mire al sol (±35 % como máximo).
-float sea_facet_light(vec3 n) {
-    float lam = dot(n, u_sun_dir) - u_sun_dir.y;
-    return clamp(1.0 + 3.0 * lam, 0.65, 1.35);
-}
-
-// Reflejo del mar: Fresnel y dirección de reflejo con la normal de faceta a
-// medio camino de la vertical (el valor de cada cara cambia, pero ninguna
-// refleja el cielo rasante blanco entero) y reflectancia kSeaReflectance.
-float sea_fresnel(vec3 n, vec3 view_dir, out vec3 refl) {
-    vec3 n_r = normalize(mix(vec3(0.0, 1.0, 0.0), n, 0.6));
-    refl = reflect(-view_dir, n_r);
-    float cos_v = max(dot(view_dir, n_r), 0.0);
-    return max((0.02 + 0.98 * pow(1.0 - cos_v, 5.0)) * kSeaReflectance, 0.04);
-}
-
 // Óptica de boca: la lámina dulce que se mezcla con el mar (remanso a su cota
 // o banda de oleaje) es agua clara sobre arena, no el río turbio de monte.
 float estuary_marine(float wave_e) {
@@ -606,7 +419,8 @@ void main() {
     float depth = de.x;
     float fw = fwidth(depth);
     float marine = sea ? 1.0 : estuary_marine(de.y);
-    WaterSurf surf = sea ? sea_waves(v_world_pos.xz, wd, footprint, sea_cap_probability(de))
+    WaterSurf surf = sea ? sea_waves(v_world_pos.xz, wd, footprint, sea_cap_probability(de),
+                                     sea_amplitude(de))
                          : inland_surface(v_world_pos.xz, wd, footprint);
     // PARED DE AGUA: en el borde de la cinta del río los triángulos que caen
     // a la orilla son casi verticales; se desvanecen salvo en cascadas y
@@ -655,12 +469,15 @@ void main() {
     vec4 cloud = cloud_layer(refl);
     vec3 sky_refl = mix(sky_color(refl), cloud.rgb,
                         cloud.a * (sea ? kSeaCloudRefl : kInlandCloudRefl));
-    // Reflejo rasante del mar (iter. 10): sin la isla en el reflejo, el agua a
-    // 1-3 km reflejaba el cielo blanquecino del horizonte y dibujaba una banda
-    // pálida bajo la costa. El ángulo rasante pierde parte del cielo (lo
-    // taparían la costa y el propio oleaje) y la perspectiva aérea hace el resto.
-    if (sea) {
-        sky_refl *= mix(0.68, 1.0, smoothstep(0.0, 0.10, refl.y));
+    // Reflejo de la isla (iter. 11): el rayo reflejado, con la normal de
+    // faceta a medio camino de la vertical (las caras rompen el reflejo en
+    // trozos sin dispersarlo por todo el cielo), se marcha sobre el relieve.
+    // Solo donde el Fresnel pesa: mirando hacia abajo no se ve y no se paga.
+    if (sea && fresnel > 0.03) {
+        vec3 r_isl = reflect(-view_dir, normalize(mix(vec3(0.0, 1.0, 0.0), surf.n, 0.4)));
+        r_isl.y = abs(r_isl.y);
+        vec4 isl = island_reflection(v_world_pos, r_isl);
+        sky_refl = mix(sky_refl, isl.rgb, isl.a * smoothstep(0.03, 0.05, fresnel));
     }
     vec3 radiance = fresnel * sky_refl + (1.0 - fresnel) * body * facet_light
                   + sun_glint(surf.n, view_dir, surf.alpha2) * film_k * (1.0 - wall_k)

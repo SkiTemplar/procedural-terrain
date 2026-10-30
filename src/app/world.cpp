@@ -32,7 +32,10 @@ void SeabedTexture::rebuild(const terrain::TerrainData& data) {
             const int sz = z * (res - 1) / (kRes - 1);
             const size_t si = static_cast<size_t>(sz) * res + sx;
             const size_t ti = (static_cast<size_t>(z) * kRes + x) * 2;
-            texels[ti] = std::max(0.0f, sea - hf.data()[si]);
+            // Calado CON SIGNO (negativo en tierra): el filtrado bilineal
+            // interpola el cero entre texeles (orilla lisa, sin escalera de
+            // texel) y el reflejo de la isla lee de aquí la cota del terreno.
+            texels[ti] = sea - hf.data()[si];
             texels[ti + 1] = data.wave_energy.empty() ? 0.0f : data.wave_energy[si];
         }
     }

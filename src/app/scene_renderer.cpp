@@ -57,6 +57,18 @@ void set_common_uniforms(const render::Shader& shader, const render::Camera& cam
     shader.set_float("u_fog_density", state.fog_density);
 }
 
+// Relieve que refleja el mar: cumbre (corta la marcha del rayo) y líneas de
+// nieve y de bosque con la misma regla que la paleta del terreno.
+void set_land_uniforms(const render::Shader& shader, const terrain::TerrainData& data) {
+    shader.set_float("u_land_top", data.max_height_m + 10.0f);
+    shader.set_float("u_snow_line",
+                     data.snow_line_m > 0.0f ? data.snow_line_m : data.config.snow_line_m);
+    shader.set_float("u_tree_line",
+                     std::max(data.treeline_m > 0.0f ? data.treeline_m
+                                                     : data.config.treeline_m,
+                              1.0f));
+}
+
 } // namespace
 
 SceneRenderer::SceneRenderer()
@@ -259,6 +271,7 @@ void SceneRenderer::draw_water(World& world, const render::Camera& camera,
                             terrain::sea_plane_half(world.data.config.size_m));
     water_shader_.set_float("u_sea_grid", static_cast<float>(terrain::kSeaPlaneRes));
     water_shader_.set_int("u_seabed", 0);
+    set_land_uniforms(water_shader_, world.data);
     water_shader_.set_int("u_sea_clip", 1);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, world.seabed.clip_id);
