@@ -1,0 +1,5 @@
+# Órbita alta alrededor de la isla (t x z alt yaw pitch); yaw apunta al centro.
+0    0     7600  1900  -90  -16
+5    3800  6580  1900 -120  -16
+10   6580  3800  1900 -150  -16
+14   7600  0     1900  180  -16

@@ -1,0 +1,4 @@
+# Rasante sobre el bosque hacia la boca del río.
+0  -2600 -400   90 -150  -9
+5  -3200 -900   70 -140 -10
+10 -3800 -1400  60 -130 -12

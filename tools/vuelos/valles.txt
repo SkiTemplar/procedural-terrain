@@ -1,0 +1,4 @@
+# Aproximación desde el norte hacia los valles y el macizo.
+0    900 -6200  420   90  -8
+6    900 -4400  380   92 -10
+12   700 -2900  420   96 -14

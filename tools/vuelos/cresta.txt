@@ -1,0 +1,4 @@
+# Travelling lateral sobre las laderas del este con el macizo de fondo.
+0   4600  2000  380  170 -10
+6   4800     0  420  180 -11
+12  4600 -2000  380  190 -10

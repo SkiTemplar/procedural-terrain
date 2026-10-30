@@ -1,0 +1,4 @@
+# Vuelo bajo sobre el mar paralelo a la costa oeste, mirando a tierra.
+0   -5400  2200   70  -60  -6
+6   -5400  0      70  -40  -6
+12  -5200 -2200   70  -20  -7
