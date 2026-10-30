@@ -35,8 +35,10 @@ terrain::TerrainConfig golden_config() {
     return cfg;
 }
 
-constexpr std::uint64_t kGoldenHeight = 0xe2c72509eba35df4ull;
-constexpr std::uint64_t kGoldenMaterial = 0xe6b77c666f6d4af4ull;
+// Recalibrado 2026-10-30: relieve tectónico continuo + LEM con cabeceras de
+// (40 m)² (red dendrítica); cambio intencionado del mundo.
+constexpr std::uint64_t kGoldenHeight = 0xcf708dd7c8f56aaaull;
+constexpr std::uint64_t kGoldenMaterial = 0x3d76786467a9df34ull;
 
 } // namespace
 

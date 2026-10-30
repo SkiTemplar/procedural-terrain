@@ -164,6 +164,52 @@ std::vector<float> compute_coast_cliff(const std::vector<float>& continent,
     return cliff;
 }
 
+// Relieve tectónico relativo en p_km (sin normalizar): cresta ridged sobre
+// un dominio con warp (eje sinuoso) y comprimido a través del eje (λ ~12 km
+// a lo largo, ~5 km a través), con perfil transversal ridged^γ (γ = 0.7:
+// flancos anchos que mantienen uplift hasta media ladera; con γ = 1.5 la
+// cordillera era un filo estrecho y la cumbre no pasaba de ~840 m), por la
+// amplitud de las culminaciones a lo largo del eje y por la masa regional
+// que decide dónde vive la cordillera.
+constexpr float kCrestGamma = 0.7f;
+// Percentil del relieve que satura a u = 1 (el 15 % más alto del campo):
+// núcleos de cordillera con uplift pleno pero sin bloque uniforme (con el
+// espinazo saturado ancho el LEM dejaba una MESA con peine de barrancos).
+constexpr float kReliefPercentile = 0.85f;
+// Uplift mínimo fuera de la cordillera (fracción del pleno): colinas bajas.
+constexpr float kUpliftFloor = 0.20f;
+
+float tectonic_relief(const Noise& noise, glm::vec2 axis, glm::vec3 p_km) {
+    const glm::vec3 pw = noise.warp(p_km, 1.4f, 0.12f);
+    const float u = pw.x * axis.x + pw.z * axis.y;
+    const float v = -pw.x * axis.y + pw.z * axis.x;
+    const float crest = noise.ridged(
+        glm::vec3{u * 0.08f, 0.0f, v * 0.20f} + glm::vec3{19.3f, 0.0f, -7.4f}, 4);
+    const float culmination = smoothstep(
+        -0.55f, 0.55f,
+        noise.fbm(glm::vec3{u * 0.30f, 0.0f, v * 0.08f} + glm::vec3{-3.3f, 0.0f, 71.2f}, 2));
+    const float mass = smoothstep(
+        0.25f, 0.75f,
+        noise.fbm(p_km * 0.10f + glm::vec3{53.7f, 0.0f, -11.9f}, 2) * 0.5f + 0.5f);
+    return std::pow(crest, kCrestGamma) * (0.30f + 0.70f * culmination) * (0.35f + 0.65f * mass);
+}
+
+// Divide el campo por su percentil `q` y satura a 1: solo las culminaciones
+// más altas llegan a u = 1 (el contrato de cota de cumbre se calibra ahí).
+void normalize_to_percentile(std::vector<float>& field, float q) {
+    if (field.empty()) {
+        return;
+    }
+    std::vector<float> sorted(field);
+    const size_t k = std::min(sorted.size() - 1,
+                              static_cast<size_t>(q * static_cast<float>(sorted.size())));
+    std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(k), sorted.end());
+    const float top = std::max(sorted[k], 1e-6f);
+    for (float& f : field) {
+        f = std::min(1.0f, f / top);
+    }
+}
+
 // Pipeline INVERTIDO (Cordonnier 2016 / FastScape): la forma macro sale de un
 // modelo de evolución del paisaje (uplift + stream power a estado
 // estacionario → red dendrítica de valles y divisorias reales), y el ruido
@@ -206,7 +252,7 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 const float u = p_km.x * axis.x + p_km.z * axis.y;
                 const float v = -p_km.x * axis.y + p_km.z * axis.x;
                 // Litología por formaciones (feedback 2026-07-10 "U de
-                // cabeceras"): bandas de roca CUANTIZADAS siguiendo el rumbo
+                // cabeceras"): bandas de roca siguiendo el rumbo
                 // tectónico (estratos ~paralelos al orógeno, λ ~5 km a lo
                 // largo / ~1.8 km a través) con contactos suaves. 0 = dura,
                 // 1 = blanda; el LEM disecciona cada formación a SU escala —
@@ -215,10 +261,12 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                                                 + glm::vec3{-31.6f, 0.0f, 44.9f},
                                             2)
                                 * 0.5f + 0.5f;
-                const float t4 = glm::clamp(geo, 0.0f, 0.999f) * 4.0f;
-                const float band = std::floor(t4);
+                // Contactos CONTINUOS: las bandas cuantizadas (floor ×4)
+                // saltaban K ×1.7 y A₀ ×2.5 de golpe en cada contacto y el LEM
+                // las tallaba como paredes rectas paralelas al rumbo, visibles
+                // en el sombreado como bloques rectangulares.
                 lithology[static_cast<size_t>(z) * macro_res + x] =
-                    (band + smoothstep(0.30f, 0.70f, t4 - band)) * 0.25f;
+                    smoothstep(0.15f, 0.85f, geo);
             }
         });
 
@@ -226,7 +274,29 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
         std::vector<float> cliff_m = compute_coast_cliff(
             continent_m, lithology, macro_res, macro_cell, cfg);
 
-        // Pasada 3: uplift (espinazo/masa/tierras bajas), skerries y
+        // Pasada 3a: relieve tectónico relativo (dónde y cuánto levanta la
+        // corteza), normalizado a su percentil alto. Antes el espinazo se
+        // saturaba ancho a u = 1 (smoothstep + clamp): un bloque de uplift
+        // uniforme que el LEM en equilibrio convierte en MESA con barrancos
+        // paralelos en peine y cumbres a la misma cota. Ahora el campo es
+        // continuo: el eje de la cordillera serpentea (warp de λ ~8 km), el
+        // perfil transversal se estrecha hacia la divisoria (ridged^γ) y la
+        // amplitud cambia a lo largo del eje (culminaciones) — picos de
+        // alturas distintas, collados entre ellos y flancos que pierden
+        // uplift hacia la costa, como en una cordillera real.
+        std::vector<float> relief(uplift.size());
+        std::for_each(std::execution::par, mrows.begin(), mrows.end(), [&](int z) {
+            for (int x = 0; x < macro_res; ++x) {
+                const float wx = -cfg.size_m * 0.5f + static_cast<float>(x) * macro_cell;
+                const float wz = -cfg.size_m * 0.5f + static_cast<float>(z) * macro_cell;
+                const glm::vec3 p_km{wx / 1000.0f, 0.0f, wz / 1000.0f};
+                relief[static_cast<size_t>(z) * macro_res + x] =
+                    tectonic_relief(noise, axis, p_km);
+            }
+        });
+        normalize_to_percentile(relief, kReliefPercentile);
+
+        // Pasada 3b: uplift (relieve tectónico/tierras bajas), skerries y
         // batimetría prior.
         std::for_each(std::execution::par, mrows.begin(), mrows.end(), [&](int z) {
             for (int x = 0; x < macro_res; ++x) {
@@ -236,44 +306,22 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 const size_t mi = static_cast<size_t>(z) * macro_res + x;
                 const float continent = continent_m[mi];
 
-                // Espinazo: ridged muestreado con el dominio comprimido a
-                // través del eje (λ ~12 km a lo largo, ~4 km a través).
-                const float u = p_km.x * axis.x + p_km.z * axis.y;
-                const float v = -p_km.x * axis.y + p_km.z * axis.x;
-                const float spine = smoothstep(
-                    0.30f, 0.72f,
-                    noise.ridged(glm::vec3{u * 0.08f, 0.0f, v * 0.26f}
-                                     + glm::vec3{19.3f, 0.0f, -7.4f}, 3));
-                // Máscara regional lenta: dónde vive la cordillera (evita un
-                // espinazo uniforme que cruce toda la isla).
-                const float mass = smoothstep(
-                    0.32f, 0.68f,
-                    noise.fbm(p_km * 0.10f + glm::vec3{53.7f, 0.0f, -11.9f}, 2)
-                        * 0.5f + 0.5f);
-                // El LEM solo levanta lo que el uplift marca (S ∝ u): con
-                // crestas u=1 de una celda las cumbres se quedaban al ~58%
-                // del objetivo. Ganancia del espinazo alta para que el
-                // NÚCLEO SATURE ancho (macizos enteros a u≈1, no filos);
-                // la masa regional sigue poniendo altiplanos y decidiendo
-                // dónde culmina la cordillera.
                 // Tierras bajas: sectores enteros casi sin uplift (λ ~11 km)
                 // → el LEM deja llanuras y colinas de pradera en vez de
-                // flanco de montaña por toda la isla. El espinazo se respeta:
-                // la cordillera no pierde su núcleo, pierde sus faldas.
+                // flanco de montaña por toda la isla. La divisoria se
+                // respeta: la cordillera no pierde su núcleo, pierde sus faldas.
                 const float lowland = smoothstep(
                     0.52f, 0.70f,
                     noise.fbm(p_km * 0.09f + glm::vec3{-88.4f, 0.0f, 27.6f}, 2)
                             * 0.5f + 0.5f)
-                    * (1.0f - 0.70f * spine);
+                    * (1.0f - 0.70f * relief[mi]);
                 // En sectores de costa expuesta el uplift NO se hunde hacia
                 // el mar (exponente 1.5 → 0.4): la montaña llega a la costa
                 // por sí misma y el acantilado es su cara contra el agua —
                 // nada de mesetas artificiales pegadas después.
                 float cell_uplift =
                     std::pow(continent, 1.5f - 1.1f * cliff_m[mi])
-                    * (0.15f + 0.85f * glm::clamp(spine * (0.75f + 0.45f * mass)
-                                                      + 0.35f * mass,
-                                                  0.0f, 1.0f))
+                    * (kUpliftFloor + (1.0f - kUpliftFloor) * relief[mi])
                     * (1.0f - 0.92f * lowland);
 
                 // Islotes skerries (N2): lóbulos SECUNDARIOS de uplift mar

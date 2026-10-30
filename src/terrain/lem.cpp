@@ -18,7 +18,7 @@ constexpr float kDiffusion = 0.17f;      // difusión de laderas: crestas defini
                                          // 0.25; con 0.20 las aristas quedaban
                                          // demasiado romas para el look alpino)
 constexpr float kBaseUplift = 0.02f;     // por debajo: nivel de base (mar)
-constexpr float kHeadwaterSlope = 0.9f;  // pendiente de equilibrio en laderas (~42°)
+constexpr float kHeadwaterSlope = 1.05f; // pendiente de equilibrio en laderas (~46°)
 // Dureza superlineal: S ∝ u^(1+kHardness) — la roca del núcleo orogénico
 // resiste más que las faldas. Con S ∝ u (lineal) todo el flanco escalaba
 // igual; así los paredones u≈1 llegan a ~42° mientras las faldas medias se
@@ -27,15 +27,23 @@ constexpr float kHardness = 0.3f;
 // Concavidad θ del perfil (Flint: S ∝ A^-θ). El 0.5 físico de ríos maduros
 // hunde las cumbres en un dominio de 10 km — los canales largos pierden toda
 // la pendiente y el objetivo de altura se vuelve inalcanzable por diseño.
-// 0.35 es exageración vertical controlada: valles todavía cóncavos, pero que
-// conservan cota hacia el interior (cumbres ~1.2-1.4 km con uplift 1400).
-constexpr float kConcavity = 0.35f;
+// 0.22 es exageración vertical controlada: con el área crítica pequeña (los
+// canales nacen a ~40 m de la divisoria) la pendiente cae desde mucho antes y
+// θ = 0.35 dejaba las cumbres en ~770 m; con 0.22 los valles siguen
+// cóncavos y conservan cota hacia el interior (cumbres ~1.1-1.2 km).
+constexpr float kConcavity = 0.22f;
 // Área crítica de canalización (Flint): por debajo no hay canal — la celda es
 // LADERA y su pendiente de equilibrio es kHeadwaterSlope, sea cual sea el
 // tamaño de celda. Sin esta referencia FÍSICA la pendiente escalaba con la
 // celda del grid (cell/√A): a macro fino el relieve de equilibrio se hundía a
 // ~200 m y las montañas desaparecían por diseño.
-constexpr float kChannelAreaM2 = 22500.0f; // (~150 m)² de ladera sin canal
+// Con (150 m)² la ladera sin canal era NEUTRA (S constante, sin dependencia
+// de A) a lo largo de ~2 km de flujo paralelo D8: la rugosidad inicial no
+// crecía, no había convergencia y salían rampas planas kilométricas con un
+// peine de barrancos paralelos. A ~40 m (cabeceras reales: 10³-10⁴ m²) la
+// inestabilidad canal/ladera actúa desde la escala de pocas celdas y la red
+// sale dendrítica, con divisorias sinuosas y valles ramificados.
+constexpr float kChannelAreaM2 = 1500.0f; // (~40 m)² de ladera sin canal
 // Litología (feedback 2026-07-10): cuánto separa una formación BLANDA (lith=1)
 // de una DURA (lith=0) respecto al centro (lith=0.5 == comportamiento clásico,
 // mapeo exponencial centrado en 1 para no tocar la calibración).
@@ -72,6 +80,23 @@ constexpr float kGSpan = 2.0f;
 // flujo depende de las alturas nuevas aguas arriba, que el stack directo
 // resuelve DESPUÉS de la celda.
 constexpr int kDepositionSweeps = 10;
+
+// Rugosidad inicial (m): perturbación determinista de la condición inicial,
+// como en los LEM de referencia (FastScape parte de ruido blanco). Sin ella
+// los flancos de uplift suave son planos perfectos y el D8 los drena en
+// canales rectos y paralelos alineados con la rejilla (el "peine").
+constexpr float kInitialRoughnessM = 4.0f;
+
+// Hash entero → [0, 1): determinista por celda, sin estado ni RNG de la STL.
+float cell_hash01(std::uint32_t i) {
+    std::uint32_t h = i * 0x9E3779B1u;
+    h ^= h >> 16;
+    h *= 0x85EBCA6Bu;
+    h ^= h >> 13;
+    h *= 0xC2B2AE35u;
+    h ^= h >> 16;
+    return static_cast<float>(h >> 8) * (1.0f / 16777216.0f);
+}
 
 constexpr int kDx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
 constexpr int kDz[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
@@ -172,7 +197,18 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
     // del mar ES su prior de fondo (la tierra parte de ~0 y se levanta).
     std::vector<float> h(n);
     for (size_t i = 0; i < n; ++i) {
-        h[i] = (has_seabed ? seabed[i] : 0.0f) + uplift[i] * 2.0f;
+        h[i] = (has_seabed ? seabed[i] : 0.0f) + uplift[i] * 2.0f
+             + kInitialRoughnessM * cell_hash01(static_cast<std::uint32_t>(i));
+    }
+    // Distancia efectiva de las diagonales por celda (ρ8, Fairfield y
+    // Leymarie 1991): √2 se sustituye por 2 − r con r ∈ [0, 1) fijo por
+    // celda. En media equivale al D8 (E[1/(2−r)] = ln 2 ≈ 1/√2), pero rompe
+    // el sesgo a 8 direcciones: los canales dejan de ir en rectas de rejilla
+    // y la red sale dendrítica.
+    std::vector<float> diag_dist(n);
+    for (size_t i = 0; i < n; ++i) {
+        diag_dist[i] = cell_size_m
+                     * (2.0f - cell_hash01(static_cast<std::uint32_t>(i) ^ 0x5bd1e995u));
     }
     fill_pits(h, res);
 
@@ -307,10 +343,10 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
                     if (nx < 0 || nz < 0 || nx >= res || nz >= res) {
                         continue;
                     }
-                    const float d = (kDx[nb] != 0 && kDz[nb] != 0)
-                                  ? cell_size_m * 1.4142f
-                                  : cell_size_m;
-                    const float slope = (h[i] - h[idx(nx, nz)]) / d;
+                    const bool diagonal = kDx[nb] != 0 && kDz[nb] != 0;
+                    const float d = diagonal ? cell_size_m * 1.4142f : cell_size_m;
+                    const float slope =
+                        (h[i] - h[idx(nx, nz)]) / (diagonal ? diag_dist[i] : d);
                     if (slope > best_slope) {
                         best_slope = slope;
                         best = static_cast<std::uint32_t>(idx(nx, nz));
