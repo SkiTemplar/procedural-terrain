@@ -25,13 +25,12 @@ struct FacetLevel {
 constexpr int kLevels = 7;
 constexpr FacetLevel kFacetLevel[kLevels] = {{2, 1}, {1, 1}, {1, 2}, {1, 4},
                                              {1, 8}, {1, 16}, {1, 32}};
-// Iter. 9: el nivel de 78 m entra a 6.5 km (antes 4.2): en las vistas
-// aéreas a 4-7 km los barrancos de 150-250 m caían en 2-3 caras y cada
-// flanco era una columna de facetas (código de barras); con caras de 39 m se
-// dibujan como valles en V. El coste es despreciable: la isla entera a 39 m
-// son ~130 mil triángulos.
-constexpr float kLevelDistance[kLevels - 1] = {110.0f, 250.0f, 600.0f,
-                                               1000.0f, 1800.0f, 6500.0f};
+// Feedback de Rodrigo (2026-10-30, en el juego): con ~9-12 px por faceta las
+// montañas a 1-6 km se veían "muy poligonales". Las distancias de cambio se
+// multiplican ~×2 (×1.5 la última): cada faceta ocupa ~4-6 px, el low-poly se
+// sigue leyendo de cerca y lejos manda la silueta. Coste medido en --bench.
+constexpr float kLevelDistance[kLevels - 1] = {150.0f, 400.0f, 1200.0f,
+                                               2500.0f, 5000.0f, 10000.0f};
 // Nivel más basto de un chunk que corta el nivel del mar (~9.8 m): con
 // facetas de 20-40 m una flecha o barra más estrecha que la faceta dejaba
 // solo nodos sueltos sobre el agua y se dibujaba como una fila de "tiendas".

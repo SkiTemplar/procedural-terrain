@@ -1,0 +1,6 @@
+# Tomas de agua (ríos y mar) para revisar la lámina y el cauce de cerca.
+rio_oeste_a   -3300 -1500    0 -40 160
+rio_centro    -1500 -1500    0 -40 160
+rio_boca      -3950 -1542  -40 -35  30
+boca          -3950 -1542  -40 -20  84
+mar_ras       -4900 -1500    0  -4   6

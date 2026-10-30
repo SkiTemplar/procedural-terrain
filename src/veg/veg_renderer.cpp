@@ -12,6 +12,23 @@ namespace veg {
 
 namespace {
 
+// Celdas de margen sin árboles a cada lado de la lámina de agua (~7 m).
+constexpr int kRiparianCells = 3;
+
+// ¿Hay lámina de agua (ríos, lagos) a kRiparianCells o menos de (x, z)?
+bool near_water(const std::vector<float>& water_level, int res, int x, int z) {
+    for (int dz = -kRiparianCells; dz <= kRiparianCells; ++dz) {
+        for (int dx = -kRiparianCells; dx <= kRiparianCells; ++dx) {
+            const int nx = std::clamp(x + dx, 0, res - 1);
+            const int nz = std::clamp(z + dz, 0, res - 1);
+            if (!std::isnan(water_level[static_cast<size_t>(nz) * res + nx])) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 constexpr float kCellSize = 512.0f; // m: unidad de culling
 // Texel del dosel lejano (m): del orden de un rodal pequeño, por debajo de
 // la faceta del LOD lejano (paso >= 4, ~10 m).
@@ -259,6 +276,12 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                     break;
                 default:
                     break;
+            }
+            // Ribera despejada: un árbol a menos de kRiparianCells de la lámina
+            // de agua tapaba con su copa (radio 3-5 m) un cauce de pocos metros
+            // y el río se veía a trozos, como si fallara (Rodrigo 2026-10-30).
+            if (tree_p > 0.0f && near_water(data.hydrology.water_level, res, x, z)) {
+                tree_p = 0.0f;
             }
             const float total_p = tree_p + rock_p + tuft_p + bush_p + boulder_p + log_p;
             const float roll = hash01(static_cast<std::uint32_t>(x),

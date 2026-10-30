@@ -299,7 +299,7 @@ vec3 water_column(float h, vec3 view_dir, float marine, out vec3 trans) {
     // Agua dulce (iter. 10): retrodispersión verde azulada de limo fino, no
     // gris neutro; con la columna alargada el cauce se lee como cinta de agua
     // de color propio y no como lecho de grava visto a través de un cristal.
-    vec3 b_b = mix(vec3(0.020, 0.045, 0.055), vec3(0.012, 0.050, 0.070), marine);
+    vec3 b_b = mix(vec3(0.030, 0.060, 0.070), vec3(0.012, 0.050, 0.070), marine);
     float inv_n2 = 1.0 / (kWaterIor * kWaterIor);
     float cv = sqrt(1.0 - (1.0 - view_dir.y * view_dir.y) * inv_n2);
     float sy = max(u_sun_dir.y, 0.0);
@@ -442,7 +442,7 @@ void main() {
     } else {
         refl = reflect(-view_dir, surf.n);
         float cos_v = max(dot(view_dir, surf.n), 0.0);
-        fresnel = (0.02 + 0.98 * pow(1.0 - cos_v, 5.0)) * film_k * (1.0 - 0.6 * far_river);
+        fresnel = (0.02 + 0.98 * pow(1.0 - cos_v, 5.0)) * film_k * (1.0 - 0.2 * far_river);
     }
     refl.y = abs(refl.y); // el espejo del agua nunca mira bajo el horizonte
 
@@ -454,9 +454,10 @@ void main() {
     // (menos en la boca, que ya es agua clara de mar). Con el calado físico un
     // cauce de 0.3-1 m transmitía el 60-80 % y toda la sección se leía como una
     // banda de grava gris; así el núcleo es una cinta opaca y solo el margen
-    // de pocos centímetros deja ver el lecho.
+    // de pocos centímetros deja ver el lecho. Con ×5 el núcleo salía casi
+    // negro (grieta oscura en el bosque); ×2 conserva el color propio.
     const float kSeaOpticalScale = 0.6;
-    const float kInlandOpticalScale = 5.0;
+    const float kInlandOpticalScale = 2.0;
     float optical = sea ? depth * kSeaOpticalScale
                         : depth * mix(kInlandOpticalScale, 1.0, marine);
     vec3 body = water_column(optical, view_dir, marine, trans);
@@ -474,14 +475,14 @@ void main() {
     // trozos sin dispersarlo por todo el cielo), se marcha sobre el relieve.
     // Solo donde el Fresnel pesa: mirando hacia abajo no se ve y no se paga.
     if (sea && fresnel > 0.03) {
-        vec3 r_isl = reflect(-view_dir, normalize(mix(vec3(0.0, 1.0, 0.0), surf.n, 0.4)));
+        vec3 r_isl = reflect(-view_dir, normalize(mix(vec3(0.0, 1.0, 0.0), surf.n, 0.75)));
         r_isl.y = abs(r_isl.y);
         vec4 isl = island_reflection(v_world_pos, r_isl);
         sky_refl = mix(sky_refl, isl.rgb, isl.a * smoothstep(0.03, 0.05, fresnel));
     }
     vec3 radiance = fresnel * sky_refl + (1.0 - fresnel) * body * facet_light
                   + sun_glint(surf.n, view_dir, surf.alpha2) * film_k * (1.0 - wall_k)
-                    * (1.0 - 0.7 * far_river);
+                    * (1.0 - 0.3 * far_river);
     trans *= 1.0 - fresnel;
 
     float foam = sea ? max(sea_foam(depth, de.y, wd, footprint, fw), surf.cap)
