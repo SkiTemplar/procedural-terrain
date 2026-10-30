@@ -59,6 +59,7 @@ private:
     struct Relief {
         float tan_slope = 0.0f;  // tanβ a ~12 m
         float concavity = 0.0f;  // > 0 canal o vaguada, < 0 cresta (anillo de 30 m)
+        float sunny = 0.0f;      // insolación de la ladera a ~12 m, [-1, 1]
     };
     // Lo que una cara aporta a su color además del material.
     struct FaceCtx {
@@ -72,11 +73,13 @@ private:
         Relief relief;
     };
     Relief relief_at(float wx, float wz) const;
+    float sunny_of(glm::vec3 n) const; // insolación relativa a un llano, [-1, 1]
+    // Cobertura k en [0, 1] → decisión casi binaria por cara (ver palette.cpp).
+    float pick(float k, const FaceCtx& f, std::uint32_t salt) const;
     float snow_cover(const FaceCtx& f) const;
     glm::vec3 alpine_turf(float y, float sunny) const;
     glm::vec3 mountain_rock(glm::vec3 c, const FaceCtx& f) const;
-    glm::vec3 grass_outcrop(glm::vec3 c, Material m, const Relief& r, float y, float cx,
-                            float cz) const;
+    glm::vec3 grass_outcrop(glm::vec3 c, Material m, const FaceCtx& f) const;
     glm::vec3 grass_face(glm::vec3 c, Material m, const FaceCtx& f) const;
     glm::vec3 rock_face(glm::vec3 c, Material m, const FaceCtx& f) const;
     glm::vec3 snow_face(glm::vec3 c, const FaceCtx& f) const;
