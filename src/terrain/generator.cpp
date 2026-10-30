@@ -172,6 +172,10 @@ std::vector<float> compute_coast_cliff(const std::vector<float>& continent,
 // amplitud de las culminaciones a lo largo del eje y por la masa regional
 // que decide dónde vive la cordillera.
 constexpr float kCrestGamma = 0.7f;
+// Litología: peso y frecuencia (1/km) de la fracturación isótropa frente a
+// las bandas de rumbo.
+constexpr float kFractureShare = 0.40f;
+constexpr float kFractureFreqPerKm = 1.4f;
 // Percentil del relieve que satura a u = 1 (el 15 % más alto del campo):
 // núcleos de cordillera con uplift pleno pero sin bloque uniforme (con el
 // espinazo saturado ancho el LEM dejaba una MESA con peine de barrancos).
@@ -257,16 +261,26 @@ void build_base_relief(TerrainData& data, const Noise& noise, const TerrainConfi
                 // largo / ~1.8 km a través) con contactos suaves. 0 = dura,
                 // 1 = blanda; el LEM disecciona cada formación a SU escala —
                 // se acabó la longitud de onda única de barrancos.
-                const float geo = noise.fbm(glm::vec3{u * 0.20f, 0.0f, v * 0.55f}
-                                                + glm::vec3{-31.6f, 0.0f, 44.9f},
-                                            2)
-                                * 0.5f + 0.5f;
+                const float banded = noise.fbm(glm::vec3{u * 0.20f, 0.0f, v * 0.55f}
+                                                   + glm::vec3{-31.6f, 0.0f, 44.9f},
+                                               2);
+                // Fracturación isótropa (~0.7 km): diaclasas y fallas menores
+                // que no siguen el rumbo. Con solo las bandas, a lo largo de
+                // un flanco la erodibilidad era uniforme y el LEM tallaba
+                // barrancos paralelos equiespaciados; con zonas más blandas
+                // repartidas, unos cauces ganan a sus vecinos, los capturan y
+                // la red se ramifica con espaciado irregular.
+                const float fractured =
+                    noise.fbm(p_km * kFractureFreqPerKm + glm::vec3{8.1f, 0.0f, -27.3f}, 2);
+                const float geo = (1.0f - kFractureShare) * banded
+                                + kFractureShare * fractured;
+                const float geo01 = geo * 0.5f + 0.5f;
                 // Contactos CONTINUOS: las bandas cuantizadas (floor ×4)
                 // saltaban K ×1.7 y A₀ ×2.5 de golpe en cada contacto y el LEM
                 // las tallaba como paredes rectas paralelas al rumbo, visibles
                 // en el sombreado como bloques rectangulares.
                 lithology[static_cast<size_t>(z) * macro_res + x] =
-                    smoothstep(0.15f, 0.85f, geo);
+                    smoothstep(0.15f, 0.85f, geo01);
             }
         });
 
