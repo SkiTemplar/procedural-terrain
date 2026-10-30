@@ -29,7 +29,7 @@ enum class Material : std::uint8_t {
 // usan el azimut y la altura por defecto del panel (ui::DebugState). Mantener
 // en sincronía con el default del panel si se cambia.
 inline constexpr float kSunAzimuthDeg = 135.0f;
-inline constexpr float kSunAltitudeDeg = 40.0f;
+inline constexpr float kSunAltitudeDeg = 30.0f;
 
 // Nº de valores del enum — para histogramas indexados por material.
 inline constexpr std::size_t kMaterialCount =

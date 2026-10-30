@@ -36,9 +36,12 @@ terrain::TerrainConfig golden_config() {
 }
 
 // Recalibrado 2026-10-30: relieve tectónico continuo + LEM con cabeceras de
-// (40 m)² (red dendrítica); cambio intencionado del mundo.
+// (40 m)² (red dendrítica); cambio intencionado del mundo. El material se
+// recalibró de nuevo al bajar el sol canónico de 40° a 30° (la ecología usa su
+// radiación y la sombra horneada) y al subir la perturbación de microclima de
+// la ecología (kJitterC 0.3 → 0.8 °C); la altura no cambia.
 constexpr std::uint64_t kGoldenHeight = 0xe0e1619333a59ceeull;
-constexpr std::uint64_t kGoldenMaterial = 0x3ba530b6cfc0abbbull;
+constexpr std::uint64_t kGoldenMaterial = 0x9a6a79da76f768fbull;
 
 } // namespace
 

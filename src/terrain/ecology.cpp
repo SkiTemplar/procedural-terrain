@@ -87,7 +87,8 @@ constexpr float kPi = 3.14159265f;
 constexpr float kRadTreeC = 1.2f;   // por unidad de radiación relativa
 constexpr float kWindTreeC = 1.2f;  // sitio plenamente expuesto al viento
 constexpr float kWetCoolC = 0.5f;   // por unidad de lluvia efectiva sobre 1
-constexpr float kJitterC = 0.3f;    // perturbación de microclima (±45 m)
+constexpr float kJitterC = 0.8f;    // perturbación de microclima (±120 m): límite
+                                   // del bosque y de la nieve en lenguas, no en raya
 // Nieve estacional: la fusión depende sobre todo de la radiación directa.
 constexpr float kRadSnowC = 1.2f;
 constexpr float kSnowSlopeC = 0.6f;  // retención de nieve que cae con tanβ
