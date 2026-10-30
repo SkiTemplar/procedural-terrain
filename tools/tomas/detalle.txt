@@ -1,0 +1,6 @@
+# Cuatro vistas CERCANAS de verificación de detalle (seed por defecto 20260711).
+# nombre x z yaw pitch alt [t]  (alt = m sobre max(terreno, mar); yaw -90 mira a -z = norte)
+boca_cerca     -3825  -1555  -123 -30   22
+cresta           929   -330   -90   2   60
+bosque_medio     300   3000   -90  -6   60
+mar_cerca      -4900  -1500    10  -8   15

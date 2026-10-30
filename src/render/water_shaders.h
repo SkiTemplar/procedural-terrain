@@ -89,10 +89,14 @@ void main() {
     // estrecho que ella, y la cinta del río solo asomaba a trozos (rosario de
     // puntos blancos). La lámina interior se dibuja adelantada hacia la
     // cámara un 1.2 % de la distancia (sesgo de profundidad, la posición que
-    // sombrea sigue siendo la real): el cauce se lee continuo.
+    // sombrea sigue siendo la real): el cauce se lee continuo. Solo se
+    // adelantan los vértices con calado: los de orilla (enterrados bajo el
+    // talud) se quedan, o el quad entero de la celda asomaba y el cauce se
+    // dibujaba como una escalera de rombos alineada con la rejilla.
     vec3 to_cam = u_camera_pos - p;
     float cam_d = length(to_cam);
-    float pull = u_is_sea == 1 ? 0.0 : smoothstep(150.0, 600.0, cam_d) * 0.012 * cam_d;
+    float pull = u_is_sea == 1 ? 0.0 : smoothstep(150.0, 600.0, cam_d) * 0.012 * cam_d
+                                       * smoothstep(0.05, 0.40, a_normal.y);
     gl_Position = u_proj * u_view * vec4(p + to_cam * (pull / max(cam_d, 1e-3)), 1.0);
 }
 )glsl";
@@ -125,6 +129,7 @@ uniform vec3 u_wave_dir;     // xz = dirección de VIAJE del oleaje dominante
 uniform float u_wind_focus;  // 0 = mar isótropo, 1 = todo del viento dominante
 uniform float u_wave_hmax;     // H_s del mar abierto (m), terrain::kOpenSeaWaveHeightM
 uniform float u_breaker_index; // γ de rotura por fondo, terrain::kBreakerIndex
+uniform float u_sea_level;     // m
 
 // Doble fuente: frag_color = radiancia que añade el agua, frag_trans =
 // transmitancia por canal de lo que hay detrás (lecho ya pintado).
@@ -193,10 +198,12 @@ vec3 flow_phases(vec2 pos) {
 }
 
 // Superficie microfacetada: normal resuelta + α² de GGX (rugosidad al
-// cuadrado) con la varianza de pendiente que el píxel no resuelve.
+// cuadrado) con la varianza de pendiente que el píxel no resuelve, y la
+// fracción de espuma de cabrilla (whitecap) de la faceta (0 fuera del mar).
 struct WaterSurf {
     vec3 n;
     float alpha2;
+    float cap;
 };
 
 // Rugosidad del rizado capilar no resuelto (α de GGX) en mar y lagos.
@@ -209,20 +216,25 @@ const float kMicroAlpha = 0.07;
 // espectro de saturación (amplitud ∝ λ, misma pendiente a·k por banda, el
 // dominante con a = H_s/2) y dispersión de aguas profundas ω = √(g·k). La
 // pendiente se evalúa UNA vez por faceta, en el centroide de una retícula
-// triangular de kSeaFacetM de lado, así que cada cara refleja un solo trozo de
-// cielo. ANTIALIASING: cuando la faceta baja de ~4 px se funde con la lámina
-// plana y su varianza de pendiente (s²/2) pasa a α² de GGX — a lo lejos el
-// mar es un degradado limpio con el camino de destellos ensanchado, sin moiré.
-// Trenes largos (mar de fondo): con λ = 70/41/26 m dos caras vecinas de 7 m
-// caían en fases sin relación y el mar era un tablero de alto contraste; con
-// λ ≥ 55 m las caras de una misma cresta se inclinan igual y el facetado se
-// ordena en bandas de oleaje (la pendiente a·k baja con 1/λ₀).
+// triangular de kSeaFacetM de lado, así que cada cara tiene un solo plano.
+// ANTIALIASING: cuando la faceta baja de ~4 px se funde con la lámina plana y
+// su varianza de pendiente pasa a α² de GGX — a lo lejos el mar es un
+// degradado limpio con el camino de destellos ensanchado, sin moiré.
 const float kTrainLambda[3] = float[](130.0, 84.0, 55.0);
 const float kTrainAngle[3] = float[](0.0, 0.55, -0.48);
 const float kSeaFacetM = 7.0;
-// Estilización: menos pendiente que el espectro físico (con la completa, el
-// contraste cielo/agua entre caras vecinas era de rayado blanco).
+// Estilización del mar de fondo (iter. 7): con la pendiente física (a·k ≈
+// 0.03 con H_s = 1.5 m) todas las caras miraban casi al cénit y el mar se
+// leía como un lago en calma. La faceta lleva kSwellGain veces esa pendiente
+// más una inclinación propia por cara; el contraste lo acota el reflejo
+// (kSeaReflectance y normal de reflejo a medio camino), no la pendiente.
 const float kWaveSlopeScale = 0.75;
+const float kSwellGain = 3.0;
+// Reflectancia del mar respecto al Fresnel físico: menos espejo, más cuerpo
+// de agua azul verdoso (el pase de cielo usa el mismo factor en su océano).
+const float kSeaReflectance = 0.55;
+// Peso de la nube reflejada en el mar: el oleaje la rompe en manchas.
+const float kSeaCloudRefl = 0.12;
 
 // Envolvente de grupos de olas: zonas de mar más rizado y más calmo
 // (~250 m y ~90 m) que rompen la periodicidad de los trenes.
@@ -233,7 +245,7 @@ float wave_envelope(vec2 xz, vec2 wd) {
 
 // Centroide (xz) de la faceta triangular de lado facet_m que contiene xz:
 // retícula equilátera en coordenadas oblicuas (e1 = (1, 0), e2 = (½, √3/2)).
-// Las retículas de lado k·kSeaFacetM están anidadas en la de kSeaFacetM.
+// Las retículas de lado facet_m/k (k entero) están anidadas en la de facet_m.
 vec2 sea_facet_centroid(vec2 xz, float facet_m) {
     vec2 b = vec2(xz.x - xz.y * 0.5773503, xz.y * 1.1547005) / facet_m;
     vec2 q = floor(b);
@@ -243,7 +255,8 @@ vec2 sea_facet_centroid(vec2 xz, float facet_m) {
 }
 
 // Pendiente del oleaje en un punto (x, z) y su varianza (s²/2 sumada).
-vec3 swell_slope(vec2 xz, vec2 wd) {
+// crest = altura normalizada del mar de fondo en [-1, 1] (1 = cresta).
+vec3 swell_slope(vec2 xz, vec2 wd, out float crest) {
     vec2 perp = vec2(-wd.y, wd.x);
     float slope_k = kWaveSlopeScale * wave_envelope(xz, wd);
     float spread = 1.0 - 0.4 * u_wind_focus;
@@ -251,6 +264,8 @@ vec3 swell_slope(vec2 xz, vec2 wd) {
     float jit = w_vnoise(xz * 0.012) * 6.2831853;
     float a0 = 0.5 * u_wave_hmax / kTrainLambda[0];
     vec3 acc = vec3(0.0); // (pendiente x, pendiente z, varianza)
+    float h = 0.0;
+    float h_norm = 0.0;
     for (int i = 0; i < 3; ++i) {
         float ang = kTrainAngle[i] * spread;
         vec2 d = wd * cos(ang) + perp * sin(ang);
@@ -258,31 +273,69 @@ vec3 swell_slope(vec2 xz, vec2 wd) {
         float s = a0 * kTrainLambda[i] * k * slope_k; // pendiente a·k del tren
         float ph = k * dot(xz, d) - sqrt(9.81 * k) * u_time + jit * (0.7 + 0.4 * float(i));
         acc += vec3(d * (s * cos(ph)), 0.5 * s * s);
+        h += kTrainLambda[i] * sin(ph);
+        h_norm += kTrainLambda[i];
     }
+    crest = h / h_norm;
     return acc;
 }
 
-// Una retícula de facetas: pendiente del oleaje en el centroide más una leve
+vec2 w_hash22(vec2 p) {
+    return vec2(w_hash12(p * 0.37), w_hash12(p * 0.53 + 3.1));
+}
+
+// CABRILLAS (whitecaps): rompe la cresta del mar de fondo donde el viento
+// la empina. Probabilidad por faceta = cap_p (energía de oleaje) × cercanía a
+// la cresta; la espuma ocupa la mitad de las subfacetas de un tercio de lado
+// (manchas rotas de 2-3 m, no un triángulo entero). w = resolución de la
+// faceta: sin resolver se sustituye por su media (sin centelleo lejano).
+float sea_whitecap(vec2 xz, vec2 c, float facet_m, float crest, float cap_p, float w) {
+    float crest_k = smoothstep(0.30, 0.80, crest);
+    float pick = step(w_hash12(c * 0.71 + 9.3), cap_p * crest_k);
+    vec2 cs = sea_facet_centroid(xz, facet_m / 3.0);
+    float sub = step(w_hash12(cs * 0.29 + 1.7), 0.5);
+    return mix(cap_p * 0.18 * 0.5, pick * sub, w);
+}
+
+// Una retícula de facetas: pendiente del oleaje en el centroide más una
 // inclinación propia por cara (hash), para que el mosaico se lea aun donde
 // los trenes se cancelan. footprint = huella del píxel a lo largo de la cara.
-WaterSurf sea_facets(vec2 xz, vec2 wd, float footprint, float facet_m, float tilt_k) {
+// cap_res = 0 deja las cabrillas de esta retícula en su media (la retícula
+// lejana de 28 m las dibujaría como triángulos blancos de confeti).
+WaterSurf sea_facets(vec2 xz, vec2 wd, float footprint, float facet_m, float tilt_k,
+                     float cap_p, float cap_res) {
     vec2 c = sea_facet_centroid(xz, facet_m);
-    vec3 sl = swell_slope(c, wd);
-    vec2 tilt = vec2(w_hash12(c * 0.37), w_hash12(c * 0.53 + 3.1)) - 0.5;
-    vec2 slope = sl.xy + tilt * tilt_k;
+    float crest;
+    vec3 sl = swell_slope(c, wd, crest);
+    vec2 slope = sl.xy * kSwellGain + (w_hash22(c) - 0.5) * tilt_k;
     // Faceta resuelta (≥ ~4 px) → plano; si no, lámina lisa con su varianza.
     float w = smoothstep(1.5, 4.5, facet_m / footprint);
     vec3 n = normalize(vec3(-slope.x * w, 1.0, -slope.y * w));
-    return WaterSurf(n, kMicroAlpha * kMicroAlpha + (1.0 - w * w) * sl.z);
+    float var = sl.z * kSwellGain * kSwellGain + tilt_k * tilt_k / 6.0;
+    return WaterSurf(n, kMicroAlpha * kMicroAlpha + (1.0 - w * w) * var,
+                     sea_whitecap(xz, c, facet_m, crest, cap_p, w * cap_res));
 }
 
-// Mar adentro las caras de kSeaFacetM bajan de unos pocos píxeles y el mar se
-// volvía un espejo liso: más allá de ~200 m entra una retícula 4× mayor
-// (anidada) con más inclinación propia, y su resolución se mide con la media
-// geométrica de la huella (a incidencia rasante la cara se comprime en
-// vertical pero sigue leyéndose en horizontal).
-WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint) {
-    WaterSurf near_s = sea_facets(xz, wd, footprint, kSeaFacetM, 0.018);
+// Rizado de viento facetado junto a la cámara: retícula de un tercio de lado
+// (anidada) con inclinación propia leve; las caras grandes del mar de fondo
+// se rompen en un mosaico fino sin perder su plano dominante.
+vec3 sea_ripple_facets(vec3 n, vec2 xz, float footprint) {
+    float facet_m = kSeaFacetM / 3.0;
+    float wr = smoothstep(1.5, 4.5, facet_m / footprint);
+    if (wr <= 0.0) {
+        return n;
+    }
+    vec2 t = (w_hash22(sea_facet_centroid(xz, facet_m) + 11.0) - 0.5) * 0.05 * wr;
+    return normalize(n + vec3(-t.x, 0.0, -t.y));
+}
+
+// Mar adentro las caras de kSeaFacetM bajan de unos pocos píxeles: más allá
+// de ~200 m entra una retícula 4× mayor (anidada), y su resolución se mide
+// con la media geométrica de la huella (a incidencia rasante la cara se
+// comprime en vertical pero sigue leyéndose en horizontal).
+WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint, float cap_p) {
+    WaterSurf near_s = sea_facets(xz, wd, footprint, kSeaFacetM, 0.10, cap_p, 1.0);
+    near_s.n = sea_ripple_facets(near_s.n, xz, footprint);
     float far_k = smoothstep(160.0, 320.0, length(xz - u_camera_pos.xz));
     if (far_k <= 0.0) {
         return near_s;
@@ -290,20 +343,10 @@ WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint) {
     vec3 dpx = dFdx(v_world_pos);
     vec3 dpy = dFdy(v_world_pos);
     float fp_mean = sqrt(length(dpx.xz) * length(dpy.xz)) + 1e-3;
-    WaterSurf far_s = sea_facets(xz, wd, fp_mean, 4.0 * kSeaFacetM, 0.025);
+    WaterSurf far_s = sea_facets(xz, wd, fp_mean, 4.0 * kSeaFacetM, 0.08, cap_p, 0.0);
     return WaterSurf(normalize(mix(near_s.n, far_s.n, far_k)),
-                     mix(near_s.alpha2, far_s.alpha2, far_k));
-}
-
-// Normal con que la faceta del mar REFLEJA: la de la faceta acercada a la
-// vertical. El facetado se lee en el Fresnel (valor de cada cara), pero el
-// reflejo de cielo y nubes sale de una normal suavizada: con la normal
-// completa cada triángulo reflejaba un trozo distinto de nube y el mar se
-// leía como un mosaico blanco/negro de aliasing. Con la distancia la faceta
-// pesa menos (más allá de ~250 m el reflejo es el del mar en calma).
-vec3 sea_reflect_normal(vec3 n, float dist, float facet_k) {
-    float calm = smoothstep(60.0, 260.0, dist);
-    return normalize(mix(vec3(0.0, 1.0, 0.0), n, facet_k * mix(1.0, 0.30, calm)));
+                     mix(near_s.alpha2, far_s.alpha2, far_k),
+                     mix(near_s.cap, far_s.cap, far_k));
 }
 
 // Lámina interior: normal suave de la malla + rizado. Ríos: rizado advectado
@@ -328,9 +371,9 @@ WaterSurf inland_surface(vec2 xz, vec2 wd, float footprint) {
     }
     n = normalize(n + vec3(-slope.x, 0.0, -slope.y) * wr);
     float alpha = mix(0.04, 0.14, rough) + 0.04 * (1.0 - wr);
-    WaterSurf s = WaterSurf(n, alpha * alpha);
+    WaterSurf s = WaterSurf(n, alpha * alpha, 0.0);
     if (v_remanso > 0.0) {
-        WaterSurf sea = sea_waves(xz, wd, footprint);
+        WaterSurf sea = sea_waves(xz, wd, footprint, 0.0);
         s.n = normalize(mix(s.n, sea.n, v_remanso));
         s.alpha2 = mix(s.alpha2, sea.alpha2, v_remanso);
     }
@@ -367,14 +410,15 @@ const float kWaterIor = 1.333;
 
 // Radiancia que sale del agua (sin fondo) y transmitancia del camino
 // sol → lecho → cámara para un calado h. Ángulos refractados por Snell sobre
-// la lámina en reposo (el camino no depende del rizado fino).
-vec3 water_column(float h, vec3 view_dir, out vec3 trans) {
-    bool sea = u_is_sea == 1;
-    vec3 sigma_a = sea ? kSigmaA : kSigmaA + kCdomA;
-    float b = sea ? 0.06 : 0.25;
-    // Mar costero con partícula fina (cocolitos, arena en suspensión): azul
-    // verdoso luminoso en vez de un marino casi negro (estilización low-poly).
-    vec3 b_b = sea ? vec3(0.020, 0.068, 0.072) : vec3(0.022);
+// la lámina en reposo (el camino no depende del rizado fino). marine = 1 en el
+// mar y en la boca del río ya mezclada con él (agua clara sobre arena), 0 en
+// el agua dulce turbia de cauces y lagos.
+vec3 water_column(float h, vec3 view_dir, float marine, out vec3 trans) {
+    vec3 sigma_a = kSigmaA + kCdomA * (1.0 - marine);
+    float b = mix(0.25, 0.06, marine);
+    // Mar con partícula fina: azul verdoso hondo (iter. 7: menos verde y
+    // retrodispersión que antes, el mar abierto se leía turquesa de piscina).
+    vec3 b_b = mix(vec3(0.022), vec3(0.012, 0.050, 0.070), marine);
     float inv_n2 = 1.0 / (kWaterIor * kWaterIor);
     float cv = sqrt(1.0 - (1.0 - view_dir.y * view_dir.y) * inv_n2);
     float sy = max(u_sun_dir.y, 0.0);
@@ -411,10 +455,13 @@ vec3 sun_glint(vec3 n, vec3 v, float alpha2) {
 // avanza hacia calado menor con el tiempo. La espuma es un encaje de ruido
 // cuya cobertura crece con la rotura, no una banda dura; a lo lejos el ruido
 // se sustituye por su media (sin aliasing). Costa abrigada: sin espuma.
-float sea_foam(float depth, float wave_e, vec2 wd, float footprint) {
+// fw = variación del calado en un píxel (fwidth): a lo lejos la rompiente y
+// el cordón de orilla, de pocos metros, se ensanchan a 1.5-3 px para que toda
+// la costa conserve su línea de espuma.
+float sea_foam(float depth, float wave_e, vec2 wd, float footprint, float fw) {
     float h_s = u_wave_hmax * sqrt(wave_e);
     float h_b = max(h_s / u_breaker_index, 0.05);
-    float zone = 1.0 - smoothstep(0.25 * h_b, 1.3 * h_b, depth);
+    float zone = 1.0 - smoothstep(0.25 * h_b, max(1.3 * h_b, 3.0 * fw), depth);
     float whiteness = smoothstep(0.3, 1.1, h_s);
     vec2 p = v_world_pos.xz;
     float warp = w_vnoise(p * 0.08 + wd * (u_time * 0.05));
@@ -431,9 +478,54 @@ float sea_foam(float depth, float wave_e, vec2 wd, float footprint) {
                     * smoothstep(0.0, 0.15, cover);
     // Línea de orilla continua: el borde del lavado deja siempre un cordón
     // de espuma, ondulado por el mismo warp; en costa abrigada es más fino.
-    float line_w = (0.06 + 0.10 * warp) * (0.5 + 0.5 * whiteness) + 0.03;
+    float line_w = max((0.06 + 0.10 * warp) * (0.5 + 0.5 * whiteness) + 0.03, 1.5 * fw);
     float line = 1.0 - smoothstep(0.35 * line_w, line_w, depth);
-    return max(lace_foam, line * (0.55 + 0.35 * whiteness));
+    float far_k = smoothstep(0.5, 3.0, footprint);
+    return max(lace_foam, line * mix(0.55 + 0.35 * whiteness, 0.85, far_k));
+}
+
+// Boca del río: la lámina dulce a cota de mar dentro de la banda de oleaje
+// recibe la rompiente (espuma donde el cauce se encuentra con las olas).
+float mouth_foam(float depth, float wave_e, vec2 wd, float footprint, float fw) {
+    float k = v_remanso * smoothstep(0.05, 0.30, wave_e);
+    return k > 0.0 ? k * sea_foam(depth, wave_e, wd, footprint, fw) : 0.0;
+}
+
+// Energía de oleaje bajo la lámina interior (banda litoral; 0 tierra adentro).
+float shore_energy() {
+    vec2 uv = (v_world_pos.xz + vec2(u_domain_half)) / (2.0 * u_domain_half);
+    return texture(u_seabed, clamp(uv, 0.0, 1.0)).g;
+}
+
+// Probabilidad de cabrilla por faceta: crece con la energía de oleaje; mar
+// adentro (calado > ~30 m) el oleaje ya no lo limita el abrigo de la costa.
+float sea_cap_probability(vec2 de) {
+    float open_e = mix(de.y, 1.0, smoothstep(8.0, 30.0, de.x));
+    return 0.26 * smoothstep(0.25, 0.90, open_e);
+}
+
+// Luz propia de la faceta del mar sobre el cuerpo de agua: cada cara se
+// separa en valor de sus vecinas según mire al sol (±35 % como máximo).
+float sea_facet_light(vec3 n) {
+    float lam = dot(n, u_sun_dir) - u_sun_dir.y;
+    return clamp(1.0 + 3.0 * lam, 0.65, 1.35);
+}
+
+// Reflejo del mar: Fresnel y dirección de reflejo con la normal de faceta a
+// medio camino de la vertical (el valor de cada cara cambia, pero ninguna
+// refleja el cielo rasante blanco entero) y reflectancia kSeaReflectance.
+float sea_fresnel(vec3 n, vec3 view_dir, out vec3 refl) {
+    vec3 n_r = normalize(mix(vec3(0.0, 1.0, 0.0), n, 0.6));
+    refl = reflect(-view_dir, n_r);
+    float cos_v = max(dot(view_dir, n_r), 0.0);
+    return max((0.02 + 0.98 * pow(1.0 - cos_v, 5.0)) * kSeaReflectance, 0.04);
+}
+
+// Óptica de boca: la lámina dulce que se mezcla con el mar (remanso a su cota
+// o banda de oleaje) es agua clara sobre arena, no el río turbio de monte.
+float estuary_marine(float wave_e) {
+    return max(v_remanso, smoothstep(0.05, 0.30, wave_e))
+         * (1.0 - smoothstep(0.8, 3.0, v_world_pos.y - u_sea_level));
 }
 
 // Vetas de espuma de rápidos y cascadas (whitewater de la hidrología, 0.5 =
@@ -466,9 +558,11 @@ void main() {
     vec2 wd = normalize(u_wave_dir.xz + vec2(1e-5, 0.0));
 
     bool sea = u_is_sea == 1;
-    vec2 de = sea ? sea_depth_energy() : vec2(max(v_river.y, 0.0), 0.0);
+    vec2 de = sea ? sea_depth_energy() : vec2(max(v_river.y, 0.0), shore_energy());
     float depth = de.x;
-    WaterSurf surf = sea ? sea_waves(v_world_pos.xz, wd, footprint)
+    float fw = fwidth(depth);
+    float marine = sea ? 1.0 : estuary_marine(de.y);
+    WaterSurf surf = sea ? sea_waves(v_world_pos.xz, wd, footprint, sea_cap_probability(de))
                          : inland_surface(v_world_pos.xz, wd, footprint);
     // PARED DE AGUA: en el borde de la cinta del río los triángulos que caen
     // a la orilla son casi verticales; se desvanecen salvo en cascadas y
@@ -478,25 +572,20 @@ void main() {
 
     // Una película de pocos cm rota por el lecho no forma un espejo continuo:
     // la reflexión especular escala con el calado (sin esto el ángulo rasante
-    // opaca los márgenes someros y el río se lee "desbordado").
+    // opaca los márgenes someros y el río se lee "desbordado"). Cauce lejano
+    // (huella > 0.5 m): una cinta de un píxel con el Fresnel rasante del
+    // cielo se leía como raya blanca; a distancia pesa el color del agua.
     float film_k = sea ? 1.0 : 1.0 - exp(-depth * 4.0);
-    float dist = length(u_camera_pos - v_world_pos);
-    vec3 n_fresnel = sea ? sea_reflect_normal(surf.n, dist, 0.45) : surf.n;
-    // Reflejo de espejo en calma (sin la faceta): con su normal cada
-    // triángulo recortaba un trozo distinto de nube y el reflejo se leía como
-    // manchas dentadas. El facetado lo ponen el Fresnel y el sombreado de cara.
-    vec3 n_mirror = sea ? sea_reflect_normal(surf.n, dist, 0.0) : surf.n;
-    float cos_v = max(dot(view_dir, n_fresnel), 0.0);
-    // El mar refleja como el océano infinito del pase de cielo (0.85 del
-    // Fresnel): en el horizonte las dos superficies casan sin costura.
-    float fresnel = (0.02 + 0.98 * pow(1.0 - cos_v, 5.0)) * film_k * (sea ? 0.85 : 1.0);
-    // Mar: brillo de cielo mínimo estilizado (5 %), para que el mar visto desde
-    // arriba no sea un azul marino sin reflejo. Cauce lejano (huella > 0.5 m):
-    // una cinta de agua de un píxel con el Fresnel rasante del cielo se leía
-    // como una raya blanca; a distancia pesa el color del agua, no el cielo.
     float far_river = sea ? 0.0 : smoothstep(0.5, 3.0, footprint);
-    fresnel = sea ? max(fresnel, 0.05) : fresnel * (1.0 - 0.6 * far_river);
-    vec3 refl = reflect(-view_dir, n_mirror);
+    vec3 refl;
+    float fresnel;
+    if (sea) {
+        fresnel = sea_fresnel(surf.n, view_dir, refl);
+    } else {
+        refl = reflect(-view_dir, surf.n);
+        float cos_v = max(dot(view_dir, surf.n), 0.0);
+        fresnel = (0.02 + 0.98 * pow(1.0 - cos_v, 5.0)) * film_k * (1.0 - 0.6 * far_river);
+    }
     refl.y = abs(refl.y); // el espejo del agua nunca mira bajo el horizonte
 
     vec3 trans;
@@ -504,26 +593,22 @@ void main() {
     // para que el degradado arena → turquesa → azul marino se extienda más
     // mar adentro y se lea la batimetría desde lejos.
     const float kSeaOpticalScale = 0.6;
-    vec3 body = water_column(sea ? depth * kSeaOpticalScale : depth, view_dir, trans);
-    if (sea) {
-        // Sombreado de cara exagerado sobre la luz que sale del agua: cada
-        // faceta se separa en valor de sus vecinas como en un mar low-poly.
-        // Factor 2.4 (antes 4): ±10-18 % entre caras en vez de ±30 %.
-        float lam = dot(surf.n, u_sun_dir) - u_sun_dir.y;
-        body *= clamp(1.0 + 2.4 * lam, 0.82, 1.18);
-    }
+    vec3 body = water_column(sea ? depth * kSeaOpticalScale : depth, view_dir, marine, trans);
+    float facet_light = sea ? sea_facet_light(surf.n) : 1.0;
     vec4 cloud = cloud_layer(refl);
-    // Nube reflejada algo más transparente en el mar: el agua rizada la
-    // desdibuja y su contraste con el cielo es menor que mirando arriba.
-    vec3 sky_refl = mix(sky_color(refl), cloud.rgb, cloud.a * (sea ? 0.40 : 1.0));
-    vec3 radiance = fresnel * sky_refl + (1.0 - fresnel) * body
+    vec3 sky_refl = mix(sky_color(refl), cloud.rgb, cloud.a * (sea ? kSeaCloudRefl : 1.0));
+    vec3 radiance = fresnel * sky_refl + (1.0 - fresnel) * body * facet_light
                   + sun_glint(surf.n, view_dir, surf.alpha2) * film_k * (1.0 - wall_k)
                     * (1.0 - 0.7 * far_river);
     trans *= 1.0 - fresnel;
 
-    float foam = sea ? sea_foam(depth, de.y, wd, footprint) : river_foam(v_river.xz, footprint);
-    // Espuma = agua aireada: difusor blanco opaco en la superficie.
-    vec3 foam_col = vec3(0.86, 0.89, 0.90) * (0.40 + 1.10 * max(u_sun_dir.y, 0.0));
+    float foam = sea ? max(sea_foam(depth, de.y, wd, footprint, fw), surf.cap)
+                     : max(river_foam(v_river.xz, footprint),
+                           mouth_foam(depth, de.y, wd, footprint, fw));
+    // Espuma = agua aireada: difusor blanco opaco; en el mar la cabrilla toma
+    // la luz de su faceta (las caras de espuma también se separan en valor).
+    vec3 foam_col = vec3(0.86, 0.89, 0.90) * (0.40 + 1.10 * max(u_sun_dir.y, 0.0))
+                  * mix(1.0, facet_light, 0.6);
     radiance = mix(radiance, foam_col, foam * 0.85);
     trans *= 1.0 - foam * 0.85;
 

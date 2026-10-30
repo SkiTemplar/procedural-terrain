@@ -18,8 +18,11 @@ float DetailSampler::material_roughness(Material m) {
         case Material::Forest: return 0.60f;
         case Material::Rock: return 1.5f;
         case Material::Snow: return 0.35f;
-        case Material::RiverBed: return 0.2f;
-        case Material::LakeBed: return 0.15f;
+        // Lecho bajo lámina: liso. Con rugosidad el relieve fino (±10-20 cm)
+        // asomaba por encima de los pocos cm de calado y la cinta del río se
+        // partía en charcos sueltos entre rombos de grava.
+        case Material::RiverBed: return 0.0f;
+        case Material::LakeBed: return 0.0f;
         case Material::Gravel: return 0.45f; // cantos: más rugosa que la arena
         case Material::Marsh: return 0.06f;  // llano húmedo, casi plano
     }

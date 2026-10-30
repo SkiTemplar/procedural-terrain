@@ -81,6 +81,73 @@ glm::vec3 surface_normal(const WaterSurface& s, int x, int z, float cell) {
     return glm::normalize(glm::vec3{-slope.x, 1.0f, -slope.y});
 }
 
+// Lámina del río SIN ESCALERA: la hidrología fija el nivel por celda y en los
+// tramos de poca pendiente (llanura, boca) baja a saltos de ~0.5 m cada pocas
+// celdas; la malla los dibujaba como peldaños alineados con la rejilla. Media
+// 3×3 en kRiverSmoothPasses pasadas entre los vértices MOJADOS del cauce
+// (lámina definida, sin lagos ni remanso a cota de mar), acotada a
+// kRiverMinDepthM sobre el lecho. Los vértices de orilla siguen enterrados.
+constexpr int kRiverSmoothPasses = 3;
+constexpr float kRiverMinDepthM = 0.03f;
+
+bool smoothable_river_vertex(const TerrainData& data, const WaterSurface& s, size_t i) {
+    return !std::isnan(data.hydrology.water_level[i]) && !data.hydrology.lake[i]
+        && !std::isnan(s.vertex_y[i]) && s.vertex_y[i] > data.config.sea_level + 0.05f;
+}
+
+float river_neighbourhood_mean(const TerrainData& data, const WaterSurface& s,
+                               const std::vector<float>& y, int x, int z) {
+    float sum = 0.0f;
+    int count = 0;
+    for (int dz = -1; dz <= 1; ++dz) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            const int nx = x + dx;
+            const int nz = z + dz;
+            if (nx < 0 || nz < 0 || nx >= s.res || nz >= s.res) {
+                continue;
+            }
+            const size_t j = static_cast<size_t>(nz) * s.res + nx;
+            if (smoothable_river_vertex(data, s, j)) {
+                sum += y[j];
+                ++count;
+            }
+        }
+    }
+    return sum / static_cast<float>(std::max(count, 1));
+}
+
+// Las esquinas 00 y 11 del quad (x, z) tienen lámina y la otra pareja no
+// entera: la diagonal del quad debe unirlas.
+bool wet_diagonal_00_11(const TerrainData& data, int x, int z) {
+    const int res = data.height.resolution();
+    const auto wet = [&](int dx, int dz) {
+        return !std::isnan(data.hydrology.water_level[static_cast<size_t>(z + dz) * res + (x + dx)]);
+    };
+    return wet(0, 0) && wet(1, 1) && !(wet(1, 0) && wet(0, 1));
+}
+
+std::vector<float> smooth_river_surface(const TerrainData& data, const WaterSurface& s) {
+    std::vector<float> y = s.vertex_y;
+    if (data.hydrology.lake.size() != y.size()) {
+        return y;
+    }
+    for (int pass = 0; pass < kRiverSmoothPasses; ++pass) {
+        std::vector<float> next = y;
+        for (int z = 0; z < s.res; ++z) {
+            for (int x = 0; x < s.res; ++x) {
+                const size_t i = static_cast<size_t>(z) * s.res + x;
+                if (!smoothable_river_vertex(data, s, i)) {
+                    continue;
+                }
+                const float bed = data.height.at(x, z) + kRiverMinDepthM;
+                next[i] = std::max(river_neighbourhood_mean(data, s, y, x, z), bed);
+            }
+        }
+        y = std::move(next);
+    }
+    return y;
+}
+
 } // namespace
 
 std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
@@ -92,7 +159,10 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
 
     // Alturas y cobertura de la lámina (terrain/water_surface): la misma
     // geometría que recorta el plano del mar, así que no quedan huecos.
-    const WaterSurface surface = compute_water_surface(data);
+    // La cobertura es la misma; solo la altura de los vértices mojados del
+    // cauce se alisa (smooth_river_surface).
+    WaterSurface surface = compute_water_surface(data);
+    surface.vertex_y = smooth_river_surface(data, surface);
 
     // C4-W3 (auditoría 2026-10 #1): CORRIENTE por vértice en m/s — dirección
     // del eje del cauce suavizada a lo largo del río y módulo de Manning
@@ -145,7 +215,15 @@ std::optional<render::Mesh> build_water_mesh(const TerrainData& data) {
             const std::uint32_t v10 = get_or_create(x + 1, z);
             const std::uint32_t v01 = get_or_create(x, z + 1);
             const std::uint32_t v11 = get_or_create(x + 1, z + 1);
-            indices.insert(indices.end(), {v00, v01, v10, v10, v01, v11});
+            // Un cauce de una celda que avanza en diagonal (paso D8) moja
+            // dos esquinas opuestas del quad: con la diagonal fija 01-10, cada
+            // esquina mojada quedaba sola en su triángulo y el río era un
+            // rosario de rombos. La diagonal une las dos esquinas mojadas.
+            if (wet_diagonal_00_11(data, x, z)) {
+                indices.insert(indices.end(), {v00, v01, v11, v00, v11, v10});
+            } else {
+                indices.insert(indices.end(), {v00, v01, v10, v10, v01, v11});
+            }
         }
     }
 

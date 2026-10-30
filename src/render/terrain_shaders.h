@@ -661,13 +661,15 @@ void main() {
         // (difusa = altura del sol) y reflejo rasante del cielo, con la misma
         // perspectiva aérea hasta el punto de corte con el mar.
         float dist = max(u_camera_pos.y, 1.0) / max(-dir.y, 1e-4);
+        // Reflectancia y nube reflejada como el mar (kSeaReflectance = 0.55,
+        // kSeaCloudRefl = 0.12 en water_shaders.h): el horizonte casa.
         float fresnel = 0.04 + 0.96 * pow(1.0 + dir.y, 5.0);
-        const vec3 deep = vec3(0.03, 0.17, 0.30);
+        const vec3 deep = vec3(0.015, 0.19, 0.34);
         vec3 body = deep * (0.45 + 0.55 * max(u_sun_dir.y, 0.0));
         vec3 refl = vec3(dir.x, -dir.y, dir.z);
         vec4 cloud = cloud_layer(refl);
-        vec3 sky_refl = mix(sky_color(refl), cloud.rgb, cloud.a);
-        vec3 lit = mix(body, sky_refl, fresnel * 0.85);
+        vec3 sky_refl = mix(sky_color(refl), cloud.rgb, cloud.a * 0.12);
+        vec3 lit = mix(body, sky_refl, fresnel * 0.55);
         radiance = atmosphere_segment(lit, u_camera_pos, dir, dist);
     }
 
