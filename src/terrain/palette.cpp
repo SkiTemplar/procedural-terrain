@@ -31,6 +31,9 @@ constexpr float kSnowReliefFrac = 0.66f; // fracción del relieve que ancla los 
 constexpr float kSnowHollowM = 90.0f;  // m que un canal baja la nieve (una arista la sube)
 constexpr float kSnowShedTanLo = 1.00f; // tanβ (45°): la nieve empieza a purgar
 constexpr float kSnowShedTanHi = 1.40f; // tanβ (~54°): pared sin nieve
+constexpr float kSummitShedTanLo = 1.60f; // tanβ (~58°) en la cumbre: hielo y escarcha
+constexpr float kSummitShedTanHi = 2.40f; // tanβ (~67°) en la cumbre
+constexpr float kSummitShedRampFrac = 0.35f; // fracción de snow_span_ hasta el límite de cumbre
 constexpr float kReliefSlopeM = 6.0f;  // semipaso de la pendiente a escala fija
 constexpr float kReliefCurvM = 30.0f;  // radio del anillo de concavidad
 constexpr float kConcavityFull = 0.08f; // concavidad que satura canal/arista
@@ -436,10 +439,22 @@ float Palette::snow_cover(const FaceCtx& f) const {
     // roca cara a cara y la cumbre salía en confeti blanco y gris.
     const float eff_y = f.y - kSnowSunShiftM * f.relief.sunny + drift + hollow;
     const float alt = glm::smoothstep(anchor - kSnowBelowM, anchor + 40.0f, eff_y);
-    // La nieve purga por aludes y sluffs por encima de ~45-54° (tanβ 1.0-1.4).
-    // Antes el corte era en 1 − cosβ 0.55-0.85 (63-81°): las paredes de roca
-    // salían nevadas.
-    return alt * (1.0f - glm::smoothstep(kSnowShedTanLo, kSnowShedTanHi, f.relief.tan_slope));
+    return alt * (1.0f - snow_shed(f.y, f.relief.tan_slope));
+}
+
+// La nieve purga por aludes y sluffs por encima de ~45-54° (tanβ 1.0-1.4)
+// junto a la línea de nieve. Hacia la cumbre el frío la convierte en hielo y
+// escarcha que se agarran a caras más empinadas: el límite sube hasta
+// ~58-67° y las pirámides de cumbre siguen blancas. Antes el corte era fijo en
+// 1 − cosβ 0.55-0.85 (63-81°) y las paredes medias salían nevadas.
+float Palette::snow_shed(float y, float tan_slope) const {
+    // Rampa corta: los picos secundarios, a un tercio del recorrido nieve →
+    // cumbre, ya agarran como la cumbre (con la rampa entera quedaban pelados).
+    const float alt_k = glm::clamp((y - snow_line_) / (kSummitShedRampFrac * snow_span_),
+                                   0.0f, 1.0f);
+    const float lo = glm::mix(kSnowShedTanLo, kSummitShedTanLo, alt_k);
+    const float hi = glm::mix(kSnowShedTanHi, kSummitShedTanHi, alt_k);
+    return glm::smoothstep(lo, hi, tan_slope);
 }
 
 // Césped alpino de hombro: pasto corto y ralo, verde oliva que amarillea con
@@ -568,9 +583,14 @@ glm::vec3 Palette::rock_face(glm::vec3 c, Material m, const FaceCtx& f) const {
 // asoma la roca de la pared y el límite serpentea en manchas (pick). El resto
 // toma el matiz de su cara.
 glm::vec3 Palette::snow_face(glm::vec3 c, const FaceCtx& f) const {
-    const float ridge = glm::smoothstep(0.0f, kConcavityFull, -f.relief.concavity);
+    // Cerca de la cumbre la arista barrida conserva la costra de escarcha: el
+    // barrido del viento pesa menos y la pendiente límite sube (snow_shed).
+    const float alt_k = glm::clamp((f.y - snow_line_) / (kSummitShedRampFrac * snow_span_),
+                                   0.0f, 1.0f);
+    const float ridge = glm::smoothstep(0.0f, kConcavityFull, -f.relief.concavity)
+                      * (1.0f - 0.8f * alt_k);
     const float tan_j = f.relief.tan_slope;
-    const float bare = std::max(glm::smoothstep(0.80f, 1.15f, tan_j),
+    const float bare = std::max(snow_shed(f.y, tan_j),
                                 ridge * glm::smoothstep(0.40f, 0.70f, tan_j)
                                     * glm::smoothstep(-0.4f, 0.4f, f.relief.sunny));
     // La roca que asoma es la de la pared, con sus estratos y su bandeado

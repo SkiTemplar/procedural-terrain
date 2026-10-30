@@ -79,6 +79,8 @@ private:
     // Cobertura k en [0, 1] → decisión casi binaria por cara (ver palette.cpp).
     float pick(float k, const FaceCtx& f, std::uint32_t salt) const;
     float snow_cover(const FaceCtx& f) const;
+    // Fracción de purga de nieve por pendiente; el límite sube con la cota.
+    float snow_shed(float y, float tan_slope) const;
     glm::vec3 alpine_turf(float y, float sunny) const;
     glm::vec3 mountain_rock(glm::vec3 c, const FaceCtx& f) const;
     glm::vec3 rock_weathering(glm::vec3 c, const FaceCtx& f) const;
