@@ -91,6 +91,16 @@ constexpr int kDepositionSweeps = 10;
 // los flancos de uplift suave son planos perfectos y el D8 los drena en
 // canales rectos y paralelos alineados con la rejilla (el "peine").
 constexpr float kInitialRoughnessM = 4.0f;
+// Relieve inicial correlacionado (m, a ~1 km y ~350 m de longitud de onda):
+// ondulaciones suaves de la superficie que emerge, como las de una plataforma
+// recién levantada. Solo con rugosidad blanca, en los flancos de uplift
+// uniforme el primer drenaje bajaba en líneas paralelas por la máxima
+// pendiente y el estado estacionario conservaba ese peine de barrancos
+// rectos y equiespaciados (la topología de la red apenas se reorganiza
+// después). Con ondulaciones el drenaje inicial ya converge en cuencas de
+// tamaño desigual y la red sale ramificada. El ruido solo modula la condición
+// inicial: las formas finales las talla el stream power.
+constexpr float kInitialReliefM = 24.0f;
 
 // Hash entero → [0, 1): determinista por celda, sin estado ni RNG de la STL.
 float cell_hash01(std::uint32_t i) {
@@ -101,6 +111,35 @@ float cell_hash01(std::uint32_t i) {
     h *= 0xC2B2AE35u;
     h ^= h >> 16;
     return static_cast<float>(h >> 8) * (1.0f / 16777216.0f);
+}
+
+// Value noise con el hash de celda (el LEM no depende del mesher ni del
+// render): retícula de paso 1 en las unidades de entrada.
+float lattice_noise(float x, float z) {
+    const float fx = std::floor(x);
+    const float fz = std::floor(z);
+    const auto ix = static_cast<std::uint32_t>(static_cast<std::int32_t>(fx) + (1 << 20));
+    const auto iz = static_cast<std::uint32_t>(static_cast<std::int32_t>(fz) + (1 << 20));
+    const auto at = [](std::uint32_t a, std::uint32_t b) {
+        return cell_hash01(a * 0x8DA6B343u ^ b * 0xD8163841u);
+    };
+    float tx = x - fx;
+    float tz = z - fz;
+    tx = tx * tx * (3.0f - 2.0f * tx);
+    tz = tz * tz * (3.0f - 2.0f * tz);
+    const float top = std::lerp(at(ix, iz), at(ix + 1u, iz), tx);
+    const float bot = std::lerp(at(ix, iz + 1u), at(ix + 1u, iz + 1u), tx);
+    return std::lerp(top, bot, tz);
+}
+
+// Ondulación inicial en [-kInitialReliefM/2, kInitialReliefM/2] en la celda i
+// (dos octavas en metros de mundo: no depende de la resolución del grid).
+float initial_relief(size_t i, int res, float cell_size_m) {
+    const float x = static_cast<float>(i % static_cast<size_t>(res)) * cell_size_m;
+    const float z = static_cast<float>(i / static_cast<size_t>(res)) * cell_size_m;
+    const float broad = lattice_noise(x * 0.0010f + 17.3f, z * 0.0010f - 41.9f);
+    const float fine = lattice_noise(x * 0.0029f - 5.1f, z * 0.0029f + 63.7f);
+    return kInitialReliefM * (0.65f * broad + 0.35f * fine - 0.5f);
 }
 
 constexpr int kDx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
@@ -203,7 +242,8 @@ std::vector<float> run_lem(const std::vector<float>& uplift,
     std::vector<float> h(n);
     for (size_t i = 0; i < n; ++i) {
         h[i] = (has_seabed ? seabed[i] : 0.0f) + uplift[i] * 2.0f
-             + kInitialRoughnessM * cell_hash01(static_cast<std::uint32_t>(i));
+             + kInitialRoughnessM * cell_hash01(static_cast<std::uint32_t>(i))
+             + initial_relief(i, res, cell_size_m) * std::min(uplift[i] * 4.0f, 1.0f);
     }
     // Distancia efectiva de las diagonales por celda (ρ8, Fairfield y
     // Leymarie 1991): √2 se sustituye por 2 − r con r ∈ [0, 1) fijo por

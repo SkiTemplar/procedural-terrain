@@ -43,8 +43,11 @@ terrain::TerrainConfig golden_config() {
 // Recalibrado otra vez (altura y material): cabeceras del LEM de (40 m)² a
 // (63 m)² y difusión de laderas 0.17 → 0.21 (menos barrancos de primer orden
 // en peine, más confluencia).
-constexpr std::uint64_t kGoldenHeight = 0xe153fbc621e77ab0ull;
-constexpr std::uint64_t kGoldenMaterial = 0xb8effe5228c007e3ull;
+// Recalibrado (altura y material): divisoria continua (suelo de culminación
+// 0.30 → 0.50, warp del eje 1.4 → 1.9 km) y relieve inicial correlacionado
+// del LEM (±12 m a ~1 km y ~350 m). Cumbre de la seed 20260711: 1289 m.
+constexpr std::uint64_t kGoldenHeight = 0x9578427ce00278f6ull;
+constexpr std::uint64_t kGoldenMaterial = 0x51fc30ab972f9d34ull;
 
 } // namespace
 

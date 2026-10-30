@@ -172,6 +172,14 @@ std::vector<float> compute_coast_cliff(const std::vector<float>& continent,
 // amplitud de las culminaciones a lo largo del eje y por la masa regional
 // que decide dónde vive la cordillera.
 constexpr float kCrestGamma = 0.7f;
+// Amplitud (km) del warp del eje: con 1.4 la divisoria era casi recta a escala
+// de isla; 1.9 la hace serpentear entre macizos.
+constexpr float kCrestWarpKm = 1.9f;
+// Uplift mínimo a lo largo del eje entre culminaciones: con 0.30 el collado
+// entre los dos macizos bajaba a una silla verde y llana y la cordillera se
+// leía como dos pirámides sueltas; con 0.50 la divisoria es continua y las
+// cumbres siguen teniendo alturas distintas.
+constexpr float kCulminationFloor = 0.50f;
 // Litología: peso y frecuencia (1/km) de la fracturación isótropa frente a
 // las bandas de rumbo.
 constexpr float kFractureShare = 0.40f;
@@ -184,7 +192,7 @@ constexpr float kReliefPercentile = 0.85f;
 constexpr float kUpliftFloor = 0.20f;
 
 float tectonic_relief(const Noise& noise, glm::vec2 axis, glm::vec3 p_km) {
-    const glm::vec3 pw = noise.warp(p_km, 1.4f, 0.12f);
+    const glm::vec3 pw = noise.warp(p_km, kCrestWarpKm, 0.12f);
     const float u = pw.x * axis.x + pw.z * axis.y;
     const float v = -pw.x * axis.y + pw.z * axis.x;
     const float crest = noise.ridged(
@@ -195,7 +203,9 @@ float tectonic_relief(const Noise& noise, glm::vec2 axis, glm::vec3 p_km) {
     const float mass = smoothstep(
         0.25f, 0.75f,
         noise.fbm(p_km * 0.10f + glm::vec3{53.7f, 0.0f, -11.9f}, 2) * 0.5f + 0.5f);
-    return std::pow(crest, kCrestGamma) * (0.30f + 0.70f * culmination) * (0.35f + 0.65f * mass);
+    return std::pow(crest, kCrestGamma)
+         * (kCulminationFloor + (1.0f - kCulminationFloor) * culmination)
+         * (0.35f + 0.65f * mass);
 }
 
 // Divide el campo por su percentil `q` y satura a 1: solo las culminaciones
