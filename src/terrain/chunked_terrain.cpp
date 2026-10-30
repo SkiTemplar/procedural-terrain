@@ -141,6 +141,8 @@ ChunkedTerrain::ChunkedTerrain(const TerrainData& data, const DetailSampler& sam
                               hf.world_z(chunk.z0)};
             chunk.aabb_max = {hf.world_x(x1), y_max + 3.0f,
                               hf.world_z(z1)};
+            bounds_min_ = glm::min(bounds_min_, chunk.aabb_min);
+            bounds_max_ = glm::max(bounds_max_, chunk.aabb_max);
         }
     }
     // Arranque: todo en el nivel más basto (rápido); update() irá refinando.
@@ -192,37 +194,18 @@ void ChunkedTerrain::update(const glm::vec3& camera_pos, const glm::mat4& view_p
                 desired_level(*stale[static_cast<size_t>(i)].second, camera_pos));
     }
 
-    // Frustum culling (Gribb-Hartmann): 6 planos de view_proj contra el AABB
-    // de cada chunk con el test del vértice positivo. Sin esto se dibujaban
-    // los 4096 chunks por frame, mirases donde mirases.
-    glm::vec4 planes[6];
-    const glm::mat4 m = glm::transpose(view_proj); // filas de view_proj
-    planes[0] = m[3] + m[0]; // izquierda
-    planes[1] = m[3] - m[0]; // derecha
-    planes[2] = m[3] + m[1]; // abajo
-    planes[3] = m[3] - m[1]; // arriba
-    planes[4] = m[3] + m[2]; // cerca
-    planes[5] = m[3] - m[2]; // lejos
-
+    // Frustum culling (Gribb-Hartmann, render::Frustum): sin esto se
+    // dibujaban los 4096 chunks por frame, mirases donde mirases.
     visible_.clear();
-    visible_.reserve(chunks_.size());
+    collect_meshes(render::Frustum(view_proj), visible_);
+}
+
+void ChunkedTerrain::collect_meshes(const render::Frustum& frustum,
+                                    std::vector<const render::Mesh*>& out) const {
+    out.reserve(out.size() + chunks_.size());
     for (const auto& chunk : chunks_) {
-        if (!chunk.mesh) {
-            continue;
-        }
-        bool inside = true;
-        for (const glm::vec4& p : planes) {
-            const glm::vec3 positive{
-                p.x >= 0.0f ? chunk.aabb_max.x : chunk.aabb_min.x,
-                p.y >= 0.0f ? chunk.aabb_max.y : chunk.aabb_min.y,
-                p.z >= 0.0f ? chunk.aabb_max.z : chunk.aabb_min.z};
-            if (glm::dot(glm::vec3{p}, positive) + p.w < 0.0f) {
-                inside = false;
-                break;
-            }
-        }
-        if (inside) {
-            visible_.push_back(chunk.mesh.get());
+        if (chunk.mesh && frustum.intersects(chunk.aabb_min, chunk.aabb_max)) {
+            out.push_back(chunk.mesh.get());
         }
     }
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "render/frustum.h"
 #include "render/mesh.h"
 #include "render/terrain_textures.h"
 #include "terrain/detail.h"
@@ -33,6 +34,14 @@ public:
                 int max_rebuilds = 2);
 
     const std::vector<const render::Mesh*>& visible_meshes() const { return visible_; }
+    // Añade a `out` las mallas cuyo AABB corta `frustum` (con el LOD que fijó
+    // el último update). La usan las cascadas de sombra: un oclusor fuera de
+    // la vista pero dentro del volumen del sol también proyecta.
+    void collect_meshes(const render::Frustum& frustum,
+                        std::vector<const render::Mesh*>& out) const;
+    // AABB de todo el terreno (unión de los AABB de chunk).
+    const glm::vec3& bounds_min() const { return bounds_min_; }
+    const glm::vec3& bounds_max() const { return bounds_max_; }
     int total_chunks() const { return static_cast<int>(chunks_.size()); }
     void bind_detail_textures(const render::Shader& shader, bool enabled,
                               float intensity);
@@ -63,6 +72,8 @@ private:
     int chunks_per_side_ = 0;
     std::vector<Chunk> chunks_;
     std::vector<const render::Mesh*> visible_;
+    glm::vec3 bounds_min_{1e9f};
+    glm::vec3 bounds_max_{-1e9f};
 
     int desired_level(const Chunk& chunk, const glm::vec3& camera_pos) const;
     void rebuild(Chunk& chunk, int level);

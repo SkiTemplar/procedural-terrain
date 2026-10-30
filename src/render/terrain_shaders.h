@@ -1,5 +1,6 @@
 #pragma once
 
+#include "render/shadow_shaders.h"
 #include "render/terrain_shader_constants.h"
 
 namespace render {
@@ -106,6 +107,7 @@ uniform vec3 u_layer_mean[10];
 
 out vec4 frag_color;
 )glsl" PT_GLSL_SKY_COMMON R"glsl(
+)glsl" PT_GLSL_SHADOW_COMMON R"glsl(
 float hash12(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
     p += dot(p, p + 45.32);
@@ -407,8 +409,17 @@ void main() {
     // atenúa el ambiente hemisférico — valles y pies de acantilado se asientan.
     // La sombra conserva el ambiente: una ladera en sombra la ilumina el cielo,
     // no queda negra.
+    // Sombra en tiempo real (CSM): árboles, rocas y relieve fino a escala de
+    // texel; se queda con la más oscura de las dos dentro del alcance de las
+    // cascadas y, más allá, csm_visibility vale 1 y manda la precomputada
+    // (las montañas siguen sombreando los valles lejanos). Solo se consulta
+    // donde el sol llega: en las caras de espaldas diffuse ya es 0.
+    float sun_vis = v_light.x;
+    if (diffuse > 0.0) {
+        sun_vis = min(sun_vis, csm_visibility(v_world_pos, n_flat));
+    }
     vec3 lit = albedo * (0.34 * hemi * v_light.y
-                         + 1.15 * diffuse * sun_color * v_light.x);
+                         + 1.15 * diffuse * sun_color * sun_vis);
 
     // Textura procedural sutil en dos escalas (~1.5 m y ~9 m): rompe el color
     // plano de cada cara sin perder la estética low-poly. Se atenúa de lejos
@@ -526,6 +537,7 @@ uniform vec3 u_camera_pos;
 
 out vec4 frag_color;
 )glsl" PT_GLSL_SKY_COMMON R"glsl(
+)glsl" PT_GLSL_SHADOW_COMMON R"glsl(
 float hash(float n) { return fract(sin(n) * 43758.5453); }
 vec3 aces(vec3 x) {
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14),
@@ -558,7 +570,10 @@ void main() {
 
     vec3 normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
     float diffuse = max(abs(dot(normal, u_sun_dir)), 0.0); // hoja fina: 2 caras
-    vec3 lit = aces(col * (0.40 + 1.10 * diffuse)); // mismo rebalance + tonemap
+    // Solo receptora de la CSM (no proyecta): normal offset hacia arriba,
+    // la brizna es fina y de doble cara.
+    float sun_vis = csm_visibility(v_world_pos, vec3(0.0, 1.0, 0.0));
+    vec3 lit = aces(col * (0.40 + 1.10 * diffuse * sun_vis)); // mismo rebalance + tonemap
     vec3 view_dir = normalize(v_world_pos - u_camera_pos);
     float fog = fog_amount(u_camera_pos, v_world_pos);
     frag_color = vec4(mix(lit, sky_color(view_dir), fog), 1.0);

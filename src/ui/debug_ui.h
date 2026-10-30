@@ -30,6 +30,7 @@ struct DebugState {
     bool detail_textures = true;
     float detail_texture_intensity = 0.75f;
     bool smooth_shading = true;
+    bool csm_shadows = true; // sombras del sol en tiempo real (cascadas)
 
     terrain::TerrainConfig pending_config; // lo que editan los sliders
     bool regenerate_requested = false;     // botón "Regenerar"
