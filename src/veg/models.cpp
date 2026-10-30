@@ -10,7 +10,7 @@ namespace veg {
 namespace {
 
 const glm::vec3 kTrunkColor{0.42f, 0.30f, 0.19f};
-const glm::vec3 kPineColor{0.16f, 0.34f, 0.18f};
+const glm::vec3 kPineColor{0.19f, 0.38f, 0.20f}; // algo más clara: la umbría de la copa no cae a negro
 const glm::vec3 kLeafColor{0.30f, 0.50f, 0.22f};
 const glm::vec3 kRockColor{0.52f, 0.50f, 0.47f};
 

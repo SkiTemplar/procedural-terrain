@@ -2,6 +2,8 @@
 
 #include "terrain/generator.h"
 
+#include <cstdint>
+
 namespace terrain {
 
 // Paleta del suelo (C4): color final por material con gradientes anclados a
@@ -20,11 +22,20 @@ public:
     glm::vec3 ground(Material m, float forest_density, float climate, float y,
                      float wx, float wz, float cx, float cz) const;
 
+    // Variación por faceta del estilo low-poly: modula el color base de
+    // ground() con lo que distingue a dos caras vecinas — pendiente y
+    // orientación al sol de la propia cara (solana seca y cálida, umbría
+    // fresca), lluvia local y un pequeño salto de valor por cara (`id`).
+    // n = normal de la cara; cx/cz = centroide warpeado.
+    glm::vec3 face(glm::vec3 base, Material m, glm::vec3 n, float cx, float cz,
+                   std::uint32_t id) const;
+
 private:
     const TerrainData* data_;
     float sea_level_ = 0.0f;
     float snow_line_ = 0.0f; // nieve estacional de referencia
     float tree_line_ = 1.0f;
+    glm::vec3 sun_{0.0f, 1.0f, 0.0f}; // hacia el sol fijo del mundo
     float snow_span_ = 1.0f; // recorrido nieve sucia → blanca pura
     float rock_low_ = 0.0f;  // arranque del gradiente de roca (sobre el mar)
     float rock_span_ = 1.0f;

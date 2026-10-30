@@ -1,7 +1,6 @@
 #include "terrain/chunked_terrain.h"
 
-#include "terrain/mesher.h"
-#include "render/terrain_shader_constants.h"
+#include "terrain/faceted_mesh.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,93 +12,15 @@ namespace terrain {
 
 namespace {
 
-constexpr float kSkirtDepth = 5.0f; // m hacia abajo para tapar grietas de LOD
-
-// Con normal map continuo (Scharr 3x3) y sombreado suave ya no se usa jitter
-// de vértices en XZ: el jitter low-poly rompía la retícula creando microfacetas
-// geométricas artificiales que alteraban las derivadas y deformaban el normal
-// map continuo.
-
-
-// Domain warp del muestreo de material (feedback 2026-07-08 "colores en
-// cuadrado"): desplaza la posición donde se lee el material unos metros según
-// un ruido suave → los bordes hierba↔roca↔arena SERPENTEAN en vez de seguir la
-// rejilla de celdas, sin mezclar colores (cada material queda nítido). Solo
-// afecta al COLOR del render; la altura, la física y la vegetación usan la
-// posición real.
-// Las constantes viven en render/terrain_shader_constants.h: el fragment del
-// terreno replica este warp (mismo ruido) para que la textura de detalle se
-// alinee con el color de paleta.
-glm::vec2 material_warp(float wx, float wz) {
-    const float k = PT_MATERIAL_WARP_AMP; // amplitud del serpenteo (m)
-    const float f = PT_MATERIAL_WARP_FREQ;
-    const float nx = value_noise(wx * f + PT_MATERIAL_WARP_X_OFFSET_X,
-                                 wz * f + PT_MATERIAL_WARP_X_OFFSET_Z) - 0.5f;
-    const float nz = value_noise(wx * f + PT_MATERIAL_WARP_Z_OFFSET_X,
-                                 wz * f + PT_MATERIAL_WARP_Z_OFFSET_Z) - 0.5f;
-    return {nx * 2.0f * k, nz * 2.0f * k};
-}
-
-// Malla de rejilla + faldón perimetral. get_vertex(i, j) devuelve el vértice
-// (posición+color) del nodo (i, j) de una rejilla de (w+1)×(h+1) nodos.
-// La generación de vértices va en paralelo (get_vertex debe ser thread-safe);
-// las llamadas GL se quedan en el hilo principal.
-template <typename GetVertex>
-render::Mesh build_grid_mesh(int w, int h, GetVertex&& get_vertex) {
-    std::vector<render::Vertex> vertices(
-        static_cast<size_t>(w + 1) * (h + 1));
-
-    std::vector<int> rows(static_cast<size_t>(h + 1));
-    std::iota(rows.begin(), rows.end(), 0);
-    std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int j) {
-        for (int i = 0; i <= w; ++i) {
-            vertices[static_cast<size_t>(j) * (w + 1) + i] = get_vertex(i, j);
-        }
-    });
-    // 2·(w+h) aristas de perímetro × 2 vértices nuevos por arista.
-    vertices.reserve(vertices.size() + 4 * static_cast<size_t>(w + h));
-
-    std::vector<std::uint32_t> indices;
-    indices.reserve(static_cast<size_t>(w) * h * 6 + 2 * static_cast<size_t>(w + h) * 6);
-    const auto node = [w](int i, int j) {
-        return static_cast<std::uint32_t>(j * (w + 1) + i);
-    };
-    for (int j = 0; j < h; ++j) {
-        for (int i = 0; i < w; ++i) {
-            const auto tl = node(i, j);
-            const auto tr = node(i + 1, j);
-            const auto bl = node(i, j + 1);
-            const auto br = node(i + 1, j + 1);
-            // Triangulación uniforme: con sombreado suave y normal map continuo
-            // no se necesita alternar la diagonal por paridad (que se usaba en
-            // low-poly para evitar patrones de retícula). La diagonal alternada
-            // producía arrugas en zigzag en la interpolación de normales y UVs.
-            indices.insert(indices.end(), {tl, bl, tr, tr, bl, br});
-        }
-    }
-
-    // Faldón: por cada arista del perímetro, un quad hacia abajo.
-    const auto add_skirt_edge = [&](std::uint32_t a, std::uint32_t b) {
-        const auto base = static_cast<std::uint32_t>(vertices.size());
-        render::Vertex va = vertices[a];
-        render::Vertex vb = vertices[b];
-        va.position.y -= kSkirtDepth;
-        vb.position.y -= kSkirtDepth;
-        vertices.push_back(va);
-        vertices.push_back(vb);
-        indices.insert(indices.end(), {a, base, b, b, base, base + 1});
-    };
-    for (int i = 0; i < w; ++i) {
-        add_skirt_edge(node(i, 0), node(i + 1, 0));
-        add_skirt_edge(node(i + 1, h), node(i, h));
-    }
-    for (int j = 0; j < h; ++j) {
-        add_skirt_edge(node(0, j + 1), node(0, j));
-        add_skirt_edge(node(w, j), node(w, j + 1));
-    }
-
-    return render::Mesh{vertices, indices};
-}
+// Paso de faceta (celdas del heightfield) por nivel de LOD: ~5 m junto al
+// jugador, 10/20/40/80 m al alejarse. Con las distancias de cambio de nivel, una
+// faceta ocupa en pantalla un tamaño parecido (~6-10 px a 1280) en toda la
+// vista: el estilo low-poly se lee igual cerca y lejos.
+constexpr int kFacetStride[5] = {2, 4, 8, 16, 32};
+// Márgenes del AABB: faldón de la malla facetada (5 m) y jitter XZ máximo de
+// sus nodos (0.25 × 32 celdas de 2.44 m en el nivel más basto).
+constexpr float kAabbSkirtM = 5.0f;
+constexpr float kAabbJitterM = 20.0f;
 
 } // namespace
 
@@ -134,13 +55,14 @@ ChunkedTerrain::ChunkedTerrain(const TerrainData& data, const DetailSampler& sam
                 }
             }
             // AABB: extremos de altura del chunk + margen (faldón hacia
-            // abajo, ruido de detalle hacia arriba). Sin jitter de vértice,
-            // los nodos quedan exactamente alineados a la celda.
-            chunk.aabb_min = {hf.world_x(chunk.x0),
-                              y_min - kSkirtDepth - 2.0f,
-                              hf.world_z(chunk.z0)};
-            chunk.aabb_max = {hf.world_x(x1), y_max + 3.0f,
-                              hf.world_z(z1)};
+            // abajo, ruido de detalle hacia arriba) y, en XZ, el jitter
+            // máximo de los nodos del nivel más basto.
+            const float jitter = kAabbJitterM;
+            chunk.aabb_min = {hf.world_x(chunk.x0) - jitter,
+                              y_min - kAabbSkirtM - 2.0f,
+                              hf.world_z(chunk.z0) - jitter};
+            chunk.aabb_max = {hf.world_x(x1) + jitter, y_max + 3.0f,
+                              hf.world_z(z1) + jitter};
             bounds_min_ = glm::min(bounds_min_, chunk.aabb_min);
             bounds_max_ = glm::max(bounds_max_, chunk.aabb_max);
         }
@@ -218,71 +140,9 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
     const int cells_x = x1 - chunk.x0;
     const int cells_z = z1 - chunk.z0;
 
-    const auto material_at = [&](int sx, int sz) {
-        return data_->material[static_cast<size_t>(sz) * static_cast<size_t>(res)
-                               + static_cast<size_t>(sx)];
-    };
-
-    render::Mesh mesh = [&] {
-        if (level <= 1) {
-            // Subdivisión ×8 (nivel 0) o ×4 (nivel 1) con la altura del
-            // DetailSampler: exactamente la superficie que pisa el jugador.
-            const int sub = level == 0 ? 8 : 4;
-            const int w = cells_x * sub;
-            const int h = cells_z * sub;
-            const float step = hf.cell_size() / static_cast<float>(sub);
-            const float wx0 = hf.world_x(chunk.x0);
-            const float wz0 = hf.world_z(chunk.z0);
-            return build_grid_mesh(w, h, [&](int i, int j) {
-                // Vértices regulares sin jitter: geometría limpia y uniforme
-                // para el sombreado continuo con normal map.
-                const float wx = wx0 + static_cast<float>(i) * step;
-                const float wz = wz0 + static_cast<float>(j) * step;
-                const float wy = sampler_->height(wx, wz);
-                // El COLOR se muestrea en una posición warpeada (bordes que
-                // serpentean, no cuadros); la altura/normal usan la real.
-                const glm::vec2 mw = material_warp(wx, wz);
-                const float cx = wx + mw.x;
-                const float cz = wz + mw.y;
-                const Material m = sampler_->material_near(cx, cz);
-                const glm::vec3 color = palette_.ground(
-                    m, sampler_->forest_density_near(cx, cz),
-                    sampler_->climate_near(cx, cz), wy, wx, wz, cx, cz);
-                return render::Vertex{{wx, wy, wz}, color,
-                                      sampler_->normal_near(wx, wz),
-                                      {sampler_->shadow_at(wx, wz),
-                                       sampler_->sky_ao_at(wx, wz)}};
-            });
-        }
-        const int stride = level == 2 ? 1 : (level == 3 ? 4 : 8);
-        const int w = cells_x / stride;
-        const int h = cells_z / stride;
-        return build_grid_mesh(w, h, [&](int i, int j) {
-            const int sx = std::min(chunk.x0 + i * stride, res - 1);
-            const int sz = std::min(chunk.z0 + j * stride, res - 1);
-            Material m = material_at(sx, sz);
-            float wx = hf.world_x(sx);
-            float wz = hf.world_z(sz);
-            float wy = hf.at(sx, sz);
-            float cx = wx;
-            float cz = wz;
-            if (stride == 1) {
-                // Domain warp del color también en media distancia (el borde de
-                // material serpentea, no solo en el LOD cercano).
-                const glm::vec2 mw = material_warp(wx, wz);
-                cx = wx + mw.x;
-                cz = wz + mw.y;
-                m = sampler_->material_near(cx, cz);
-            }
-            return render::Vertex{
-                {wx, wy, wz},
-                palette_.ground(m, sampler_->forest_density_near(cx, cz),
-                                sampler_->climate_near(cx, cz), wy, wx, wz,
-                                cx, cz),
-                hf.normal_at(sx, sz),
-                {sampler_->shadow_at(wx, wz), sampler_->sky_ao_at(wx, wz)}};
-        });
-    }();
+    const FacetRegion region{chunk.x0, chunk.z0, cells_x, cells_z,
+                             kFacetStride[std::clamp(level, 0, 4)]};
+    render::Mesh mesh = build_faceted_mesh(*data_, *sampler_, palette_, region);
 
     chunk.mesh = std::make_unique<render::Mesh>(std::move(mesh));
     chunk.level = level;

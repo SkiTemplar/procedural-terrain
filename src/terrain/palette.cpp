@@ -60,6 +60,9 @@ Palette::Palette(const TerrainData& data)
                           1.0f);
     snow_span_ =
         std::max((data.max_height_m - snow_line_) * kSnowWhiteFrac, 50.0f);
+    const float az = kSunAzimuthDeg * 3.14159265f / 180.0f;
+    const float alt = kSunAltitudeDeg * 3.14159265f / 180.0f;
+    sun_ = {std::cos(az) * std::cos(alt), std::sin(alt), std::sin(az) * std::cos(alt)};
     rock_low_ = kRockLowFrac * snow_line_;
     rock_span_ = std::max(snow_line_ - rock_low_, 1.0f);
 }
@@ -239,6 +242,44 @@ glm::vec3 Palette::ground(Material m, float forest_density, float climate,
         tint = std::lerp(1.0f, tint, kSnowTintKeep);
     }
     return c * tint;
+}
+
+// Insolación de la cara relativa a la de un llano (1 = llano, >1 solana,
+// <1 umbría) con el sol fijo del mundo — la misma radiación que la ecología
+// usa para el balance hídrico.
+glm::vec3 Palette::face(glm::vec3 base, Material m, glm::vec3 n, float cx,
+                        float cz, std::uint32_t id) const {
+    glm::vec3 c = base;
+    const float slope = glm::clamp(1.0f - n.y, 0.0f, 1.0f);
+    const float sunny = glm::clamp(
+        glm::dot(n, sun_) / std::max(sun_.y, 0.1f) - 1.0f, -1.0f, 1.0f);
+    if (m == Material::Grass || m == Material::Forest) {
+        // Lluvia relativa (media 1 en tierra): más agua → verde más hondo y
+        // saturado; menos → hacia el pajizo del agostado.
+        const float rain = field_at(data_->precipitation, data_->precip_res, cx, cz, 1.0f);
+        const float wet = glm::clamp((rain - 1.0f) * 0.8f, -0.4f, 0.4f);
+        c = glm::mix(c, c * glm::vec3{0.82f, 1.0f, 0.74f}, std::max(wet, 0.0f));
+        c = glm::mix(c, glm::vec3{0.62f, 0.55f, 0.31f}, 0.5f * std::max(-wet, 0.0f));
+        // Solana más seca y cálida; umbría más fresca y verde.
+        c *= glm::vec3{1.0f + 0.07f * sunny, 1.0f + 0.03f * sunny, 1.0f - 0.10f * sunny};
+        // Suelo delgado en las caras empinadas: verde oliva apagado.
+        c = glm::mix(c, c * glm::vec3{0.96f, 0.90f, 0.78f},
+                     glm::smoothstep(0.12f, 0.45f, slope));
+    } else if (m == Material::Rock || m == Material::Gravel) {
+        // Las caras tendidas retienen derrubio y líquenes (más oscuras y
+        // pardas); las verticales se lavan y quedan con la fractura clara.
+        const float steep = glm::smoothstep(0.25f, 0.65f, slope);
+        c *= glm::mix(glm::vec3{0.90f, 0.89f, 0.86f}, glm::vec3{1.06f, 1.05f, 1.04f}, steep);
+        c *= 1.0f + 0.04f * sunny;
+    }
+    // Salto de valor por cara (±8 %) y leve de matiz: el mosaico facetado
+    // que hace legible la geometría low-poly incluso a contraluz.
+    const int ix = static_cast<int>(id & 0xFFFFu);
+    const int iz = static_cast<int>(id >> 16u);
+    const float v = hash01(ix * 31 + 7, iz * 17 + 3) - 0.5f;
+    const float hue = hash01(ix * 11 + 19, iz * 29 + 5) - 0.5f;
+    c *= (1.0f + 0.16f * v) * glm::vec3{1.0f + 0.03f * hue, 1.0f, 1.0f - 0.03f * hue};
+    return glm::clamp(c, glm::vec3{0.0f}, glm::vec3{1.0f});
 }
 
 } // namespace terrain

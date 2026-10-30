@@ -348,7 +348,7 @@ void main() {
     const vec3 sun_color = vec3(1.0, 0.94, 0.82);
     float diffuse = max(dot(normal, u_sun_dir), 0.0);
     float sky_facing = normal.y * 0.5 + 0.5;
-    vec3 hemi = mix(vec3(0.28, 0.30, 0.26), vec3(0.52, 0.62, 0.80), sky_facing);
+    vec3 hemi = mix(vec3(0.30, 0.31, 0.26), vec3(0.56, 0.68, 0.90), sky_facing);
     // Iluminación precomputada (sol fijo): la SOMBRA arrojada (v_light.x) atenúa
     // el sol — una montaña oscurece a su vecina; el AO de cielo (v_light.y)
     // atenúa el ambiente hemisférico — valles y pies de acantilado se asientan.
@@ -363,13 +363,17 @@ void main() {
     if (diffuse > 0.0) {
         sun_vis = min(sun_vis, csm_visibility(v_world_pos, n_flat));
     }
-    vec3 lit = albedo * (0.34 * hemi * v_light.y
+    // Ambiente 0.55 (antes 0.34): con sombras en tiempo real la cara en
+    // sombra solo recibe cielo, y a 0.34 los sotobosques quedaban casi
+    // negros. Sombra azulada y legible, como la luz de exterior de un juego.
+    vec3 lit = albedo * (0.55 * hemi * v_light.y
                          + 1.15 * diffuse * sun_color * sun_vis);
 
-    // Textura procedural sutil en dos escalas (~1.5 m y ~9 m): rompe el color
-    // plano de cada cara sin perder la estética low-poly. Se atenúa de lejos
-    // y a partir de ahí ni se calcula (8 hashes por píxel que no se ven).
-    float tex_fade = exp(-dist_cam * 0.0035);
+    // Textura procedural sutil en dos escalas (~1.5 m y ~9 m), solo en el
+    // sombreado suave: con facetas el color por cara ya da la variación y el
+    // ruido dentro de la cara la desdibujaría. Se atenúa de lejos y a partir
+    // de ahí ni se calcula (8 hashes por píxel que no se ven).
+    float tex_fade = exp(-dist_cam * 0.0035) * blend;
     if (tex_fade > 0.02) {
         float tex = 0.55 * vnoise(v_world_pos.xz * 0.65)
                   + 0.45 * vnoise(v_world_pos.xz * 0.11);
@@ -488,7 +492,7 @@ void main() {
     // Briznas procedurales dentro del card: u se reparte en columnas; cada
     // columna es una brizna que afina hacia arriba y tiene su propia altura.
     // Fuera de la brizna se DESCARTA el fragmento → césped denso sin geometría.
-    const float cols = 7.0;
+    const float cols = 4.0;
     float x = v_uv.x * cols;
     float cell = floor(x);
     float fx = fract(x);
@@ -497,8 +501,9 @@ void main() {
     // Brizna FINA con hueco entre columnas: media anchura ~0.13 en la raíz
     // afina a ~0.02 en la punta (antes 0.32 llenaba el card entero -> se veía
     // como una tarjeta sólida, no como hierba).
-    float half_w = 0.13 * (1.0 - v_uv.y * 0.85) + 0.02;
+    // Estilo low-poly: cada brizna es un triángulo ancho que acaba en punta.
     float top = 0.5 + 0.5 * hash(cell + 9.1);       // altura de cada brizna
+    float half_w = 0.32 * (1.0 - v_uv.y / top);
     if (abs(fx - center) > half_w || v_uv.y > top) {
         discard;
     }
@@ -513,7 +518,7 @@ void main() {
     // Solo receptora de la CSM (no proyecta): normal offset hacia arriba,
     // la brizna es fina y de doble cara.
     float sun_vis = csm_visibility(v_world_pos, vec3(0.0, 1.0, 0.0));
-    vec3 lit = col * (0.40 + 1.10 * diffuse * sun_vis); // mismo rebalance que el terreno
+    vec3 lit = col * (0.55 + 1.10 * diffuse * sun_vis); // mismo rebalance que el terreno
     frag_color = vec4(tonemap(apply_atmosphere(lit, u_camera_pos, v_world_pos)), 1.0);
 }
 )glsl";

@@ -55,6 +55,38 @@ void grow_bounds(CellT& cell, const ModelData& model,
     }
 }
 
+// Valor del grid cuadrado fres² que cubre el mapa en la celda más cercana.
+float field_nearest(const std::vector<float>& field, int fres, float size_m,
+                    float wx, float wz, float fallback) {
+    if (fres < 2 || field.size() != static_cast<size_t>(fres) * static_cast<size_t>(fres)) {
+        return fallback;
+    }
+    const float scale = static_cast<float>(fres - 1) / size_m;
+    const int x = std::clamp(static_cast<int>(std::lround((wx + size_m * 0.5f) * scale)),
+                             0, fres - 1);
+    const int z = std::clamp(static_cast<int>(std::lround((wz + size_m * 0.5f) * scale)),
+                             0, fres - 1);
+    return field[static_cast<size_t>(z) * static_cast<size_t>(fres) + x];
+}
+
+// Tinte de copa por instancia (rgb que multiplica el color del modelo, tronco
+// incluido). Un dosel real visto de lejos no es de un solo verde: cada árbol
+// difiere en vigor y fenología (valor ±12 %, matiz entre verde azulado y
+// verde amarillento) y la frondosa varía más que la conífera. El clima fija
+// la media: el estrés hídrico (déficit 1 − ET/PET, el mismo campo que agosta
+// la hierba en la paleta) amarillea y aclara la copa; el frío la azulea. Los
+// hashes solo reparten la variación individual alrededor de esa media.
+glm::vec3 canopy_tint(float hue_r, float value_r, float dryness, float climate,
+                      bool conifer) {
+    const float hue = (hue_r - 0.5f) * (conifer ? 0.12f : 0.20f);
+    glm::vec3 t{1.0f + hue, 1.0f, 1.0f - 1.6f * hue};
+    const float stress = std::clamp((dryness - 0.08f) / 0.30f, 0.0f, 1.0f);
+    t *= glm::mix(glm::vec3{1.0f}, glm::vec3{1.12f, 1.05f, 0.80f}, 0.6f * stress);
+    t *= glm::mix(glm::vec3{1.0f}, glm::vec3{0.92f, 0.96f, 1.05f},
+                  0.5f * (1.0f - climate));
+    return t * (0.88f + 0.24f * value_r);
+}
+
 } // namespace
 
 VegRenderer::VegRenderer(const terrain::TerrainData& data,
@@ -164,11 +196,18 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
             // terreno en su base → los árboles/matas en la sombra de una montaña
             // se oscurecen como el suelo. Va en el tinte (no hay v_light por
             // instancia); un árbol al sol queda a plena luz.
-            const float veg_light = (0.45f + 0.55f * sampler.shadow_at(wx, wz))
-                                  * (0.70f + 0.30f * sampler.sky_ao_at(wx, wz));
-            const float tint = (0.85f + 0.30f * hash01(static_cast<std::uint32_t>(x),
-                                                       static_cast<std::uint32_t>(z),
-                                                       salt + 5)) * veg_light;
+            // Suave: dentro del alcance de la CSM la sombra real ya oscurece
+            // la copa; esto solo asienta los árboles lejanos en la umbría.
+            const float veg_light = (0.70f + 0.30f * sampler.shadow_at(wx, wz))
+                                  * (0.75f + 0.25f * sampler.sky_ao_at(wx, wz));
+            const float value_r = hash01(static_cast<std::uint32_t>(x),
+                                         static_cast<std::uint32_t>(z), salt + 5);
+            const float tint = (0.85f + 0.30f * value_r) * veg_light;
+            const float hue_r = hash01(static_cast<std::uint32_t>(x),
+                                       static_cast<std::uint32_t>(z), salt + 12);
+            const float site_dry = field_nearest(data.dryness, data.precip_res,
+                                                 cfg.size_m, wx, wz, 0.1f);
+            const float site_climate = data.climate[i];
 
             Placement& cell = cell_of(wx, wz);
             if (roll < tree_p) {
@@ -184,8 +223,10 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                 // rango estrecho y uniforme anterior.
                 const float scale = 0.5f + 1.5f * scale_r * scale_r;
                 // Base bien hundida: en pendiente los troncos no quedan al aire.
+                const glm::vec3 t = canopy_tint(hue_r, value_r, site_dry,
+                                                site_climate, pine) * veg_light;
                 render::Instance inst{{wx, wy - 0.35f * scale, wz, scale},
-                                      {tint, tint, tint, yaw}};
+                                      {t.r, t.g, t.b, yaw}};
                 (pine ? cell.pines : cell.broadleafs).push_back(inst);
             } else if (roll < tree_p + rock_p) {
                 const float scale = 0.4f + 1.8f * scale_r;
@@ -204,8 +245,10 @@ VegRenderer::VegRenderer(const terrain::TerrainData& data,
                     render::Instance{{wx, wy - 0.04f, wz, scale}, {t.r, t.g, t.b, yaw}});
             } else if (roll < tree_p + rock_p + tuft_p + bush_p) {
                 const float scale = 0.6f + 0.9f * scale_r;
+                const glm::vec3 t = canopy_tint(hue_r, value_r, site_dry,
+                                                site_climate, false) * veg_light;
                 cell.bushes.push_back(render::Instance{{wx, wy - 0.08f, wz, scale},
-                                                       {tint, tint, tint, yaw}});
+                                                       {t.r, t.g, t.b, yaw}});
             } else if (roll < tree_p + rock_p + tuft_p + bush_p + boulder_p) {
                 // Roca grande con séquito: 2-3 rocas medianas alrededor.
                 const float scale = 2.6f + 3.0f * scale_r;

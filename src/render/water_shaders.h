@@ -207,8 +207,12 @@ const float kTrainLambda[5] = float[](52.0, 29.0, 16.5, 9.3, 5.2);
 const float kTrainAngle[5] = float[](0.0, 0.45, -0.38, 0.80, -0.72);
 WaterSurf sea_waves(vec2 xz, vec2 wd, float footprint) {
     vec2 perp = vec2(-wd.y, wd.x);
-    float spread = 1.0 - 0.75 * u_wind_focus;
-    float jit = w_vnoise(xz * 0.012) * 6.2831853;
+    // Abanico de direcciones: con 0.75 los trenes quedaban casi paralelos y
+    // el mar lejano se leía como rayas regulares (moiré); con 0.4 se cruzan.
+    float spread = 1.0 - 0.4 * u_wind_focus;
+    // Fase con dos octavas de ruido (~85 m y ~27 m): las crestas de un mismo
+    // tren se desalinean y el mar no se lee como rayas paralelas.
+    float jit = (w_vnoise(xz * 0.012) + 0.6 * w_vnoise(xz * 0.037 + 17.0)) * 6.2831853;
     float a0 = 0.5 * u_wave_hmax / kTrainLambda[0];
     vec3 acc = vec3(0.0); // (pendiente x, pendiente z, Σ Q·k·a·sen)
     float lost = 0.0;
