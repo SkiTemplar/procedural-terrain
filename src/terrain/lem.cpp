@@ -13,10 +13,12 @@ namespace terrain {
 
 namespace {
 
-constexpr float kDiffusion = 0.17f;      // difusión de laderas: crestas definidas
-                                         // pero sin agujas (límite de estabilidad
-                                         // 0.25; con 0.20 las aristas quedaban
-                                         // demasiado romas para el look alpino)
+constexpr float kDiffusion = 0.21f;      // difusión de laderas (límite de
+                                         // estabilidad 0.25). Con 0.17 las
+                                         // laderas de cada valle se peinaban en
+                                         // barrancos de primer orden paralelos
+                                         // y equiespaciados; más difusión (menor
+                                         // Péclet) deja menos y más espaciados.
 constexpr float kBaseUplift = 0.02f;     // por debajo: nivel de base (mar)
 constexpr float kHeadwaterSlope = 1.05f; // pendiente de equilibrio en laderas (~46°)
 // Dureza superlineal: S ∝ u^(1+kHardness) — la roca del núcleo orogénico
@@ -42,8 +44,11 @@ constexpr float kConcavity = 0.22f;
 // crecía, no había convergencia y salían rampas planas kilométricas con un
 // peine de barrancos paralelos. A ~40 m (cabeceras reales: 10³-10⁴ m²) la
 // inestabilidad canal/ladera actúa desde la escala de pocas celdas y la red
-// sale dendrítica, con divisorias sinuosas y valles ramificados.
-constexpr float kChannelAreaM2 = 1500.0f; // (~40 m)² de ladera sin canal
+// sale dendrítica, con divisorias sinuosas y valles ramificados. A (40 m)²
+// esa inestabilidad era tan fina que cada ladera de valle salía en espina de
+// pez; (63 m)² conserva la red dendrítica con tributarios más espaciados y
+// cumbres más altas y distintas (dump seed 20260711: cumbre 1310 m).
+constexpr float kChannelAreaM2 = 4000.0f; // (~63 m)² de ladera sin canal
 // Litología (feedback 2026-07-10): cuánto separa una formación BLANDA (lith=1)
 // de una DURA (lith=0) respecto al centro (lith=0.5 == comportamiento clásico,
 // mapeo exponencial centrado en 1 para no tocar la calibración).
