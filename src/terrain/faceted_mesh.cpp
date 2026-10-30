@@ -6,6 +6,7 @@
 #include <glm/geometric.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <execution>
 #include <numeric>
@@ -37,6 +38,35 @@ glm::vec2 material_warp(float wx, float wz) {
     return {nx * 2.0f * k, nz * 2.0f * k};
 }
 
+// Prefiltrado de la altura en los niveles bastos (paso >= kFilterStride
+// celdas): una cresta más estrecha que la faceta (cordón de duna, arista de
+// cumbre) muestreada en puntos sueltos se dibujaba en dientes de sierra, con
+// nodos alternos dentro y fuera de ella, y un rizado de periodo parecido al
+// paso batía en una fila de "tiendas". Tienda 3×3 de radio kFilterRadius
+// del paso: el mip de la superficie a la escala de la faceta.
+constexpr int kFilterStride = 2;
+constexpr float kFilterRadius = 0.5f; // anula el rizado de periodo = paso
+
+// Radio del prefiltro para una faceta de `cells` celdas (0 = sin filtro).
+float filter_radius(float cells, float cell_m) {
+    return cells >= static_cast<float>(kFilterStride) ? kFilterRadius * cells * cell_m : 0.0f;
+}
+
+float node_height(const DetailSampler& sampler, float wx, float wz, float radius) {
+    if (radius <= 0.0f) {
+        return sampler.height(wx, wz);
+    }
+    float acc = 0.0f;
+    for (int dz = -1; dz <= 1; ++dz) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            const float w = static_cast<float>((2 - std::abs(dx)) * (2 - std::abs(dz)));
+            acc += w * sampler.height(wx + radius * static_cast<float>(dx),
+                                      wz + radius * static_cast<float>(dz));
+        }
+    }
+    return acc / 16.0f;
+}
+
 // Rejilla de nodos (posiciones de mundo) de una región, con jitter XZ por
 // nodo global. Los nodos del borde del MAPA no se mueven (el mapa acaba recto).
 struct NodeGrid {
@@ -51,29 +81,89 @@ struct NodeGrid {
 NodeGrid build_nodes(const TerrainData& data, const DetailSampler& sampler,
                      const FacetRegion& r) {
     const auto& hf = data.height;
-    const int last = hf.resolution() - 1;
+    // Coordenadas en subceldas: con sub = 1 coinciden con las celdas y el
+    // hash del jitter es el de siempre (los niveles lejanos no cambian).
+    const int last = (hf.resolution() - 1) * r.sub;
+    const int span_x = r.cells_x * r.sub;
+    const int span_z = r.cells_z * r.sub;
+    const float step = hf.cell_size() / static_cast<float>(r.sub);
     NodeGrid g;
-    g.w = (r.cells_x + r.stride - 1) / r.stride;
-    g.h = (r.cells_z + r.stride - 1) / r.stride;
+    g.w = (span_x + r.stride - 1) / r.stride;
+    g.h = (span_z + r.stride - 1) / r.stride;
     g.pos.resize(static_cast<size_t>(g.w + 1) * static_cast<size_t>(g.h + 1));
-    const float amp = kNodeJitter * hf.cell_size() * static_cast<float>(r.stride);
+    const float amp = kNodeJitter * step * static_cast<float>(r.stride);
+    const float origin = hf.world_x(0);
+    const float own_cells = static_cast<float>(r.stride) / static_cast<float>(r.sub);
+    const float own_filter = filter_radius(own_cells, hf.cell_size());
+    // Filtro de los nodos de cada borde: el del lado más basto, para que el
+    // vecino y este chunk muestreen igual los nodos que comparten.
+    std::array<float, 4> edge_filter{};
+    for (size_t e = 0; e < 4; ++e) {
+        edge_filter[e] = std::max(own_filter, filter_radius(r.edge_cells[e], hf.cell_size()));
+    }
     std::vector<int> rows(static_cast<size_t>(g.h + 1));
     std::iota(rows.begin(), rows.end(), 0);
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int j) {
-        const int gz = r.z0 + std::min(j * r.stride, r.cells_z);
+        const int gz = r.z0 * r.sub + std::min(j * r.stride, span_z);
         for (int i = 0; i <= g.w; ++i) {
-            const int gx = r.x0 + std::min(i * r.stride, r.cells_x);
-            float wx = hf.world_x(gx);
-            float wz = hf.world_z(gz);
-            if (gx > 0 && gx < last && gz > 0 && gz < last) {
+            const int gx = r.x0 * r.sub + std::min(i * r.stride, span_x);
+            float wx = origin + static_cast<float>(gx) * step;
+            float wz = origin + static_cast<float>(gz) * step;
+            // El borde del chunk no se desplaza: dos niveles de LOD vecinos
+            // muestrean la arista en los mismos puntos (los del basto son un
+            // subconjunto de los del fino) y el escalón que tapa el faldón
+            // queda en centímetros en vez de medio metro en ladera.
+            const bool edge = i == 0 || i == g.w || j == 0 || j == g.h;
+            if (!edge && gx > 0 && gx < last && gz > 0 && gz < last) {
                 wx += amp * (2.0f * hash01(gx * 3 + 1, gz * 5 + 7) - 1.0f);
                 wz += amp * (2.0f * hash01(gx * 7 + 11, gz * 3 + 2) - 1.0f);
             }
+            float filter_m = own_filter;
+            filter_m = std::max(filter_m, j == 0 ? edge_filter[0] : 0.0f);
+            filter_m = std::max(filter_m, j == g.h ? edge_filter[1] : 0.0f);
+            filter_m = std::max(filter_m, i == 0 ? edge_filter[2] : 0.0f);
+            filter_m = std::max(filter_m, i == g.w ? edge_filter[3] : 0.0f);
             g.pos[static_cast<size_t>(j) * static_cast<size_t>(g.w + 1) + static_cast<size_t>(i)] =
-                {wx, sampler.height(wx, wz), wz};
+                {wx, node_height(sampler, wx, wz, filter_m), wz};
         }
     });
     return g;
+}
+
+// Costura sin escalón con un vecino más basto: en ese borde los nodos que el
+// vecino no tiene toman la interpolación lineal de los que sí comparten
+// (cada `ratio` nodos), así que la arista es la misma recta que dibuja él.
+// El faldón queda para los instantes en que un vecino aún no se ha rehecho.
+void stitch_line(NodeGrid& g, int ratio, bool row, int fixed) {
+    const int n = row ? g.w : g.h;
+    const auto at = [&](int k) -> glm::vec3& {
+        const int i = row ? k : fixed;
+        const int j = row ? fixed : k;
+        return g.pos[static_cast<size_t>(j) * static_cast<size_t>(g.w + 1) + static_cast<size_t>(i)];
+    };
+    for (int k = 0; k < n; k += ratio) {
+        const int k1 = std::min(k + ratio, n);
+        const float y0 = at(k).y;
+        const float y1 = at(k1).y;
+        for (int m = k + 1; m < k1; ++m) {
+            const float t = static_cast<float>(m - k) / static_cast<float>(k1 - k);
+            at(m).y = y0 + (y1 - y0) * t;
+        }
+    }
+}
+
+void stitch_edges(NodeGrid& g, const FacetRegion& r) {
+    const float own_cells = static_cast<float>(r.stride) / static_cast<float>(r.sub);
+    for (int e = 0; e < 4; ++e) {
+        const int ratio = static_cast<int>(
+            std::lround(r.edge_cells[static_cast<size_t>(e)] / own_cells));
+        if (ratio < 2) {
+            continue;
+        }
+        const bool row = e < 2; // z0 / z1 son filas de nodos
+        const int fixed = (e == 0 || e == 2) ? 0 : (row ? g.h : g.w);
+        stitch_line(g, ratio, row, fixed);
+    }
 }
 
 // Color y luz de una faceta: campos muestreados en su centroide.
@@ -154,8 +244,11 @@ void emit_skirt(const DetailSampler& sampler, const Palette& palette,
     const glm::vec3 da{a.x, a.y - kSkirtDepth, a.z};
     const glm::vec3 db{b.x, b.y - kSkirtDepth, b.z};
     const glm::vec3 mid = (a + b) * 0.5f;
-    const glm::vec3 n = glm::normalize(glm::cross(b - a, glm::vec3{0.0f, -1.0f, 0.0f}));
-    const FaceShade s = shade_face(sampler, palette, mid, glm::vec3{0.0f, 1.0f, 0.0f}, 0u);
+    // Normal y color de la ladera, no de una pared: el escalón residual
+    // entre dos LOD se funde con la cara de al lado en vez de dibujar una
+    // franja oscura vertical.
+    const glm::vec3 n = sampler.normal_near(mid.x, mid.z);
+    const FaceShade s = shade_face(sampler, palette, mid, n, 0u);
     for (const glm::vec3& p : {a, da, b, b, da, db}) {
         out.push_back(render::Vertex{p, s.color, n, s.light});
     }
@@ -165,14 +258,16 @@ void emit_skirt(const DetailSampler& sampler, const Palette& palette,
 
 render::Mesh build_faceted_mesh(const TerrainData& data, const DetailSampler& sampler,
                                 const Palette& palette, const FacetRegion& region) {
-    const NodeGrid g = build_nodes(data, sampler, region);
+    NodeGrid g = build_nodes(data, sampler, region);
+    stitch_edges(g, region);
     std::vector<render::Vertex> vertices(static_cast<size_t>(g.w) * g.h * 6);
     std::vector<int> rows(static_cast<size_t>(g.h));
     std::iota(rows.begin(), rows.end(), 0);
+    const int cells = region.stride / region.sub; // celdas por faceta (0 = subcelda)
     std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int j) {
-        const int gz = region.z0 + j * region.stride;
+        const int gz = region.z0 * region.sub + j * region.stride;
         for (int i = 0; i < g.w; ++i) {
-            const int gx = region.x0 + i * region.stride;
+            const int gx = region.x0 * region.sub + i * region.stride;
             const glm::vec3& tl = g.at(i, j);
             const glm::vec3& tr = g.at(i + 1, j);
             const glm::vec3& bl = g.at(i, j + 1);
@@ -182,11 +277,11 @@ render::Mesh build_faceted_mesh(const TerrainData& data, const DetailSampler& sa
             // Diagonal por hash del quad global: la triangulación no dibuja
             // rayas paralelas a la rejilla.
             if (hash01(gx * 13 + 5, gz * 17 + 3) < 0.5f) {
-                emit_triangle(sampler, palette, tl, bl, tr, id * 2u, region.stride, out);
-                emit_triangle(sampler, palette, tr, bl, br, id * 2u + 1u, region.stride, out + 3);
+                emit_triangle(sampler, palette, tl, bl, tr, id * 2u, cells, out);
+                emit_triangle(sampler, palette, tr, bl, br, id * 2u + 1u, cells, out + 3);
             } else {
-                emit_triangle(sampler, palette, tl, bl, br, id * 2u, region.stride, out);
-                emit_triangle(sampler, palette, tl, br, tr, id * 2u + 1u, region.stride, out + 3);
+                emit_triangle(sampler, palette, tl, bl, br, id * 2u, cells, out);
+                emit_triangle(sampler, palette, tl, br, tr, id * 2u + 1u, cells, out + 3);
             }
         }
     });

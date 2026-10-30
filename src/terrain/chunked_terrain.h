@@ -7,18 +7,16 @@
 #include "terrain/generator.h"
 #include "terrain/palette.h"
 
+#include <array>
 #include <memory>
 #include <vector>
 
 namespace terrain {
 
 // Terreno por chunks con LOD por distancia (heightmap 4096, celda ~2.4 m,
-// isla de 10×10 km):
-//   nivel 0: subdivisión ×8 con ruido de detalle (celda ~0.3 m) — bajo los pies
-//   nivel 1: subdivisión ×4 con ruido de detalle (celda ~0.6 m) — cerca
-//   nivel 2: resolución del heightmap (celda ~2.4 m)            — media
-//   nivel 3: stride 4 (celda ~9.8 m)                            — lejos
-//   nivel 4: stride 8 (celda ~19.5 m)                           — horizonte
+// isla de 10×10 km): facetas de ~1.2 m bajo los pies (celda subdividida con
+// el relieve fino del DetailSampler) que doblan de tamaño con cada nivel hasta
+// ~78 m en el horizonte (tabla en chunked_terrain.cpp).
 // Cada chunk lleva un faldón (skirt) que oculta las grietas entre niveles.
 // Las reconstrucciones se reparten entre frames y la generación de vértices
 // va paralelizada (sin tirones).
@@ -46,11 +44,6 @@ public:
     void bind_detail_textures(const render::Shader& shader, bool enabled,
                               float intensity);
 
-    static constexpr float kUltraDistance = 250.0f;  // m → nivel 0
-    static constexpr float kFineDistance = 600.0f;   // m → nivel 1
-    static constexpr float kMediumDistance = 1800.0f; // m → nivel 2
-    static constexpr float kFarDistance = 4200.0f;    // m → nivel 3
-
 private:
     struct Chunk {
         int x0 = 0; // celda inicial en el heightfield
@@ -60,7 +53,10 @@ private:
         // y ruido de detalle).
         glm::vec3 aabb_min{0.0f};
         glm::vec3 aabb_max{0.0f};
+        bool coastal = false; // corta el nivel del mar: LOD acotado (ver .cpp)
         int level = -1; // -1 = sin malla
+        // Niveles de los vecinos z0, z1, x0, x1 con que se cosió la malla.
+        std::array<int, 4> edge_levels{-1, -1, -1, -1};
         std::unique_ptr<render::Mesh> mesh;
     };
 
@@ -76,7 +72,9 @@ private:
     glm::vec3 bounds_max_{-1e9f};
 
     int desired_level(const Chunk& chunk, const glm::vec3& camera_pos) const;
-    void rebuild(Chunk& chunk, int level);
+    std::array<int, 4> neighbour_levels(const Chunk& chunk,
+                                        const glm::vec3& camera_pos) const;
+    void rebuild(Chunk& chunk, int level, const std::array<int, 4>& edges);
 };
 
 } // namespace terrain

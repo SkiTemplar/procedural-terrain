@@ -12,11 +12,26 @@ namespace terrain {
 
 namespace {
 
-// Paso de faceta (celdas del heightfield) por nivel de LOD: ~5 m junto al
-// jugador, 10/20/40/80 m al alejarse. Con las distancias de cambio de nivel, una
-// faceta ocupa en pantalla un tamaño parecido (~6-10 px a 1280) en toda la
-// vista: el estilo low-poly se lee igual cerca y lejos.
-constexpr int kFacetStride[5] = {2, 4, 8, 16, 32};
+// Faceta por nivel de LOD como (subdivisión de celda, paso en subceldas):
+// ~1.2 m bajo los pies (la celda de 2.44 m partida en dos, con el relieve fino
+// del DetailSampler), y 2.4/4.9/9.8/19.5/39/78 m al alejarse. Con las
+// distancias de cambio de nivel una faceta ocupa en pantalla un tamaño
+// parecido (~9-12 px a 1280) en toda la vista: el estilo low-poly se lee igual
+// cerca y lejos, y de cerca el suelo deja de ser un puñado de caras enormes.
+struct FacetLevel {
+    int sub;
+    int stride;
+};
+constexpr int kLevels = 7;
+constexpr FacetLevel kFacetLevel[kLevels] = {{2, 1}, {1, 1}, {1, 2}, {1, 4},
+                                             {1, 8}, {1, 16}, {1, 32}};
+constexpr float kLevelDistance[kLevels - 1] = {110.0f, 250.0f, 600.0f,
+                                               1000.0f, 1800.0f, 4200.0f};
+// Nivel más basto de un chunk que corta el nivel del mar (~9.8 m): con
+// facetas de 20-40 m una flecha o barra más estrecha que la faceta dejaba
+// solo nodos sueltos sobre el agua y se dibujaba como una fila de "tiendas".
+// Son pocos chunks (el perímetro de la isla) y la cara sigue siendo grande.
+constexpr int kCoastalMaxLevel = 3;
 // Márgenes del AABB: faldón de la malla facetada (5 m) y jitter XZ máximo de
 // sus nodos (0.25 × 32 celdas de 2.44 m en el nivel más basto).
 constexpr float kAabbSkirtM = 5.0f;
@@ -63,13 +78,15 @@ ChunkedTerrain::ChunkedTerrain(const TerrainData& data, const DetailSampler& sam
                               hf.world_z(chunk.z0) - jitter};
             chunk.aabb_max = {hf.world_x(x1) + jitter, y_max + 3.0f,
                               hf.world_z(z1) + jitter};
+            const float sea = data.config.sea_level;
+            chunk.coastal = y_min < sea + 0.5f && y_max > sea + 0.5f;
             bounds_min_ = glm::min(bounds_min_, chunk.aabb_min);
             bounds_max_ = glm::max(bounds_max_, chunk.aabb_max);
         }
     }
     // Arranque: todo en el nivel más basto (rápido); update() irá refinando.
     for (auto& chunk : chunks_) {
-        rebuild(chunk, 4);
+        rebuild(chunk, kLevels - 1, {kLevels - 1, kLevels - 1, kLevels - 1, kLevels - 1});
     }
 }
 
@@ -81,19 +98,30 @@ void ChunkedTerrain::bind_detail_textures(const render::Shader& shader,
 
 int ChunkedTerrain::desired_level(const Chunk& chunk, const glm::vec3& camera_pos) const {
     const float dist = glm::length(glm::vec2{camera_pos.x, camera_pos.z} - chunk.center);
-    if (dist < kUltraDistance) {
-        return 0;
+    const int cap = chunk.coastal ? kCoastalMaxLevel : kLevels - 1;
+    for (int level = 0; level < cap; ++level) {
+        if (dist < kLevelDistance[level]) {
+            return level;
+        }
     }
-    if (dist < kFineDistance) {
-        return 1;
+    return cap;
+}
+
+std::array<int, 4> ChunkedTerrain::neighbour_levels(const Chunk& chunk,
+                                                    const glm::vec3& camera_pos) const {
+    const int cx = chunk.x0 / chunk_cells_;
+    const int cz = chunk.z0 / chunk_cells_;
+    constexpr int kOffsets[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}}; // z0, z1, x0, x1
+    std::array<int, 4> out{};
+    for (size_t e = 0; e < 4; ++e) {
+        const int nx = cx + kOffsets[e][0];
+        const int nz = cz + kOffsets[e][1];
+        const bool inside = nx >= 0 && nz >= 0 && nx < chunks_per_side_ && nz < chunks_per_side_;
+        out[e] = inside ? desired_level(chunks_[static_cast<size_t>(nz) * chunks_per_side_ + nx],
+                                        camera_pos)
+                        : -1;
     }
-    if (dist < kMediumDistance) {
-        return 2;
-    }
-    if (dist < kFarDistance) {
-        return 3;
-    }
-    return 4;
+    return out;
 }
 
 void ChunkedTerrain::update(const glm::vec3& camera_pos, const glm::mat4& view_proj,
@@ -101,7 +129,8 @@ void ChunkedTerrain::update(const glm::vec3& camera_pos, const glm::mat4& view_p
     // Reconstruir primero lo más cercano que esté desactualizado.
     std::vector<std::pair<float, Chunk*>> stale;
     for (auto& chunk : chunks_) {
-        if (chunk.level != desired_level(chunk, camera_pos)) {
+        if (chunk.level != desired_level(chunk, camera_pos)
+            || chunk.edge_levels != neighbour_levels(chunk, camera_pos)) {
             const float dist =
                 glm::length(glm::vec2{camera_pos.x, camera_pos.z} - chunk.center);
             stale.emplace_back(dist, &chunk);
@@ -112,8 +141,8 @@ void ChunkedTerrain::update(const glm::vec3& camera_pos, const glm::mat4& view_p
 
     const int n = std::min(static_cast<int>(stale.size()), max_rebuilds);
     for (int i = 0; i < n; ++i) {
-        rebuild(*stale[static_cast<size_t>(i)].second,
-                desired_level(*stale[static_cast<size_t>(i)].second, camera_pos));
+        Chunk& chunk = *stale[static_cast<size_t>(i)].second;
+        rebuild(chunk, desired_level(chunk, camera_pos), neighbour_levels(chunk, camera_pos));
     }
 
     // Frustum culling (Gribb-Hartmann, render::Frustum): sin esto se
@@ -132,7 +161,7 @@ void ChunkedTerrain::collect_meshes(const render::Frustum& frustum,
     }
 }
 
-void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
+void ChunkedTerrain::rebuild(Chunk& chunk, int level, const std::array<int, 4>& edges) {
     const auto& hf = data_->height;
     const int res = hf.resolution();
     const int x1 = std::min(chunk.x0 + chunk_cells_, res - 1);
@@ -140,12 +169,19 @@ void ChunkedTerrain::rebuild(Chunk& chunk, int level) {
     const int cells_x = x1 - chunk.x0;
     const int cells_z = z1 - chunk.z0;
 
-    const FacetRegion region{chunk.x0, chunk.z0, cells_x, cells_z,
-                             kFacetStride[std::clamp(level, 0, 4)]};
+    const FacetLevel& lv = kFacetLevel[std::clamp(level, 0, kLevels - 1)];
+    FacetRegion region{chunk.x0, chunk.z0, cells_x, cells_z, lv.stride, lv.sub};
+    for (size_t e = 0; e < 4; ++e) {
+        if (edges[e] > level) {
+            const FacetLevel& nb = kFacetLevel[std::clamp(edges[e], 0, kLevels - 1)];
+            region.edge_cells[e] = static_cast<float>(nb.stride) / static_cast<float>(nb.sub);
+        }
+    }
     render::Mesh mesh = build_faceted_mesh(*data_, *sampler_, palette_, region);
 
     chunk.mesh = std::make_unique<render::Mesh>(std::move(mesh));
     chunk.level = level;
+    chunk.edge_levels = edges;
 }
 
 } // namespace terrain
