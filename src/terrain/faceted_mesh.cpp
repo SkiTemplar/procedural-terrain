@@ -231,6 +231,14 @@ bool crosses_material_edge(const DetailSampler& sampler, const glm::vec3& a,
     return false;
 }
 
+// Arista horizontal mayor de la cara (m): escala de su normal de referencia.
+float facet_extent(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
+    const auto horiz = [](const glm::vec3& p, const glm::vec3& q) {
+        return glm::length(glm::vec2{p.x - q.x, p.z - q.z});
+    };
+    return std::max({horiz(a, b), horiz(b, c), horiz(c, a)});
+}
+
 void emit_triangle(const DetailSampler& sampler, const Palette& palette,
                    const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
                    std::uint32_t id, int stride, render::Vertex* out) {
@@ -239,9 +247,14 @@ void emit_triangle(const DetailSampler& sampler, const Palette& palette,
                       || crosses_material_edge(sampler, a, b, c);
     const FaceShade s = average ? shade_face_area(sampler, palette, a, b, c, n, id)
                                 : shade_face(sampler, palette, (a + b + c) / 3.0f, n, id);
-    out[0] = render::Vertex{a, s.color, n, s.light};
-    out[1] = render::Vertex{b, s.color, n, s.light};
-    out[2] = render::Vertex{c, s.color, n, s.light};
+    // El atributo normal lleva la normal de REFERENCIA de la cara (ladera a
+    // la escala de la faceta): el fragment exagera la desviación de la cara
+    // respecto a ella y las facetas se leen también a media distancia.
+    const glm::vec3 g = (a + b + c) / 3.0f;
+    const glm::vec3 ref = sampler.normal_at_scale(g.x, g.z, facet_extent(a, b, c));
+    out[0] = render::Vertex{a, s.color, ref, s.light};
+    out[1] = render::Vertex{b, s.color, ref, s.light};
+    out[2] = render::Vertex{c, s.color, ref, s.light};
 }
 
 // Faldón: quad vertical bajo la arista a→b, con el color de su punto medio.
@@ -255,8 +268,9 @@ void emit_skirt(const DetailSampler& sampler, const Palette& palette,
     // franja oscura vertical.
     const glm::vec3 n = sampler.normal_near(mid.x, mid.z);
     const FaceShade s = shade_face(sampler, palette, mid, n, 0u);
+    // Normal de referencia nula: el faldón no exagera su cara vertical.
     for (const glm::vec3& p : {a, da, b, b, da, db}) {
-        out.push_back(render::Vertex{p, s.color, n, s.light});
+        out.push_back(render::Vertex{p, s.color, glm::vec3{0.0f}, s.light});
     }
 }
 

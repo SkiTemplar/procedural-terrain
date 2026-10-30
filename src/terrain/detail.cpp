@@ -1,5 +1,7 @@
 #include "terrain/detail.h"
 
+#include <glm/geometric.hpp>
+
 #include <algorithm>
 #include <cmath>
 
@@ -92,6 +94,14 @@ glm::vec3 DetailSampler::normal_near(float wx, float wz) const {
     const int res = hf.resolution();
     return hf.normal_at(static_cast<int>(i % static_cast<size_t>(res)),
                         static_cast<int>(i / static_cast<size_t>(res)));
+}
+
+glm::vec3 DetailSampler::normal_at_scale(float wx, float wz, float half_step) const {
+    const auto& hf = data_->height;
+    const float s = std::max(half_step, hf.cell_size());
+    const float gx = (hf.sample(wx + s, wz) - hf.sample(wx - s, wz)) / (2.0f * s);
+    const float gz = (hf.sample(wx, wz + s) - hf.sample(wx, wz - s)) / (2.0f * s);
+    return glm::normalize(glm::vec3{-gx, 1.0f, -gz});
 }
 
 float DetailSampler::roughness_at(float wx, float wz) const {

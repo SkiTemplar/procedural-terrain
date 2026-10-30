@@ -29,7 +29,7 @@ layout(binding = )glsl" PT_GLSL_STR(PT_CANOPY_UNIT) R"glsl() uniform sampler2D u
 out vec3 v_world_pos;
 flat out vec3 v_color;
 out vec3 v_color_smooth;
-out vec3 v_normal_smooth;
+flat out vec3 v_normal_ref; // normal de la ladera a la escala de la faceta
 out vec2 v_light;
 flat out vec4 v_canopy; // rgb follaje del dosel, a = peso de mezcla
 
@@ -73,7 +73,7 @@ void main() {
     v_world_pos = a_pos;
     v_color = a_color;
     v_color_smooth = a_color;
-    v_normal_smooth = a_normal;
+    v_normal_ref = a_normal;
     v_light = a_light;
     gl_Position = u_proj * u_view * vec4(a_pos, 1.0);
 }
@@ -84,7 +84,7 @@ constexpr const char* kTerrainFrag = R"glsl(
 in vec3 v_world_pos;
 flat in vec3 v_color;
 in vec3 v_color_smooth;
-in vec3 v_normal_smooth;
+flat in vec3 v_normal_ref;   // ladera a escala de faceta; 0 = sin exagerar
 in vec2 v_light;             // x = sombra arrojada (1=al sol), y = AO de cielo
 flat in vec4 v_canopy;       // dosel lejano (solo terreno; la vegetación da 0)
 
@@ -168,6 +168,13 @@ vec2 material_warp(vec2 w) {
 // Todas las lecturas condicionales usan textureGrad con gradientes de mundo
 // calculados en flujo uniforme al principio de main: dentro de ramas no
 // uniformes las derivadas implícitas de texture() están indefinidas.
+// Exageración de la desviación de cada faceta respecto a su ladera: x1.4 de
+// cerca y hasta x2 a varios km, donde el prefiltro del LOD ya alisa las caras.
+const float kFacetReliefNear = 1.4;
+const float kFacetReliefFar = 2.0;
+const vec2 kFacetReliefRampM = vec2(400.0, 4000.0);
+// Asimetría del cielo hacia el lado del sol (en caras verticales).
+const float kSkySunSide = 0.25;
 const float kDetailFadeStartM = 150.0;
 const float kDetailFadeEndM = 400.0;
 const int kRockLayer = 4;
@@ -374,6 +381,16 @@ void main() {
 
     float blend = (u_smooth_shading != 0) ? u_smooth_blend : 0.0;
     vec3 normal = normalize(mix(n_flat, n_map, blend));
+    // Relieve de faceta (dirección de arte low-poly): la desviación de la cara
+    // respecto a la ladera que la rodea (v_normal_ref, calculada en CPU a la
+    // escala de la propia faceta) se exagera ×(1 + kFacetRelief). Sin esto
+    // dos caras vecinas de una ladera lisa recibían casi el mismo N·L y, a
+    // media distancia, el relieve se leía como un degradado continuo. Es
+    // constante por cara: el sombreado sigue siendo plano.
+    float has_ref = step(0.5, dot(v_normal_ref, v_normal_ref)) * (1.0 - blend);
+    float relief = mix(kFacetReliefNear, kFacetReliefFar,
+                       smoothstep(kFacetReliefRampM.x, kFacetReliefRampM.y, dist_cam));
+    normal = normalize(normal + (relief * has_ref) * (n_flat - v_normal_ref));
     vec3 albedo = mix(v_color, v_color_smooth, blend);
     // Dosel lejano: donde los árboles ya no se dibujan, la faceta toma el color
     // medio de las copas que hay encima (misma población que de cerca).
@@ -398,6 +415,15 @@ void main() {
     float diffuse = max(dot(normal, u_sun_dir), 0.0);
     float sky_facing = normal.y * 0.5 + 0.5;
     vec3 hemi = mix(vec3(0.30, 0.31, 0.26), vec3(0.56, 0.68, 0.90), sky_facing);
+    // Cielo direccional: la bóveda del lado del sol (aureola de Mie) es más
+    // luminosa que la opuesta. Las caras en sombra se separan por su
+    // orientación y no solo por su inclinación (antes una umbría entera era
+    // un único gris). El peso crece con la pendiente (|normal.xz|). Del lado
+    // opuesto solo resta al 40 %: con la asimetría completa las umbrías
+    // cercanas de pradera perdían un 25 % y quedaban en oliva casi negro.
+    vec2 sun_h = normalize(u_sun_dir.xz + vec2(1e-5));
+    float sun_side = dot(normal.xz, sun_h);
+    hemi *= 1.0 + kSkySunSide * max(sun_side, 0.4 * sun_side);
     // Iluminación precomputada (sol fijo): la SOMBRA arrojada (v_light.x) atenúa
     // el sol — una montaña oscurece a su vecina; el AO de cielo (v_light.y)
     // atenúa el ambiente hemisférico — valles y pies de acantilado se asientan.
@@ -456,7 +482,7 @@ uniform float u_veg_fade_end;
 out vec3 v_world_pos;
 flat out vec3 v_color;
 out vec3 v_color_smooth;
-out vec3 v_normal_smooth;
+flat out vec3 v_normal_ref;
 out vec2 v_light;
 flat out vec4 v_canopy;
 
@@ -489,7 +515,7 @@ void main() {
     v_world_pos = p;
     v_color = a_color * i_tint_yaw.rgb;
     v_color_smooth = v_color;
-    v_normal_smooth = vec3(0.0, 1.0, 0.0); // sin uso: la vegetación va con u_smooth_blend=0
+    v_normal_ref = vec3(0.0); // la vegetación no exagera sus caras
     v_light = vec2(1.0); // la vegetación no recibe sombra/AO precomputados
     v_canopy = vec4(0.0);
     gl_Position = u_proj * u_view * vec4(p, 1.0);

@@ -17,6 +17,10 @@ public:
     float forest_density_near(float wx, float wz) const;
     float climate_near(float wx, float wz) const;
     glm::vec3 normal_near(float wx, float wz) const;
+    // Normal media del heightfield a la escala `half_step` (diferencias
+    // centrales a ±half_step): la orientación de la ladera alrededor de una
+    // faceta, sin el relieve propio de la cara.
+    glm::vec3 normal_at_scale(float wx, float wz, float half_step) const;
     // Iluminación precomputada (bilineal sobre el grid de luz de resolución
     // propia). 1.0 si aún no se ha calculado. shadow: 1=al sol, 0=en sombra;
     // sky_ao: 1=cielo abierto, 0=ocluido.

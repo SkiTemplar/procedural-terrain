@@ -110,7 +110,7 @@ vec3 atmosphere_segment(vec3 radiance, vec3 cam, vec3 dir, float dist) {
 // conserve contraste y saturación; a partir de kAerialFullM vuelve al modelo
 // completo, de modo que en el horizonte el terreno sigue convergiendo al
 // color del cielo de su dirección sin costura.
-const float kAerialNear = 0.6;
+const float kAerialNear = 0.5;
 const float kAerialDown = 0.65;
 const float kAerialFullStartM = 5000.0;
 const float kAerialFullM = 18000.0;
